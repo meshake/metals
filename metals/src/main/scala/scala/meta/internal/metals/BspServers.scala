@@ -1,20 +1,23 @@
 package scala.meta.internal.metals
 
-import ch.epfl.scala.bsp4j.BspConnectionDetails
-import com.google.gson.Gson
-import io.github.soc.directories.ProjectDirectories
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+
 import scala.concurrent.ExecutionContextExecutorService
 import scala.concurrent.Future
+import scala.concurrent.Promise
+import scala.util.Try
+
 import scala.meta.internal.io.FileIO
 import scala.meta.internal.metals.Messages.BspSwitch
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.mtags.MD5
 import scala.meta.io.AbsolutePath
-import scala.util.Try
-import scala.concurrent.Promise
+
+import ch.epfl.scala.bsp4j.BspConnectionDetails
+import com.google.gson.Gson
+import io.github.soc.directories.ProjectDirectories
 
 /**
  * Implements BSP server discovery, named "BSP Connection Protocol" in the spec.
@@ -22,7 +25,7 @@ import scala.concurrent.Promise
  * See https://github.com/scalacenter/bsp/blob/master/docs/bsp.md#bsp-connection-protocol
  */
 final class BspServers(
-    workspace: AbsolutePath,
+    mainWorkspace: AbsolutePath,
     charset: Charset,
     client: MetalsLanguageClient,
     buildClient: MetalsBuildClient,
@@ -31,17 +34,44 @@ final class BspServers(
     config: MetalsServerConfig
 )(implicit ec: ExecutionContextExecutorService) {
 
-  def newServer(): Future[Option[BuildServerConnection]] = {
-    findServer().flatMap { details =>
-      details
-        .map(d => newServer(d).map(Option(_)))
-        .getOrElse(Future.successful(None))
+  def resolve(): BspResolveResult = {
+    findAvailableServers(mainWorkspace) match {
+      case Nil => ResolveNone
+      case head :: Nil => ResolveBspOne(head)
+      case availableServers =>
+        val md5 = digestServerDetails(availableServers)
+        val selectedServer = for {
+          name <- tables.buildServers.selectedServer(md5)
+          server <- availableServers.find(_.getName == name)
+        } yield server
+        selectedServer match {
+          case Some(details) => ResolveBspOne(details)
+          case None => ResolveMultiple(md5, availableServers)
+        }
     }
   }
 
-  /** Runs "Switch build server" command, returns true if build server was changed */
+  def newServer(
+      projectDirectory: AbsolutePath
+  ): Future[Option[BuildServerConnection]] = {
+    def makeServer(details: BspConnectionDetails) =
+      newServer(projectDirectory, details).map(Some(_))
+    resolve() match {
+      case ResolveBloop => Future.successful(None)
+      case ResolveNone => Future.successful(None)
+      case ResolveBspOne(details) => makeServer(details)
+      case ResolveMultiple(md5, availableServers) =>
+        askUser(md5, availableServers).flatMap(s =>
+          s.map(makeServer).getOrElse(Future.successful(None))
+        )
+    }
+  }
+
+  /**
+   * Runs "Switch build server" command, returns true if build server was changed
+   */
   def switchBuildServer(): Future[Boolean] = {
-    findAvailableServers() match {
+    findAvailableServers(mainWorkspace) match {
       case Nil =>
         client.showMessage(BspSwitch.noInstalledServer)
         Future.successful(false)
@@ -55,12 +85,13 @@ final class BspServers(
   }
 
   private def newServer(
+      projectDirectory: AbsolutePath,
       details: BspConnectionDetails
   ): Future[BuildServerConnection] = {
 
     def newConnection(): Future[SocketConnection] = {
       val process = new ProcessBuilder(details.getArgv)
-        .directory(workspace.toFile)
+        .directory(projectDirectory.toFile)
         .start()
 
       val output = new ClosableOutputStream(
@@ -89,45 +120,22 @@ final class BspServers(
           finished
         )
       }
-
     }
 
     BuildServerConnection.fromSockets(
-      workspace,
+      projectDirectory,
       buildClient,
       client,
       newConnection,
-      tables,
+      tables.dismissedNotifications.ReconnectBsp,
       config
     )
   }
 
-  private def findServer(): Future[Option[BspConnectionDetails]] = {
-    findAvailableServers() match {
-      case Nil =>
-        Future.successful(None)
-      case head :: Nil =>
-        Future.successful(Some(head))
-      case availableServers =>
-        val md5 = digestServerDetails(availableServers)
-        val selectedServer = for {
-          name <- tables.buildServers.selectedServer(md5)
-          server <- availableServers.find(_.getName == name)
-        } yield server
-        selectedServer match {
-          case Some(value) =>
-            scribe.info(
-              s"pre-selected build server: ${value.getName} (run 'Switch build server' command to pick a new server)"
-            )
-            Future.successful(Some(value))
-          case None =>
-            askUser(md5, availableServers)
-        }
-    }
-  }
-
-  private def findAvailableServers(): List[BspConnectionDetails] = {
-    val jsonFiles = findJsonFiles()
+  private def findAvailableServers(
+      projectDirectory: AbsolutePath
+  ): List[BspConnectionDetails] = {
+    val jsonFiles = findJsonFiles(projectDirectory)
     val gson = new Gson()
     for {
       candidate <- jsonFiles
@@ -146,7 +154,9 @@ final class BspServers(
     }
   }
 
-  private def findJsonFiles(): List[AbsolutePath] = {
+  private def findJsonFiles(
+      projectDirectory: AbsolutePath
+  ): List[AbsolutePath] = {
     val buf = List.newBuilder[AbsolutePath]
     def visit(dir: AbsolutePath): Unit =
       dir.list.foreach { p =>
@@ -154,7 +164,7 @@ final class BspServers(
           buf += p
         }
       }
-    visit(workspace.resolve(".bsp"))
+    visit(projectDirectory.resolve(".bsp"))
     bspGlobalInstallDirectories.foreach(visit)
     buf.result()
   }

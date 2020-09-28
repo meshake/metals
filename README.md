@@ -1,16 +1,13 @@
 # Metals
 
-<a href="https://travis-ci.org/scalameta/metals">
-<img src="https://img.shields.io/travis/scalameta/metals/master.svg?style=flat-square" />
-</a>
 <a href="https://gitter.im/scalameta/metals">
-<img alt="Join the chat on Gitter" src="https://img.shields.io/gitter/room/scalameta/metals.svg?logo=gitter&style=flat-square&color=F71263" />
+<img alt="Join the chat on Gitter" src="https://img.shields.io/gitter/room/scalameta/metals.svg?logo=gitter&color=F71263" />
 </a>
 <a href="https://twitter.com/scalameta">
-<img src="https://img.shields.io/twitter/follow/scalameta.svg?logo=twitter&style=flat-square&color=blue" />
+<img alt="Follow scalameta on Twitter" src="https://img.shields.io/twitter/follow/scalameta.svg?logo=twitter&color=blue" />
 </a>
 <a href="https://index.scala-lang.org/scalameta/metals/metals">
-<img src="https://index.scala-lang.org/scalameta/metals/metals/latest.svg" />
+<img alt="Find us on scaladex" src="https://index.scala-lang.org/scalameta/metals/metals/latest.svg" />
 </a>
 
 ## Documentation
@@ -30,6 +27,7 @@ The current maintainers (people who can merge pull requests) are:
 - Chris Kipp - [`@ckipp01`](https://github.com/ckipp01)
 - Gabriele Petronella - [`@gabro`](https://github.com/gabro)
 - Johan Mudsam - [`@mudsam`](https://github.com/mudsam)
+- Krzysztof Bochenek - [`@kpbochenek`](https://github.com/kpbochenek)
 - Jorge Vicente Cantero - [`@jvican`](https://github.com/jvican)
 - Marek Żarnowski - [`@marek1840`](https://github.com/marek1840)
 - Ólafur Páll Geirsson - [`@olafurpg`](https://github.com/olafurpg)

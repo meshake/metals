@@ -1,12 +1,16 @@
 package tests
 
 import java.nio.charset.StandardCharsets
+
 import scala.collection.mutable.ListBuffer
+
 import scala.meta.inputs.Input
 import scala.meta.internal.io.FileIO
 import scala.meta.internal.mtags.Mtags
 
-/** Assert that Mtags.toplevels method works as expected. */
+/**
+ * Assert that Mtags.toplevels method works as expected.
+ */
 class ToplevelSuite extends SingleFileExpectSuite("toplevels.expect") {
   override def obtained(): String = {
     val toplevels = ListBuffer.empty[String]

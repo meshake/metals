@@ -1,5 +1,6 @@
 package scala.meta.internal.metals
 
+import java.io.IOException
 import java.io.InputStream
 import java.net.URI
 import java.util.Collections
@@ -7,23 +8,23 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
-import ch.epfl.scala.bsp4j._
-import org.eclipse.lsp4j.jsonrpc.Launcher
-
+import scala.concurrent.ExecutionContext
 import scala.concurrent.ExecutionContextExecutorService
 import scala.concurrent.Future
+import scala.concurrent.Promise
+import scala.util.Try
+
+import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.pc.InterruptException
 import scala.meta.io.AbsolutePath
-import scala.util.Try
+
+import ch.epfl.scala.bsp4j._
 import com.google.gson.Gson
-import MetalsEnrichments._
-import org.eclipse.lsp4j.services.LanguageClient
-import java.util.concurrent.atomic.AtomicReference
-import scala.concurrent.Promise
-import scala.concurrent.ExecutionContext
 import org.eclipse.lsp4j.jsonrpc.JsonRpcException
-import java.io.IOException
+import org.eclipse.lsp4j.jsonrpc.Launcher
+import org.eclipse.lsp4j.services.LanguageClient
 
 /**
  * An actively running and initialized BSP connection.
@@ -34,8 +35,9 @@ class BuildServerConnection private (
     ],
     initialConnection: BuildServerConnection.LauncherConnection,
     languageClient: LanguageClient,
-    tables: Tables,
-    config: MetalsServerConfig
+    reconnectNotification: DismissedNotifications#Notification,
+    config: MetalsServerConfig,
+    workspace: AbsolutePath
 )(implicit ec: ExecutionContextExecutorService)
     extends Cancelable {
 
@@ -58,34 +60,39 @@ class BuildServerConnection private (
   // the name is set before when establishing conenction
   def name: String = initialConnection.socketConnection.serverName
 
+  def workspaceDirectory: AbsolutePath = workspace
+
   def onReconnection(
       index: BuildServerConnection => Future[Unit]
   ): Unit = {
     onReconnection.set(index)
   }
 
-  /** Run build/shutdown procedure */
-  def shutdown(): Future[Unit] = connection.map { conn =>
-    try {
-      if (isShuttingDown.compareAndSet(false, true)) {
-        conn.server.buildShutdown().get(2, TimeUnit.SECONDS)
-        conn.server.onBuildExit()
-        // Cancel pending compilations on our side, this is not needed for Bloop.
-        cancel()
+  /**
+   * Run build/shutdown procedure
+   */
+  def shutdown(): Future[Unit] =
+    connection.map { conn =>
+      try {
+        if (isShuttingDown.compareAndSet(false, true)) {
+          conn.server.buildShutdown().get(2, TimeUnit.SECONDS)
+          conn.server.onBuildExit()
+          // Cancel pending compilations on our side, this is not needed for Bloop.
+          cancel()
+        }
+      } catch {
+        case _: TimeoutException =>
+          scribe.error(
+            s"timeout: build server '${conn.displayName}' during shutdown"
+          )
+        case InterruptException() =>
+        case e: Throwable =>
+          scribe.error(
+            s"build shutdown: ${conn.displayName}",
+            e
+          )
       }
-    } catch {
-      case e: TimeoutException =>
-        scribe.error(
-          s"timeout: build server '${conn.displayName}' during shutdown"
-        )
-      case InterruptException() =>
-      case e: Throwable =>
-        scribe.error(
-          s"build shutdown: ${conn.displayName}",
-          e
-        )
     }
-  }
 
   def compile(params: CompileParams): CompletableFuture[CompileResult] = {
     register(server => server.buildTargetCompile(params))
@@ -142,14 +149,13 @@ class BuildServerConnection private (
 
   private def askUser(): Future[BuildServerConnection.LauncherConnection] = {
     if (config.askToReconnect) {
-      val notification = tables.dismissedNotifications.ReconnectBsp
-      if (!notification.isDismissed) {
+      if (!reconnectNotification.isDismissed) {
         val params = Messages.DisconnectedServer.params()
         languageClient.showMessageRequest(params).asScala.flatMap {
           case response if response == Messages.DisconnectedServer.reconnect =>
             reestablishConnection()
           case response if response == Messages.DisconnectedServer.notNow =>
-            notification.dismiss(5, TimeUnit.MINUTES)
+            reconnectNotification.dismiss(5, TimeUnit.MINUTES)
             connection
           case _ =>
             connection
@@ -223,15 +229,15 @@ object BuildServerConnection {
       localClient: MetalsBuildClient,
       languageClient: LanguageClient,
       connect: () => Future[SocketConnection],
-      tables: Tables,
+      reconnectNotification: DismissedNotifications#Notification,
       config: MetalsServerConfig
-  )(
-      implicit ec: ExecutionContextExecutorService
+  )(implicit
+      ec: ExecutionContextExecutorService
   ): Future[BuildServerConnection] = {
 
     def setupServer(): Future[LauncherConnection] = {
       connect().map {
-        case conn @ SocketConnection(name, output, input, _, _) =>
+        case conn @ SocketConnection(_, output, input, _, _) =>
           val tracePrinter = GlobalTrace.setupTracePrinter("BSP")
           val launcher = new Launcher.Builder[MetalsBuildServer]()
             .traceMessages(tracePrinter)
@@ -261,8 +267,9 @@ object BuildServerConnection {
         setupServer,
         connection,
         languageClient,
-        tables,
-        config
+        reconnectNotification,
+        config,
+        workspace
       )
     }
   }
@@ -272,7 +279,9 @@ object BuildServerConnection {
       supportedScalaVersions: java.util.List[String]
   )
 
-  /** Run build/initialize handshake */
+  /**
+   * Run build/initialize handshake
+   */
   private def initialize(
       workspace: AbsolutePath,
       server: MetalsBuildServer
@@ -301,7 +310,11 @@ object BuildServerConnection {
     // and we want to fail fast if the connection is not
     val result =
       try {
-        initializeResult.get(5, TimeUnit.SECONDS)
+        def isCI: Boolean = "true" == System.getenv("CI")
+        if (isCI)
+          initializeResult.get(20, TimeUnit.SECONDS)
+        else
+          initializeResult.get(5, TimeUnit.SECONDS)
       } catch {
         case e: TimeoutException =>
           scribe.error("Timeout waiting for 'build/initialize' response")

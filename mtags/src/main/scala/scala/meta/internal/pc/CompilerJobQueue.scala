@@ -1,12 +1,12 @@
 package scala.meta.internal.pc
 
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.PriorityBlockingQueue
-import java.{util => ju}
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CancellationException
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.PriorityBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.{util => ju}
 
 /**
  * A thread pool executor to execute jobs on a single thread in a last-in-first-out order.
@@ -89,7 +89,9 @@ object CompilerJobQueue {
     })
   }
 
-  /** Runnable with a timestamp and attached completable future. */
+  /**
+   * Runnable with a timestamp and attached completable future.
+   */
   private class Job(result: CompletableFuture[_], _run: () => Unit)
       extends Runnable {
     def reject(): Unit = {
@@ -103,18 +105,23 @@ object CompilerJobQueue {
     }
   }
 
-  /** Priority queue that runs the most recently submitted task first. */
+  /**
+   * Priority queue that runs the most recently submitted task first.
+   */
   private class LastInFirstOutBlockingQueue
-      extends PriorityBlockingQueue[Runnable](10, new ju.Comparator[Runnable] {
-        def compare(o1: Runnable, o2: Runnable): Int = {
-          // Downcast is safe because we only submit `Job` runnables into this
-          // threadpool via `CompilerJobQueue.submit`. We can't make the queue
-          // `PriorityBlockingQueue[Job]` because `new ThreadPoolExecutor` requires
-          // a `BlockingQueue[Runnable]` and Java queues are invariant.
-          -java.lang.Long.compare(
-            o1.asInstanceOf[Job].start,
-            o2.asInstanceOf[Job].start
-          )
+      extends PriorityBlockingQueue[Runnable](
+        10,
+        new ju.Comparator[Runnable] {
+          def compare(o1: Runnable, o2: Runnable): Int = {
+            // Downcast is safe because we only submit `Job` runnables into this
+            // threadpool via `CompilerJobQueue.submit`. We can't make the queue
+            // `PriorityBlockingQueue[Job]` because `new ThreadPoolExecutor` requires
+            // a `BlockingQueue[Runnable]` and Java queues are invariant.
+            -java.lang.Long.compare(
+              o1.asInstanceOf[Job].start,
+              o2.asInstanceOf[Job].start
+            )
+          }
         }
-      })
+      )
 }

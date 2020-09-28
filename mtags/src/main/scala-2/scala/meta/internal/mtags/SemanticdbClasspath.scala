@@ -2,10 +2,12 @@ package scala.meta.internal.mtags
 
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
+
 import scala.meta.AbsolutePath
 import scala.meta.Classpath
 import scala.meta.internal.mtags
 import scala.meta.internal.mtags.MtagsEnrichments._
+import scala.meta.internal.mtags.Semanticdbs.FoundSemanticDbPath
 import scala.meta.io.RelativePath
 
 final case class SemanticdbClasspath(
@@ -34,7 +36,7 @@ final case class SemanticdbClasspath(
       sourceroot,
       charset,
       fingerprints,
-      path => loader.load(path)
+      path => loader.load(path).map(FoundSemanticDbPath(_, None))
     )
   }
 }
@@ -49,11 +51,13 @@ object SemanticdbClasspath {
       semanticdb
     )
     semanticdb.toNIO.semanticdbRoot.map { root =>
-      workspace.resolve(
-        semanticdb
-          .resolveSibling(_.stripSuffix(".semanticdb"))
-          .toRelative(AbsolutePath(root))
-      )
+      workspace
+        .resolve(
+          semanticdb
+            .resolveSibling(_.stripSuffix(".semanticdb"))
+            .toRelative(AbsolutePath(root))
+        )
+        .dealias
     }
   }
   def fromScala(path: RelativePath): RelativePath = {

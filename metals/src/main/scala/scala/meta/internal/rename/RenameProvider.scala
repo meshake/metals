@@ -1,40 +1,43 @@
 package scala.meta.internal.rename
 
-import scala.meta.internal.metals.ReferenceProvider
-import org.eclipse.lsp4j.RenameParams
-import org.eclipse.lsp4j.WorkspaceEdit
+import java.util.concurrent.ConcurrentLinkedQueue
+
+import scala.concurrent.ExecutionContext
+import scala.concurrent.Future
+
+import scala.meta.internal.async.ConcurrentQueue
 import scala.meta.internal.implementation.ImplementationProvider
-import org.eclipse.lsp4j.TextDocumentPositionParams
-import org.eclipse.lsp4j.ReferenceParams
-import org.eclipse.lsp4j.TextDocumentIdentifier
-import org.eclipse.lsp4j.TextEdit
-import scala.meta.internal.metals.MetalsEnrichments._
-import org.eclipse.lsp4j.Position
-import org.eclipse.lsp4j.ReferenceContext
+import scala.meta.internal.metals.Buffers
+import scala.meta.internal.metals.ClientConfiguration
+import scala.meta.internal.metals.Compilations
 import scala.meta.internal.metals.DefinitionProvider
-import scala.meta.internal.semanticdb.Scala._
-import scala.meta.io.AbsolutePath
-import org.eclipse.lsp4j.Location
+import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.MetalsLanguageClient
+import scala.meta.internal.metals.ReferenceProvider
+import scala.meta.internal.metals.TextEdits
+import scala.meta.internal.semanticdb.Scala._
+import scala.meta.internal.semanticdb.SelectTree
+import scala.meta.internal.semanticdb.Synthetic
+import scala.meta.io.AbsolutePath
+import scala.meta.pc.CancelToken
+
+import org.eclipse.lsp4j.Location
 import org.eclipse.lsp4j.MessageParams
 import org.eclipse.lsp4j.MessageType
-import org.eclipse.lsp4j.{Range => LSPRange}
-import org.eclipse.lsp4j.jsonrpc.messages.{Either => LSPEither}
-import scala.meta.internal.metals.Buffers
-import scala.meta.internal.metals.TextEdits
-import scala.meta.internal.metals.Compilations
-import org.eclipse.lsp4j.TextDocumentEdit
-import org.eclipse.lsp4j.VersionedTextDocumentIdentifier
-import org.eclipse.lsp4j.ResourceOperation
+import org.eclipse.lsp4j.Position
+import org.eclipse.lsp4j.ReferenceContext
+import org.eclipse.lsp4j.ReferenceParams
 import org.eclipse.lsp4j.RenameFile
-import java.util.concurrent.ConcurrentLinkedQueue
-import scala.meta.internal.async.ConcurrentQueue
-import scala.meta.internal.semanticdb.Synthetic
-import scala.meta.internal.semanticdb.SelectTree
-import scala.meta.pc.CancelToken
-import scala.concurrent.Future
-import scala.concurrent.ExecutionContext
-import scala.meta.internal.metals.ClientConfiguration
+import org.eclipse.lsp4j.RenameParams
+import org.eclipse.lsp4j.ResourceOperation
+import org.eclipse.lsp4j.TextDocumentEdit
+import org.eclipse.lsp4j.TextDocumentIdentifier
+import org.eclipse.lsp4j.TextDocumentPositionParams
+import org.eclipse.lsp4j.TextEdit
+import org.eclipse.lsp4j.VersionedTextDocumentIdentifier
+import org.eclipse.lsp4j.WorkspaceEdit
+import org.eclipse.lsp4j.jsonrpc.messages.{Either => LSPEither}
+import org.eclipse.lsp4j.{Range => LSPRange}
 
 final class RenameProvider(
     referenceProvider: ReferenceProvider,
@@ -47,17 +50,24 @@ final class RenameProvider(
     clientConfig: ClientConfiguration
 )(implicit executionContext: ExecutionContext) {
 
-  private var awaitingSave = new ConcurrentLinkedQueue[() => Unit]
+  private val awaitingSave = new ConcurrentLinkedQueue[() => Unit]
+
+  private def compilationFinished(
+      source: AbsolutePath
+  ): Future[Unit] = {
+    if (compilations.currentlyCompiling.isEmpty) {
+      Future(())
+    } else {
+      compilations.cascadeCompileFiles(Seq(source)).map { _ => () }
+    }
+  }
 
   def prepareRename(
       params: TextDocumentPositionParams,
       token: CancelToken
   ): Future[Option[LSPRange]] = {
-    if (!compilations.currentlyCompiling.isEmpty) {
-      client.showMessage(isCompiling)
-      Future.successful(None)
-    } else {
-      val source = params.getTextDocument.getUri.toAbsolutePath
+    val source = params.getTextDocument.getUri.toAbsolutePath
+    compilationFinished(source).flatMap { _ =>
       definitionProvider.definition(source, params, token).map { definition =>
         val symbolOccurrence =
           definitionProvider.symbolOccurrence(source, params.getPosition)
@@ -77,11 +87,8 @@ final class RenameProvider(
       params: RenameParams,
       token: CancelToken
   ): Future[WorkspaceEdit] = {
-    if (!compilations.currentlyCompiling.isEmpty) {
-      client.showMessage(isCompiling)
-      Future.successful(new WorkspaceEdit())
-    } else {
-      val source = params.getTextDocument.getUri.toAbsolutePath
+    val source = params.getTextDocument.getUri.toAbsolutePath
+    compilationFinished(source).flatMap { _ =>
       definitionProvider.definition(source, params, token).map { definition =>
         val textParams = new TextDocumentPositionParams(
           params.getTextDocument(),
@@ -111,21 +118,23 @@ final class RenameProvider(
           definitionPath = definitionLoc.getUri().toAbsolutePath
           if canRenameSymbol(occurence.symbol, Option(newName)) &&
             isWorkspaceSymbol(occurence.symbol, definitionPath)
-          parentSymbols = implementationProvider
-            .topMethodParents(occurence.symbol, semanticDb)
+          parentSymbols =
+            implementationProvider
+              .topMethodParents(occurence.symbol, semanticDb)
           txtParams <- {
             if (parentSymbols.isEmpty) List(textParams)
             else parentSymbols.map(toTextParams)
           }
           isLocal = occurence.symbol.isLocal
-          currentReferences = referenceProvider
-            .references(
-              // we can't get definition by name for local symbols
-              toReferenceParams(txtParams, includeDeclaration = isLocal),
-              canSkipExactMatchCheck = false,
-              includeSynthetics = includeSynthetic
-            )
-            .locations
+          currentReferences =
+            referenceProvider
+              .references(
+                // we can't get definition by name for local symbols
+                toReferenceParams(txtParams, includeDeclaration = isLocal),
+                canSkipExactMatchCheck = false,
+                includeSynthetics = includeSynthetic
+              )
+              .locations
           definitionLocation = {
             if (parentSymbols.isEmpty)
               definition.locations.asScala
@@ -137,7 +146,8 @@ final class RenameProvider(
             txtParams,
             !occurence.symbol.desc.isType
           )
-          loc <- currentReferences ++ implReferences ++ companionRefs ++ definitionLocation
+          loc <-
+            currentReferences ++ implReferences ++ companionRefs ++ definitionLocation
         } yield loc
 
         def isOccurrence(fn: String => Boolean): Boolean = {
@@ -156,7 +166,7 @@ final class RenameProvider(
         }
         val fileChanges = allChanges.flatten.toMap
         val shouldRenameInBackground =
-          !clientConfig.isOpenFilesOnRenameProvider || fileChanges.keySet.size >= clientConfig.initialConfig.renameFileThreshold
+          !clientConfig.isOpenFilesOnRenameProvider || fileChanges.keySet.size >= clientConfig.renameFileThreshold
         val (openedEdits, closedEdits) =
           if (shouldRenameInBackground) {
             if (clientConfig.isOpenFilesOnRenameProvider) {
@@ -180,9 +190,10 @@ final class RenameProvider(
     }
   }
 
-  def runSave(): Unit = synchronized {
-    ConcurrentQueue.pollAll(awaitingSave).foreach(waiting => waiting())
-  }
+  def runSave(): Unit =
+    synchronized {
+      ConcurrentQueue.pollAll(awaitingSave).foreach(waiting => waiting())
+    }
 
   private def documentEdits(
       openedEdits: Map[AbsolutePath, List[TextEdit]]
@@ -222,13 +233,18 @@ final class RenameProvider(
   private def companionReferences(sym: String): Seq[Location] = {
     val results = for {
       companionSymbol <- companion(sym).toIterable
-      loc <- definitionProvider
-        .fromSymbol(companionSymbol)
-        .asScala
+      loc <-
+        definitionProvider
+          .fromSymbol(companionSymbol)
+          .asScala
       if loc.getUri().isScalaFilename
-      companionLocs <- referenceProvider
-        .references(toReferenceParams(loc, includeDeclaration = false))
-        .locations :+ loc
+      companionLocs <-
+        referenceProvider
+          .references(
+            toReferenceParams(loc, includeDeclaration = false),
+            canSkipExactMatchCheck = false
+          )
+          .locations :+ loc
     } yield companionLocs
     results.toList
   }
@@ -239,7 +255,7 @@ final class RenameProvider(
         Some(Descriptor.Term(name))
       case Descriptor.Term(name) =>
         Some(Descriptor.Type(name))
-      case other =>
+      case _ =>
         None
     }
 
@@ -270,7 +286,10 @@ final class RenameProvider(
       for {
         implLoc <- implementationProvider.implementations(textParams)
         locParams = toReferenceParams(implLoc, includeDeclaration = true)
-        loc <- referenceProvider.references(locParams).locations
+        loc <-
+          referenceProvider
+            .references(locParams, canSkipExactMatchCheck = false)
+            .locations
       } yield loc
     } else {
       Nil
@@ -416,13 +435,6 @@ final class RenameProvider(
     val message =
       s"""|Cannot rename from $old to $renamed since it will change the semantics
           |and might break your code""".stripMargin
-    new MessageParams(MessageType.Error, message)
-  }
-
-  private def isCompiling: MessageParams = {
-    val message =
-      s"""|Cannot rename while the code is compiling
-          |since it could produce incorrect results.""".stripMargin
     new MessageParams(MessageType.Error, message)
   }
 

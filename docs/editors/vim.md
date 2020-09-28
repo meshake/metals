@@ -6,8 +6,9 @@ title: Vim
 ![Vim demo](https://i.imgur.com/4BYHCCL.gif)
 
 Metals works with most LSP clients for Vim, but we recommend using the
-[coc-metals extension](https://github.com/scalameta/coc-metals) for [`coc.nvim`](https://github.com/neoclide/coc.nvim)
-which will provide the most complete implementation of LSP and Metals-specific helpers.
+[coc-metals extension](https://github.com/scalameta/coc-metals) for
+[`coc.nvim`](https://github.com/neoclide/coc.nvim) which will provide the most
+complete implementation of LSP and Metals-specific helpers.
 
 ```scala mdoc:requirements
 
@@ -16,8 +17,9 @@ which will provide the most complete implementation of LSP and Metals-specific h
 ## Installing Vim
 
 The coc.nvim plugin requires either **Vim >= 8.1** or **Neovim >= 0.3.1**. Make
-sure you have the correct version installed. While it works with both Vim and Neovim,
-we recommend using Neovim since it provides a smoother experience with some of the features.
+sure you have the correct version installed. While it works with both Vim and
+Neovim, we recommend using Neovim since it provides a smoother experience with
+some of the features.
 
 ```sh
 # If using Vim
@@ -28,13 +30,14 @@ VIM - Vi IMproved 8.2
 nvim --version | head
 NVIM v0.4.3
 ```
-## Installing yarn
+## Installing Node
 
 `coc.nvim` requires [Node.js](https://nodejs.org/en/download/) in order to work.
 It also uses [Yarn](https://yarnpkg.com/en/docs/install#debian-stable) to manage
 extensions but you could opt-out of it and use `vim-plug` instead.
 
-For convenience we recommend installing both via your favorite package manager or manually:
+For convenience we recommend installing both via your favorite package manager
+or manually:
 
 ```sh
 curl -sL install-node.now.sh/lts | sh
@@ -43,29 +46,24 @@ curl --compressed -o- -L https://yarnpkg.com/install.sh | bash
 
 ## Installing coc.nvim
 
-Once the requirements are satisfied, we can now proceed to install [`neoclide/coc.nvim`]
-(https://github.com/neoclide/coc.nvim/), which provides Language Server Protocol
-support to Vim/Nvim  to communicate with the Metals language server.
+Once the requirements are satisfied, we can now proceed to install
+[`neoclide/coc.nvim`] (https://github.com/neoclide/coc.nvim/), which provides
+Language Server Protocol support to Vim/Nvim  to communicate with the Metals
+language server.
 
 Assuming [`vim-plug`](https://github.com/junegunn/vim-plug) is used (another
 plugin manager like vundle works too), update your `~/.vimrc` to include the
 following settings.
 
 ```vim
-" ~/.vimrc
-
-" Configuration for vim-plug
 Plug 'neoclide/coc.nvim', {'branch': 'release'}
-
-" Configuration for vim-scala
-au BufRead,BufNewFile *.sbt set filetype=scala
 ```
 
 Run `:PlugInstall` to install the plugin. If you already have `coc.nvim`
 installed, be sure to update to the latest version with `:PlugUpdate`.
 
-`coc.nvim` uses [jsonc](https://code.visualstudio.com/docs/languages/json) as
-a configuration file format. It's basically json with comment support.
+`coc.nvim` uses [jsonc](https://code.visualstudio.com/docs/languages/json) as a
+configuration file format. It's basically json with comment support.
 
 In order to get comment highlighting, please add:
 
@@ -74,8 +72,8 @@ autocmd FileType json syntax match Comment +\/\/.\+$+
 ```
 ### Recommended coc.nvim mappings
 
-`coc.nvim` doesn't come with a default key mapping for LSP commands, so you need to
-configure it yourself.
+`coc.nvim` doesn't come with a default key mapping for LSP commands, so you need
+to configure it yourself.
 
 Here's a recommended configuration:
 
@@ -98,6 +96,9 @@ set shortmess+=c
 
 " Always show signcolumns
 set signcolumn=yes
+
+" Help Vim recognize *.sbt and *.sc as Scala files
+au BufRead,BufNewFile *.sbt,*.sc set filetype=scala
 
 " Use tab for trigger completion with characters ahead and navigate.
 " Use command ':verbose imap <tab>' to make sure tab is not mapped by other plugin.
@@ -162,12 +163,10 @@ augroup mygroup
   autocmd User CocJumpPlaceholder call CocActionAsync('showSignatureHelp')
 augroup end
 
-" Remap for do codeAction of selected region, ex: `<leader>aap` for current paragraph
-xmap <leader>a  <Plug>(coc-codeaction-selected)
-nmap <leader>a  <Plug>(coc-codeaction-selected)
-
 " Remap for do codeAction of current line
-nmap <leader>ac  <Plug>(coc-codeaction)
+xmap <leader>a  <Plug>(coc-codeaction-line)
+nmap <leader>a  <Plug>(coc-codeaction-line)
+
 " Fix autofix problem of current line
 nmap <leader>qf  <Plug>(coc-fix-current)
 
@@ -224,30 +223,28 @@ ways. The easiest is by running:
 :CocInstall coc-metals
 ```
 
+If you are using the latest stable release of coc.nvim, then this will
+automatically check for updates each day. However, if you're on the master
+branch of coc.nvim, this will no longer happen by default. You can read more
+about this [here](https://github.com/neoclide/coc.nvim/issues/1937).
+
 If you'd like to use the latest changes on master, you can also just build from
-source by using `:CocInstall` with the repository url.
-
-```vim
-:CocInstall https://github.com/scalameta/coc-metals
-```
-If you'd like to use the latest changes on master, but would prefer managing the
-plugin using a plugin manager to download the extension, make sure you run the
-below snippet to uninstall the old version first.
-
-```vim
-:CocUninstall coc-metals
-```
-
-Then, if you are using [`vim-plug`](https://github.com/junegunn/vim-plug)
-for example, enter the following into where you manage your plugins:
+source by using your vim plugin manager. Here is an example using `vim-plug`:
 
 ```vim
 Plug 'scalameta/coc-metals', {'do': 'yarn install --frozen-lockfile'}
 ```
+
 Then, issue a `:PlugInstall` to install the extension, and regularly a
-`:PlugUpdate` to update it and pull in the latest changes. If you're relying on
-`coc.nvim` to install the extension, it will automatically pull in the latest
-versions when published.
+`:PlugUpdate` to update it and pull in the latest changes.
+
+**NOTE*** Make sure you don't have the extension installed both ways. So if you
+have installed it with the built-in extension management of coc.nvim first and
+are not switching, make sure to uninstall the old version first.
+
+```vim
+:CocUninstall coc-metals
+```
 
 ```scala mdoc:editor:vim
 Update the `metals.sbtScript` setting to use a custom `sbt` script instead of the
@@ -301,23 +298,8 @@ open buffer.
 
 ![Diagnostics](https://i.imgur.com/cer22HW.png)
 
-## Worksheets
-
-Metals allows users to create a `*.worksheet.sc` file and see evaluations right
-in the file. In Vim, this is done using comments that are inserted which will
-allow you to hover on them to expand. In Neovim, this is done using Neovim's
-[virtual text](https://neovim.io/doc/user/api.html#nvim_buf_set_virtual_text())
-to implement Metal's [Decoration
-Protocol](https://scalameta.org/metals/docs/editors/decoration-protocol.html).
-If using Neovim, make sure to have the following line in included in your
-`.vimrc` along with your `coc.nvim` mappings.
-
-```vim
-nmap <Leader>ws <Plug>(coc-metals-expand-decoration)
+```scala mdoc:worksheet:vim
 ```
-Then, when on the line that you'd like to expand the decoration to get the hover information, execute a
-`<leader>ws` in order to see the expanded text for that line.
-
 ![Decorations with worksheets](https://i.imgur.com/Bt6DMtH.png)
 
 ## Tree View Protocol
@@ -326,7 +308,7 @@ Then, when on the line that you'd like to expand the decoration to get the hover
 
 coc-metals has a built-in implementation of the [Tree View
 Protocol](https://scalameta.org/metals/docs/editors/tree-view-protocol.html).
-If you have the [recommended mappings](coc-mappings.vim) copied, you'll notice
+If you have the [recommended mappings](vim.md#recommended-cocnvim-mappings) copied, you'll notice
 that in the bottom you'll have some TVP related settings. You can start by
 opening the TVP panel by using the default `<space> t`. Once open, you'll see
 there are three parts to the panel. The first being the `MetalsCompile` window
@@ -361,7 +343,7 @@ Configuration Options](#tree-view-protocol-configuration-options).
 
 Depending on whether you're using Vim or Neovim, you'll have a slightly
 different behavior with this feature. If you're using Neovim, you'll want to
-ensure that you have `codeLens.enable` set to `true` in your Coc Config since
+ensure that you have `codeLens.enable` set to `true` in your `:CocConfig` since
 you'll be able to quickly see via code lenses which members are overridden.
 Then, you'll be able to simply trigger a code lens action on the line of the
 member that is overridden. The default mapping for this is `<leader> cl`.
@@ -391,20 +373,10 @@ having multiple windows, you can use `<C-w> + w` to jump into it.
 
 ![Embedded Doctor](https://i.imgur.com/McaAFv5.png)
 
-## Other Available Command
+## Other Available Commands
 
-  - `metals.restartServer`
-  - `metals.build-import`
-  - `metals.build-connect`
-  - `metals.build-restart`
-  - `metals.sources-scan`
-  - `metals.compile-cascade`
-  - `metals.compile-cancel`
-  - `metals.doctor-run`
-  - `metals.logs-toggle`
-  - `metals.new-scala-file`
-  - `metals.go-to-super-method`
-  - `metals.super-method-hierarchy`
+You can see a full list of the Metals server commands
+[here](https://scalameta.org/metals/docs/editors/new-editor.html#metals-server-commands).
 
 ## Show document symbols
 
@@ -424,13 +396,17 @@ install [coc-json](https://github.com/neoclide/coc-json).
 ```scala mdoc:user-config:lsp-config-coc
 ```
 
+```scala mdoc:new-project:vim
+
+```
+
 ## Enable on type formatting for multiline string formatting
 
 ![on-type](https://i.imgur.com/astTOKu.gif)
 
-To properly support adding `|` in multiline strings we are using the
-`onTypeFormatting` method. To enable the functionality you need to enable
-`coc.preferences.formatOnType` setting.
+To properly support some of the multiline string options like adding `|` in
+the multiline string, we are using the `onTypeFormatting` method. To enable the
+functionality you need to enable `coc.preferences.formatOnType` setting.
 
 ![coc-preferences-formatOnType](https://i.imgur.com/RWPHt2q.png)
 

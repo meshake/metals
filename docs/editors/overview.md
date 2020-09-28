@@ -4,6 +4,18 @@ title: Text Editors
 sidebar_label: Overview
 ---
 
+## Latest Metals server versions
+
+To find out how to set the version in your editor please check out the editor
+specific sections.
+
+```scala mdoc:releases
+
+```
+
+
+## Editor support
+
 Metals works with the following text editors with varying degree of
 functionality.
 
@@ -187,10 +199,19 @@ functionality.
     <td>Metals Extensions</td>
     <td align="center">✅</td>
     <td align="center">Status bar</td>
-    <td align="center">Status bar</td>
-    <td align="center">Status bar</td>
+    <td align="center">Status bar, Quick pick</td>
+    <td align="center">Status bar, Input box</td>
     <td align="center">Status bar</td>
     <td align="center">Status bar, Slow task</td>
+  </tr>
+  <tr>
+     <td>Organize imports</td>
+     <td align="center">✅</td>
+     <td align="center"></td>
+     <td align="center">✅</td>
+     <td align="center"></td>
+     <td align="center">✅</td>
+     <td align="center"></td>
   </tr>
 </tbody>
 </table>
@@ -372,7 +393,8 @@ using the Metals sidebar. This feature is only implemented in VS Code.
 **Tree view**: Editor client implements the
 [Tree View Protocol](tree-view-protocol.md).
 
-**Did focus**: Editor client implements the `metals/didFocusTextDocument` notification.
+**Did focus**: Editor client implements the `metals/didFocusTextDocument`
+notification.
 
 **Slow task**: Editor client implements the `metals/slowTask` request.
 
@@ -390,9 +412,143 @@ Language Server Protocol (LSP). These extensions are not necessary for Metals to
 function but they improve the user experience. To learn more about Metals
 extensions, see [integrating a new editor](new-editor.md).
 
+## Additional file types
+
+Not all features are supported in all possible scenarios, espacially when it
+comes to non-standard Scala files like Ammonite scripts, worksheets or sbt
+scripts.
+
+<table>
+<thead>
+  <tr>
+    <td />
+    <td align="center">Sbt scripts</td>
+    <td align="center">Worksheets</td>
+    <td align="center">Ammonite scripts</td>
+    <td align="center">Standalone Scala files</td>
+  </tr>
+</thead>
+<tbody>
+   <tr>
+    <td>Diagnostics</td>
+    <td align="center">✅*</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅*</td>
+  </tr>
+  <tr>
+    <td>Goto definition</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+  </tr>
+  <tr>
+    <td>Completions</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+  </tr>
+  <tr>
+    <td>Hover</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+  </tr>
+  <tr>
+    <td>Parameter hints</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+  </tr>
+  <tr>
+    <td>Find references</td>
+    <td align="center"></td>
+    <td align="center"></td>
+    <td align="center">✅</td>
+    <td align="center"></td>
+  </tr>
+  <tr>
+    <td>Run/Debug</td>
+    <td align="center"></td>
+    <td align="center"></td>
+    <td align="center"></td>
+    <td align="center"></td>
+  </tr>
+  <tr>
+    <td>Find implementations</td>
+    <td align="center"></td>
+    <td align="center"></td>
+    <td align="center">✅</td>
+    <td align="center"></td>
+  </tr>
+  <tr>
+    <td>Rename symbol</td>
+    <td align="center"></td>
+    <td align="center"></td>
+    <td align="center">✅</td>
+    <td align="center"></td>
+  </tr>
+  <tr>
+    <td>Code actions</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+  </tr>
+  <tr>
+    <td>Document symbols</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+  </tr>
+  <tr>
+    <td>Workspace symbols</td>
+    <td align="center"></td>
+    <td align="center"></td>
+    <td align="center">✅</td>
+    <td align="center"></td>
+  </tr>
+  <tr>
+    <td>Formatting</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+  </tr>
+  <tr>
+    <td>Folding</td>
+    <td align="center">✅</td>
+    <td align="center"></td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+  </tr>
+  <tr>
+    <td>Highlight</td>
+    <td align="center"></td>
+    <td align="center"></td>
+    <td align="center">✅</td>
+    <td align="center"></td>
+  </tr>
+  <tr>
+     <td>Organize imports</td>
+     <td align="center"></td>
+     <td align="center"></td>
+     <td align="center"></td>
+     <td align="center"></td>
+  </tr>
+</tbody>
+</table>
+
+\* Diagnostics for Sbt script and standalone Scala files will only show parsing
+errors, but not diagnostics coming from the compiler.
+
 ## Unsupported features
 
 Metals does not support the following features:
 
-- Organize imports
 - Refactoring: move class, extract/inline value, convert to block

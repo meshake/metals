@@ -1,5 +1,6 @@
 package scala.meta.internal.metals
 import scala.annotation.tailrec
+
 import scala.meta.internal.semanticdb.Scala.Symbols
 import scala.meta.internal.semanticdb.Scala._
 import scala.meta.internal.semanticdb.SymbolOccurrence
@@ -26,8 +27,18 @@ object JvmSignatures {
           loop(tail, fqcn.append(delimiter))
       }
     }
-    val fqcn = loop(definition.symbol.ownerChain, new StringBuilder)
+    val cls = findClass(definition.symbol)
+    val fqcn = loop(cls.ownerChain, new StringBuilder)
     TypeSignature(fqcn)
+  }
+
+  private def findClass(symbol: String): String = {
+    val desc = symbol.desc
+    if (desc.isTerm || desc.isType) {
+      symbol
+    } else {
+      findClass(symbol.owner)
+    }
   }
 
   final case class TypeSignature(value: String) {

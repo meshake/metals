@@ -1,12 +1,13 @@
 package scala.meta.internal.metals
 
-import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import scala.meta.internal.builds.BuildTools
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.MetalsLogger.{silentInTests => logger}
 import scala.meta.internal.metals.ScalaVersions._
 import scala.meta.internal.mtags.SemanticdbClasspath
 import scala.meta.io.AbsolutePath
+
+import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 
 /**
  * A helper to construct clear and actionable warning messages.
@@ -63,7 +64,7 @@ final class Warnings(
             s"$doesntWorkBecause the build target ${info.displayName} is being compiled. $tryAgain."
           )
           statusBar.addMessage(icons.info + tryAgain)
-        } else {
+        } else if (!path.isSbt && !path.isWorksheet) {
           val targetfile = info.classDirectory.toAbsolutePath
             .resolve(SemanticdbClasspath.fromScala(path.toRelative(workspace)))
           logger.error(
@@ -92,8 +93,8 @@ final class Warnings(
     if (tools.isEmpty) {
       scribe.warn(
         s"no build tool detected in workspace '$workspace'. " +
-          s"The most common cause for this problem is that the editor was opened in the wrong working directory, " +
-          s"for example if you use sbt then the workspace directory should contain build.sbt. "
+          "The most common cause for this problem is that the editor was opened in the wrong working directory, " +
+          "for example if you use sbt then the workspace directory should contain build.sbt. "
       )
     } else {
       val what =

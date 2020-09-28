@@ -1,66 +1,170 @@
 package scala.meta.internal.metals
-import com.google.gson.JsonElement
-import org.eclipse.{lsp4j => l}
-import scala.meta.internal.pc.CompilerInitializationOptions
-import com.google.gson.JsonNull
 
+import scala.meta.internal.metals.config.DoctorFormat
+import scala.meta.internal.metals.config.StatusBarState
+import scala.meta.internal.pc.CompilerInitializationOptions
+
+import com.google.gson.JsonObject
+import org.eclipse.{lsp4j => l}
+
+/**
+ * This is the preferred way to configure Metals from the client.
+ * Eventually this will be accumulated in the ClientConfiguration along with
+ * ClientExperimentalCapabilities and the InitialConfig. If the values aren't directly
+ * passed in here, we default everything to None to signify that the client didn't
+ * directly set the value. The defaults will then be handled by the ClientConfiguration
+ * so we don't need to worry about them here.
+ *
+ * @param compilerOptions configuration for the `PresentationCompilerConfig`.
+ * @param debuggingProvider if the client supports debugging.
+ * @param decorationProvider if the client implements the Metals Decoration Protocol.
+ * @param didFocusProvider if the client implements the `metals/didFocusTextDocument` command.
+ * @param doctorProvider format that the client would like the Doctor to be returned in.
+ * @param executeClientCommandProvider if the client implements `metals/executeClientCommand`.
+ * @param globSyntax pattern used for `DidChangeWatchedFilesRegistrationOptions`.
+ * @param icons which icons will be used for messages.
+ * @param inputBoxProvider if the client implements `metals/inputBox`.
+ * @param isExitOnShutdown whether the client needs Metals to shut down manually on exit.
+ * @param isHttpEnabled whether the client needs Metals to start an HTTP client interface.
+ * @param openFilesOnRenameProvider whether or not the client supports opening files on rename.
+ * @param quickPickProvider if the client implements `metals/quickPick`.
+ * @param renameFileThreshold amount of files that should be opened during rename if client
+ *                            is a `openFilesOnRenameProvider`.
+ * @param slowTaskProvider if the client implements `metals/slowTask`.
+ * @param statusBarProvider if the client implements `metals/status`.
+ * @param treeViewProvider if the client implements the Metals Tree View Protocol.
+ * @param openNewWindowProvider if the client can open a new window after new project creation.
+ */
 final case class InitializationOptions(
     compilerOptions: CompilerInitializationOptions,
-    debuggingProvider: Boolean,
-    decorationProvider: Boolean,
-    didFocusProvider: Boolean,
-    doctorProvider: String,
-    executeClientCommandProvider: Boolean,
-    inputBoxProvider: Boolean,
-    isExitOnShutdown: Boolean,
-    isHttpEnabled: Boolean,
-    openFilesOnRenameProvider: Boolean,
-    quickPickProvider: Boolean,
-    slowTaskProvider: Boolean,
-    statusBarProvider: String,
-    treeViewProvider: Boolean
+    debuggingProvider: Option[Boolean],
+    decorationProvider: Option[Boolean],
+    didFocusProvider: Option[Boolean],
+    doctorProvider: Option[String],
+    executeClientCommandProvider: Option[Boolean],
+    globSyntax: Option[String],
+    icons: Option[String],
+    inputBoxProvider: Option[Boolean],
+    isExitOnShutdown: Option[Boolean],
+    isHttpEnabled: Option[Boolean],
+    isCommandInHtmlSupported: Option[Boolean],
+    openFilesOnRenameProvider: Option[Boolean],
+    quickPickProvider: Option[Boolean],
+    renameFileThreshold: Option[Int],
+    slowTaskProvider: Option[Boolean],
+    statusBarProvider: Option[String],
+    treeViewProvider: Option[Boolean],
+    openNewWindowProvider: Option[Boolean]
 ) {
-  def this() =
-    this(
-      compilerOptions = new CompilerInitializationOptions(),
-      debuggingProvider = false,
-      decorationProvider = false,
-      didFocusProvider = false,
-      doctorProvider = "html",
-      executeClientCommandProvider = false,
-      inputBoxProvider = false,
-      isExitOnShutdown = false,
-      isHttpEnabled = false,
-      openFilesOnRenameProvider = false,
-      quickPickProvider = false,
-      slowTaskProvider = false,
-      statusBarProvider = "off",
-      treeViewProvider = false
-    )
-  def doctorFormatIsJson: Boolean = doctorProvider == "json"
-  def statusBarIsOn: Boolean = statusBarProvider == "on"
-  def statusBarIsOff: Boolean = statusBarProvider == "off"
-  def statusBarIsShowMessage: Boolean = statusBarProvider == "show-message"
-  def statusBarIsLogMessage: Boolean = statusBarProvider == "log-message"
+  def doctorFormat: Option[DoctorFormat.DoctorFormat] =
+    doctorProvider.flatMap(DoctorFormat.fromString)
+
+  def statusBarState: Option[StatusBarState.StatusBarState] =
+    statusBarProvider.flatMap(StatusBarState.fromString)
 }
 
 object InitializationOptions {
-  val Default = new InitializationOptions()
+  import scala.meta.internal.metals.JsonParser._
+
+  val Default: InitializationOptions = InitializationOptions(
+    CompilerInitializationOptions.default,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None
+  )
 
   def from(
       initializeParams: l.InitializeParams
   ): InitializationOptions = {
-    import scala.meta.internal.metals.JsonParser._
     initializeParams.getInitializationOptions() match {
-      // NOTE: (ckipp01) For some reason when some editors (emacs) leave out the
-      // `InitializationOptions` key, it is parsed as a `JsonNull` while others
-      // that leave it out it's parsed as a normal `null`. Why? I have no idea.
-      case _: JsonNull =>
-        Default
-      case json: JsonElement =>
-        json.as[InitializationOptions].getOrElse(Default)
+      case json: JsonObject =>
+        // Note (ckipp01) We used to do this with reflection going from the JsonElement straight to
+        // InitializationOptions, but there was a lot of issues with it such as setting
+        // nulls for unset values, needing a default constructor, and not being able to
+        // work as expected with Options. This is a bit more verbose, but it gives us full
+        // control over how the InitializationOptions are created.
+        extractToInitializationOptions(json)
       case _ =>
         Default
     }
   }
+
+  def extractToInitializationOptions(
+      json: JsonObject
+  ): InitializationOptions = {
+    val jsonObj = json.toJsonObject
+    InitializationOptions(
+      compilerOptions = extractCompilerOptions(jsonObj),
+      debuggingProvider = jsonObj.getBooleanOption("debuggingProvider"),
+      decorationProvider = jsonObj.getBooleanOption("decorationProvider"),
+      didFocusProvider = jsonObj.getBooleanOption("didFocusProvider"),
+      doctorProvider = jsonObj.getStringOption("doctorProvider"),
+      executeClientCommandProvider =
+        jsonObj.getBooleanOption("executeClientCommandProvider"),
+      globSyntax = jsonObj.getStringOption("globSyntax"),
+      icons = jsonObj.getStringOption("icons"),
+      inputBoxProvider = jsonObj.getBooleanOption("inputBoxProvider"),
+      isExitOnShutdown = jsonObj.getBooleanOption("isExitOnShutdown"),
+      isHttpEnabled = jsonObj.getBooleanOption("isHttpEnabled"),
+      isCommandInHtmlSupported =
+        jsonObj.getBooleanOption("isCommandInHtmlSupported"),
+      openFilesOnRenameProvider =
+        jsonObj.getBooleanOption("openFilesOnRenameProvider"),
+      quickPickProvider = jsonObj.getBooleanOption("quickPickProvider"),
+      renameFileThreshold = jsonObj.getIntOption("renameFileThreshold"),
+      slowTaskProvider = jsonObj.getBooleanOption("slowTaskProvider"),
+      statusBarProvider = jsonObj.getStringOption("statusBarProvider"),
+      treeViewProvider = jsonObj.getBooleanOption("treeViewProvider"),
+      openNewWindowProvider = jsonObj.getBooleanOption("openNewWindowProvider")
+    )
+  }
+
+  def extractCompilerOptions(
+      json: JsonObject
+  ): CompilerInitializationOptions = {
+    val compilerObj = json.getObjectOption("compilerOptions")
+    CompilerInitializationOptions(
+      completionCommand = compilerObj.flatMap(
+        _.getStringOption("completionCommand")
+      ),
+      isCompletionItemDetailEnabled = compilerObj.flatMap(
+        _.getBooleanOption("isCompletionItemDetailEnabled")
+      ),
+      isCompletionItemDocumentationEnabled = compilerObj.flatMap(
+        _.getBooleanOption("isCompletionItemDocumentationEnabled")
+      ),
+      isCompletionItemResolve =
+        compilerObj.flatMap(_.getBooleanOption("isCompletionItemResolve")),
+      isHoverDocumentationEnabled = compilerObj.flatMap(
+        _.getBooleanOption("isHoverDocumentationEnabled")
+      ),
+      isSignatureHelpDocumentationEnabled = compilerObj.flatMap(
+        _.getBooleanOption("isSignatureHelpDocumentationEnabled")
+      ),
+      overrideDefFormat = compilerObj.flatMap(
+        _.getStringOption("overrideDefFormat")
+      ),
+      parameterHintsCommand = compilerObj.flatMap(
+        _.getStringOption("parameterHintsCommand")
+      ),
+      snippetAutoIndent =
+        compilerObj.flatMap(_.getBooleanOption("snippetAutoIndent"))
+    )
+  }
+
 }

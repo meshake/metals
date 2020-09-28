@@ -2,13 +2,13 @@ package scala.meta.internal.metals.debug
 
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
-import org.eclipse.lsp4j.debug.SetBreakpointsResponse
-import org.eclipse.lsp4j.jsonrpc.MessageConsumer
-import org.eclipse.lsp4j.jsonrpc.messages.Message
-import scala.concurrent.Promise
+
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
+import scala.concurrent.Promise
+
 import scala.meta.internal.metals.Cancelable
+import scala.meta.internal.metals.Compilers
 import scala.meta.internal.metals.GlobalTrace
 import scala.meta.internal.metals.debug.DebugProtocol.InitializeRequest
 import scala.meta.internal.metals.debug.DebugProtocol.LaunchRequest
@@ -17,11 +17,16 @@ import scala.meta.internal.metals.debug.DebugProtocol.RestartRequest
 import scala.meta.internal.metals.debug.DebugProtocol.SetBreakpointRequest
 import scala.meta.internal.metals.debug.DebugProxy._
 
+import org.eclipse.lsp4j.debug.SetBreakpointsResponse
+import org.eclipse.lsp4j.jsonrpc.MessageConsumer
+import org.eclipse.lsp4j.jsonrpc.messages.Message
+
 private[debug] final class DebugProxy(
     sessionName: String,
     sourcePathProvider: SourcePathProvider,
     client: RemoteEndpoint,
-    server: ServerAdapter
+    server: ServerAdapter,
+    compilers: Compilers
 )(implicit ec: ExecutionContext) {
   private val exitStatus = Promise[ExitStatus]()
   @volatile private var outputTerminated = false
@@ -31,7 +36,7 @@ private[debug] final class DebugProxy(
   private val adapters = new MetalsDebugAdapters
 
   private val handleSetBreakpointsRequest =
-    new SetBreakpointsRequestHandler(server, adapters)
+    new SetBreakpointsRequestHandler(server, adapters, compilers)
 
   lazy val listen: Future[ExitStatus] = {
     scribe.info(s"Starting debug proxy for [$sessionName]")
@@ -133,19 +138,20 @@ private[debug] object DebugProxy {
       name: String,
       sourcePathProvider: SourcePathProvider,
       awaitClient: () => Future[Socket],
-      connectToServer: () => Future[Socket]
+      connectToServer: () => Future[Socket],
+      compilers: Compilers
   )(implicit ec: ExecutionContext): Future[DebugProxy] = {
     for {
       server <- connectToServer()
         .map(new SocketEndpoint(_))
-        .map(endpoint => withLogger(endpoint, "dap-server"))
+        .map(endpoint => withLogger(endpoint, DebugProtocol.serverName))
         .map(new MessageIdAdapter(_))
         .map(new ServerAdapter(_))
       client <- awaitClient()
         .map(new SocketEndpoint(_))
-        .map(endpoint => withLogger(endpoint, "dap-client"))
+        .map(endpoint => withLogger(endpoint, DebugProtocol.clientName))
         .map(new MessageIdAdapter(_))
-    } yield new DebugProxy(name, sourcePathProvider, client, server)
+    } yield new DebugProxy(name, sourcePathProvider, client, server, compilers)
   }
 
   private def withLogger(

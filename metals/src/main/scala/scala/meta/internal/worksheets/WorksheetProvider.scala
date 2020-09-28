@@ -1,38 +1,51 @@
 package scala.meta.internal.worksheets
 
-import scala.meta._
-import scala.meta.io.AbsolutePath
-import scala.meta.internal.metals.Buffers
-import scala.meta.internal.metals.BuildTargets
-import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.Cancelable
-import scala.collection.concurrent.TrieMap
-import ch.epfl.scala.bsp4j.BuildTargetIdentifier
-import scala.concurrent.Future
-import scala.meta.pc.CancelToken
-import scala.meta.internal.metals.UserConfiguration
-import scala.meta.internal.metals.MetalsLanguageClient
-import scala.meta.internal.metals.ScalaVersions
-import scala.meta.internal.metals.BuildInfo
-import scala.meta.internal.pc.CompilerJobQueue
+import java.nio.charset.StandardCharsets
+import java.nio.file.Path
+import java.security.MessageDigest
 import java.util.concurrent.CompletableFuture
-import scala.concurrent.ExecutionContext
-import java.util.concurrent.ScheduledExecutorService
-import scala.meta.internal.metals.MetalsSlowTaskParams
-import java.util.concurrent.TimeUnit
-import scala.meta.internal.metals.MutableCancelable
-import scala.meta.internal.metals.StatusBar
-import scala.meta.internal.pc.InterruptException
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
+
+import scala.collection.concurrent.TrieMap
+import scala.concurrent.ExecutionContext
+import scala.concurrent.Future
+
+import scala.meta._
+import scala.meta.internal.metals.AdjustLspData
+import scala.meta.internal.metals.AdjustedLspData
+import scala.meta.internal.metals.Buffers
+import scala.meta.internal.metals.BuildInfo
+import scala.meta.internal.metals.BuildTargets
+import scala.meta.internal.metals.Cancelable
+import scala.meta.internal.metals.Compilers
 import scala.meta.internal.metals.Diagnostics
-import scala.meta.internal.metals.Timer
-import scala.meta.internal.metals.Time
 import scala.meta.internal.metals.Embedded
-import mdoc.interfaces.Mdoc
+import scala.meta.internal.metals.MetalsEnrichments._
+import scala.meta.internal.metals.MetalsLanguageClient
+import scala.meta.internal.metals.MetalsSlowTaskParams
+import scala.meta.internal.metals.MutableCancelable
+import scala.meta.internal.metals.ScalaVersions
+import scala.meta.internal.metals.StatusBar
+import scala.meta.internal.metals.Time
+import scala.meta.internal.metals.Timer
+import scala.meta.internal.metals.UserConfiguration
+import scala.meta.internal.mtags.MD5
+import scala.meta.internal.pc.CompilerJobQueue
+import scala.meta.internal.pc.InterruptException
+import scala.meta.internal.semver.SemVer
+import scala.meta.internal.worksheets.MdocEnrichments._
+import scala.meta.io.AbsolutePath
+import scala.meta.pc.CancelToken
+
+import ch.epfl.scala.bsp4j.BuildTargetIdentifier
+import coursierapi.Dependency
+import coursierapi.Fetch
 import mdoc.interfaces.EvaluatedWorksheet
-import MdocEnrichments._
-import org.eclipse.lsp4j.Position
+import mdoc.interfaces.Mdoc
 import org.eclipse.lsp4j.Hover
+import org.eclipse.lsp4j.Position
 
 /**
  * Implements interactive worksheets for "*.worksheet.sc" file extensions.
@@ -48,7 +61,8 @@ class WorksheetProvider(
     statusBar: StatusBar,
     diagnostics: Diagnostics,
     embedded: Embedded,
-    publisher: WorksheetPublisher
+    publisher: WorksheetPublisher,
+    compilers: Compilers
 )(implicit ec: ExecutionContext)
     extends Cancelable {
 
@@ -63,6 +77,7 @@ class WorksheetProvider(
     Executors.newSingleThreadScheduledExecutor()
   private val cancelables = new MutableCancelable()
   private val mdocs = new TrieMap[BuildTargetIdentifier, Mdoc]()
+  private val worksheetsDigests = new TrieMap[AbsolutePath, String]()
   private val currentScalaVersion =
     scala.meta.internal.mtags.BuildInfo.scalaCompilerVersion
   private val currentBinaryVersion =
@@ -220,13 +235,42 @@ class WorksheetProvider(
     )
   }
 
+  private def fetchDependencySources(
+      dependencies: Seq[Dependency]
+  ): List[Path] = {
+    Fetch
+      .create()
+      .withDependencies(dependencies: _*)
+      .addClassifiers("sources")
+      .fetchResult()
+      .getFiles()
+      .map(_.toPath())
+      .asScala
+      .toList
+  }
+
   private def evaluateWorksheet(
       path: AbsolutePath,
       token: CancelToken
   ): EvaluatedWorksheet = {
     val mdoc = getMdoc(path)
     val input = path.toInputFromBuffers(buffers)
-    val worksheet = mdoc.evaluateWorksheet(input.path, input.value)
+    val relativePath = path.toRelative(workspace)
+    val worksheet = mdoc.evaluateWorksheet(relativePath.toString(), input.value)
+    val classpath = worksheet.classpath().asScala.toList
+    val previousDigest = worksheetsDigests.getOrElse(path, "")
+    val newDigest = calculateDigest(classpath)
+
+    if (newDigest != previousDigest) {
+      worksheetsDigests.put(path, newDigest)
+      val sourceDeps = fetchDependencySources(worksheet.dependencies().asScala)
+      compilers.restartWorksheetPresentationCompiler(
+        path,
+        classpath,
+        sourceDeps.filter(_.toString().endsWith("-sources.jar"))
+      )
+    }
+
     val toPublish = worksheet
       .diagnostics()
       .iterator()
@@ -250,18 +294,32 @@ class WorksheetProvider(
   }
 
   private def getMdoc(target: BuildTargetIdentifier): Option[Mdoc] = {
+
+    def isSupportedScala3Version(scalaVersion: String) = {
+      // Worksheet support for Scala 3 started with 0.26.0-RC1
+      ScalaVersions.isScala3Version(scalaVersion) && SemVer.isCompatibleVersion(
+        "0.26.0",
+        scalaVersion
+      )
+    }
+
+    def isSupportedScala2Version(scalaVersion: String) = {
+      !ScalaVersions.isScala3Version(scalaVersion) && ScalaVersions
+        .isSupportedScalaVersion(scalaVersion)
+    }
+
     mdocs.get(target).orElse {
       for {
         info <- buildTargets.scalaTarget(target)
         scalaVersion = info.scalaVersion
-        isSupported = ScalaVersions
-          .isSupportedScalaVersion(scalaVersion) && !ScalaVersions
-          .isScala3Version(scalaVersion)
+        isSupported = isSupportedScala2Version(
+          scalaVersion
+        ) || isSupportedScala3Version(scalaVersion)
         _ = {
           if (!isSupported) {
             scribe.warn(
               s"worksheet: unsupported Scala version '${scalaVersion}', using Scala version '${BuildInfo.scala212}' without classpath instead.\n" +
-                s"worksheet: to fix this problem use Scala version '${BuildInfo.scala212}'."
+                s"worksheet: to fix this problem use Scala version '${ScalaVersions.recommendedVersion(scalaVersion)}'."
             )
           }
         }
@@ -280,4 +338,49 @@ class WorksheetProvider(
     }
   }
 
+  private def calculateDigest(classpath: List[Path]): String = {
+    val digest = MessageDigest.getInstance("MD5")
+    classpath.foreach { path =>
+      digest.update(path.toString.getBytes(StandardCharsets.UTF_8))
+    }
+    MD5.bytesToHex(digest.digest())
+  }
+}
+
+object WorksheetProvider {
+
+  def worksheetScala3Adjustments(
+      originInput: Input.VirtualFile,
+      path: AbsolutePath
+  ): Option[(Input.VirtualFile, AdjustLspData)] = {
+    val ident = "  "
+    val withOuter = s"""|object worksheet{
+                        |$ident${originInput.value.replace("\n", "\n" + ident)}
+                        |}""".stripMargin
+    val modifiedInput =
+      originInput.copy(value = withOuter)
+    val adjustLspData = AdjustedLspData.create(
+      pos => {
+        new Position(pos.getLine() - 1, pos.getCharacter() - ident.size)
+      },
+      filterOutLocations = { loc => !loc.getUri().isWorksheet }
+    )
+    Some((modifiedInput, adjustLspData))
+  }
+
+  def worksheetScala3Adjustments(
+      originInput: Input.VirtualFile,
+      uri: String,
+      position: Position
+  ): Option[(Input.VirtualFile, Position, AdjustLspData)] = {
+    worksheetScala3Adjustments(originInput, uri.toAbsolutePath).map {
+      case (input, adjust) =>
+        val pos = new Position(
+          position.getLine() + 1,
+          position.getCharacter() + 2
+        )
+        (input, pos, adjust)
+
+    }
+  }
 }

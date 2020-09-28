@@ -1,13 +1,17 @@
 package tests.debug
 
-import tests.BaseDapSuite
 import scala.meta.internal.metals.debug.DebugWorkspaceLayout
 import scala.meta.internal.metals.debug.Scope
 import scala.meta.internal.metals.debug.StackFrameCollector
 import scala.meta.internal.metals.debug.Variable
 import scala.meta.internal.metals.debug.Variables
-import munit.Location
 
+import munit.Location
+import munit.TestOptions
+import tests.BaseDapSuite
+
+// note(@tgodzik) all test have `System.exit(0)` added to avoid occasional issue due to:
+// https://stackoverflow.com/questions/2225737/error-jdwp-unable-to-get-jni-1-2-environment
 class StackFrameDapSuite extends BaseDapSuite("debug-stack-frame") {
   assertStackFrame("foreach")(
     source = """|a/src/main/scala/Main.scala
@@ -16,6 +20,7 @@ class StackFrameDapSuite extends BaseDapSuite("debug-stack-frame") {
                 |    List(1, 2).foreach { value =>
                 |>>      println(value)
                 |    }
+                |    System.exit(0)
                 |  }
                 |}""".stripMargin,
     expectedFrames = List(
@@ -29,6 +34,7 @@ class StackFrameDapSuite extends BaseDapSuite("debug-stack-frame") {
                 |object Main {
                 |  def main(args: Array[String]): Unit = {
                 |>>  println()
+                |    System.exit(0)
                 |  }
                 |}
                 |""".stripMargin,
@@ -44,6 +50,7 @@ class StackFrameDapSuite extends BaseDapSuite("debug-stack-frame") {
                 |object Main {
                 |  def main(args: Array[String]): Unit = {
                 |    foo()
+                |    System.exit(0)
                 |  }
                 |
                 |  def foo(): Unit = {
@@ -84,6 +91,7 @@ class StackFrameDapSuite extends BaseDapSuite("debug-stack-frame") {
                 |      x <- List(1)
                 |>>    z = x + 2
                 |    } println(z)
+                |    System.exit(0)
                 |  }
                 |}
                 |""".stripMargin,
@@ -104,6 +112,7 @@ class StackFrameDapSuite extends BaseDapSuite("debug-stack-frame") {
                 |  def main(args: Array[String]): Unit = {
                 |    val foo = new Foo
                 |>>  println()
+                |    System.exit(0)
                 |  }
                 |}
                 |
@@ -128,6 +137,7 @@ class StackFrameDapSuite extends BaseDapSuite("debug-stack-frame") {
                 |  def main(args: Array[String]): Unit = {
                 |    val list = List(1, 2)
                 |>>  println()
+                |    System.exit(0)
                 |  }
                 |}
                 |
@@ -147,10 +157,10 @@ class StackFrameDapSuite extends BaseDapSuite("debug-stack-frame") {
   )
 
   def assertStackFrame(
-      name: String,
+      name: TestOptions,
       disabled: Boolean = false
-  )(source: String, expectedFrames: List[Variables])(
-      implicit loc: Location
+  )(source: String, expectedFrames: List[Variables])(implicit
+      loc: Location
   ): Unit = {
     if (disabled) return
 

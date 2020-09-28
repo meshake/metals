@@ -1,8 +1,9 @@
 package tests.pc
 
-import tests.BaseCompletionSuite
-import scala.meta.pc.PresentationCompilerConfig
 import scala.meta.internal.pc.PresentationCompilerConfigImpl
+import scala.meta.pc.PresentationCompilerConfig
+
+import tests.BaseCompletionSuite
 import tests.BuildInfoVersions
 
 class CompletionSnippetNegSuite extends BaseCompletionSuite {
@@ -34,7 +35,7 @@ class CompletionSnippetNegSuite extends BaseCompletionSuite {
   )
 
   checkSnippet(
-    "scope",
+    "scope".tag(IgnoreScalaVersion("0.27.0-RC1")),
     """
       |object Main {
       |  printl@@
@@ -45,7 +46,7 @@ class CompletionSnippetNegSuite extends BaseCompletionSuite {
        |println
        |""".stripMargin,
     compat = Map(
-      "0." -> "println"
+      "0.26" -> "println"
     )
   )
 

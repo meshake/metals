@@ -1,25 +1,27 @@
 package scala.meta.internal.metals
 
+import java.net.URI
+import java.nio.file.FileSystems
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
-import java.nio.file.Paths
 import java.util
 import java.util.jar.JarFile
 import java.util.logging.Level
 import java.util.logging.Logger
+
+import scala.util.Properties
+import scala.util.control.NonFatal
+
 import scala.meta.internal.io.PathIO
+import scala.meta.internal.jdk.CollectionConverters._
 import scala.meta.internal.mtags.ClasspathLoader
 import scala.meta.internal.mtags.MtagsEnrichments._
-import scala.meta.internal.jdk.CollectionConverters._
 import scala.meta.io.AbsolutePath
 import scala.meta.io.Classpath
-import scala.util.control.NonFatal
-import scala.util.Properties
-import java.nio.file.FileSystems
-import java.net.URI
 
 /**
  * An index to lookup classfiles contained in a given classpath.
@@ -92,9 +94,11 @@ class PackageIndex() {
       val entries = jar.entries()
       while (entries.hasMoreElements) {
         val element = entries.nextElement()
-        if (!element.isDirectory &&
+        if (
+          !element.isDirectory &&
           !element.getName.startsWith("META-INF") &&
-          element.getName.endsWith(".class")) {
+          element.getName.endsWith(".class")
+        ) {
           val pkg = PathIO.dirname(element.getName)
           val member = PathIO.basename(element.getName)
           addMember(pkg, member)
@@ -117,18 +121,17 @@ class PackageIndex() {
     }
   }
 
-  def visitBootClasspath(): Unit = {
+  def visitBootClasspath(isExcludedPackage: String => Boolean): Unit = {
     if (Properties.isJavaAtLeast("9")) {
-      expandJrtClasspath()
+      expandJrtClasspath(isExcludedPackage)
     } else {
       PackageIndex.bootClasspath.foreach(visit)
     }
   }
 
-  private def expandJrtClasspath(): Unit = {
+  private def expandJrtClasspath(isExcludedPackage: String => Boolean): Unit = {
     val fs = FileSystems.getFileSystem(URI.create("jrt:/"))
     val dir = fs.getPath("/packages")
-    val start = System.nanoTime()
     for {
       pkg <- Files.newDirectoryStream(dir).iterator().asScala
       symbol = pkg.toString.stripPrefix("/packages/").replace('.', '/') + "/"
@@ -148,7 +151,7 @@ class PackageIndex() {
           ): FileVisitResult = {
             activeDirectory =
               module.relativize(dir).iterator().asScala.mkString("", "/", "/")
-            if (CompressedPackageIndex.isExcludedPackage(activeDirectory)) {
+            if (isExcludedPackage(activeDirectory)) {
               FileVisitResult.SKIP_SUBTREE
             } else {
               FileVisitResult.CONTINUE
@@ -172,9 +175,12 @@ class PackageIndex() {
 }
 
 object PackageIndex {
-  def fromClasspath(classpath: collection.Seq[Path]): PackageIndex = {
+  def fromClasspath(
+      classpath: collection.Seq[Path],
+      isExcludedPackage: String => Boolean
+  ): PackageIndex = {
     val packages = new PackageIndex()
-    packages.visitBootClasspath()
+    packages.visitBootClasspath(isExcludedPackage)
     classpath.foreach { path => packages.visit(AbsolutePath(path)) }
     packages
   }

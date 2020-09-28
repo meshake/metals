@@ -2,11 +2,11 @@ package scala.meta.internal.builds
 
 import java.nio.file.Files
 import java.util.Properties
-import scala.meta.io.AbsolutePath
+
+import scala.meta.internal.io.PathIO
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.UserConfiguration
-import scala.meta.internal.io.PathIO
-import scala.concurrent.ExecutionContext
+import scala.meta.io.AbsolutePath
 
 /**
  * Detects what build tool is used in this workspace.
@@ -24,7 +24,7 @@ final class BuildTools(
     workspace: AbsolutePath,
     bspGlobalDirectories: List[AbsolutePath],
     userConfig: () => UserConfiguration
-)(implicit ec: ExecutionContext) {
+) {
   def isAutoConnectable: Boolean =
     isBloop || isBsp
   def isBloop: Boolean = {
@@ -65,8 +65,7 @@ final class BuildTools(
       SbtBuildTool(workspaceVersion = None, userConfig),
       GradleBuildTool(userConfig),
       MavenBuildTool(userConfig),
-      MillBuildTool(userConfig),
-      PantsBuildTool(userConfig)
+      MillBuildTool(userConfig)
     )
   }
 
@@ -81,16 +80,20 @@ final class BuildTools(
     if (isBazel) buf += "Bazel"
     buf.result()
   }
+
   def isEmpty: Boolean = {
     all.isEmpty
   }
-  def loadSupported(): Option[BuildTool] = {
-    if (isSbt) Some(SbtBuildTool(workspace, userConfig))
-    else if (isGradle) Some(GradleBuildTool(userConfig))
-    else if (isMaven) Some(MavenBuildTool(userConfig))
-    else if (isMill) Some(MillBuildTool(userConfig))
-    else if (isPants) Some(PantsBuildTool(userConfig))
-    else None
+
+  def loadSupported(): List[BuildTool] = {
+    val buf = List.newBuilder[BuildTool]
+
+    if (isSbt) buf += SbtBuildTool(workspace, userConfig)
+    if (isGradle) buf += GradleBuildTool(userConfig)
+    if (isMaven) buf += MavenBuildTool(userConfig)
+    if (isMill) buf += MillBuildTool(userConfig)
+
+    buf.result()
   }
 
   override def toString: String = {
@@ -98,12 +101,12 @@ final class BuildTools(
     if (names.isEmpty) "<no build tool>"
     else names
   }
+
   def isBuildRelated(workspace: AbsolutePath, path: AbsolutePath): Boolean = {
     if (isSbt) SbtBuildTool.isSbtRelatedPath(workspace, path)
     else if (isGradle) GradleBuildTool.isGradleRelatedPath(workspace, path)
     else if (isMaven) MavenBuildTool.isMavenRelatedPath(workspace, path)
     else if (isMill) MillBuildTool.isMillRelatedPath(workspace, path)
-    else if (isPants) PantsBuildTool.isPantsRelatedPath(workspace, path)
     else false
   }
 }
@@ -114,5 +117,5 @@ object BuildTools {
       workspace,
       Nil,
       () => UserConfiguration()
-    )(ExecutionContext.global)
+    )
 }

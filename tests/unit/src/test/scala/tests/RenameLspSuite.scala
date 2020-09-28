@@ -463,7 +463,18 @@ class RenameLspSuite extends BaseRenameLspSuite("rename") {
   )
 
   renamed(
-    "macro",
+    "macro1",
+    """|/a/src/main/scala/a/Main.scala
+       |package a
+       |import io.circe.generic.JsonCodec
+       |@JsonCodec
+       |final case class <<Ma@@in2>>(name: String)
+       |""".stripMargin,
+    "Tree"
+  )
+
+  renamed(
+    "macro2",
     """|/a/src/main/scala/a/Main.scala
        |package a
        |import io.circe.generic.JsonCodec
@@ -612,4 +623,9 @@ class RenameLspSuite extends BaseRenameLspSuite("rename") {
     newName = "Animal"
   )
 
+  override protected def libraryDependencies: List[String] =
+    List("org.scalatest::scalatest:3.0.5", "io.circe::circe-generic:0.12.0")
+
+  override protected def compilerPlugins: List[String] =
+    List("org.scalamacros:::paradise:2.1.1")
 }

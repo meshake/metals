@@ -1,8 +1,18 @@
 package bench
 
-import scala.meta.internal.jdk.CollectionConverters._
+import java.net.URI
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
+
+import scala.meta.internal.jdk.CollectionConverters._
+import scala.meta.internal.metals.ClasspathSearch
+import scala.meta.internal.metals.CompilerOffsetParams
+import scala.meta.internal.metals.ExcludedPackagesHandler
+import scala.meta.internal.pc.ScalaPresentationCompiler
+import scala.meta.io.AbsolutePath
+import scala.meta.pc.PresentationCompiler
+import scala.meta.pc.SymbolSearch
+
 import org.eclipse.lsp4j.CompletionList
 import org.openjdk.jmh.annotations.Benchmark
 import org.openjdk.jmh.annotations.BenchmarkMode
@@ -12,15 +22,8 @@ import org.openjdk.jmh.annotations.Param
 import org.openjdk.jmh.annotations.Scope
 import org.openjdk.jmh.annotations.Setup
 import org.openjdk.jmh.annotations.State
-import scala.meta.internal.metals.ClasspathSearch
-import scala.meta.internal.metals.CompilerOffsetParams
-import scala.meta.internal.pc.ScalaPresentationCompiler
-import scala.meta.io.AbsolutePath
-import scala.meta.pc.PresentationCompiler
-import scala.meta.pc.SymbolSearch
 import tests.Library
 import tests.TestingSymbolSearch
-import java.net.URI
 
 @State(Scope.Benchmark)
 abstract class CompletionBench {
@@ -111,7 +114,12 @@ abstract class CompletionBench {
 
   def newSearch(): SymbolSearch = {
     require(libraries.nonEmpty)
-    new TestingSymbolSearch(ClasspathSearch.fromClasspath(classpath))
+    new TestingSymbolSearch(
+      ClasspathSearch.fromClasspath(
+        classpath,
+        new ExcludedPackagesHandler().isExcludedPackage
+      )
+    )
   }
 
   def newPC(search: SymbolSearch = newSearch()): PresentationCompiler = {
@@ -123,13 +131,12 @@ abstract class CompletionBench {
   def scopeComplete(pc: PresentationCompiler): CompletionList = {
     val code = "import Java\n"
     pc.complete(
-        CompilerOffsetParams(
-          URI.create("file://A.scala"),
-          code,
-          code.length - 2
-        )
+      CompilerOffsetParams(
+        URI.create("file://A.scala"),
+        code,
+        code.length - 2
       )
-      .get()
+    ).get()
   }
 }
 

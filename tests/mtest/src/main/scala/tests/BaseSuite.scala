@@ -1,14 +1,18 @@
 package tests
 
 import scala.concurrent.duration.Duration
-import scala.meta.internal.semver.SemVer
 import scala.util.Properties
+
+import scala.meta.internal.semver.SemVer
+
 import munit.Flaky
 import munit.Tag
 
 class BaseSuite extends munit.FunSuite with Assertions {
 
-  /** Tests that are only flaky on Windows */
+  /**
+   * Tests that are only flaky on Windows
+   */
   val FlakyWindows = new Tag("FlakyWindows")
 
   def isJava8: Boolean =
@@ -21,7 +25,7 @@ class BaseSuite extends munit.FunSuite with Assertions {
     this.isJava8 || SemVer.isCompatibleVersion(
       BaseSuite.minScalaVersionForJDK9OrHigher,
       scalaVersion
-    )
+    ) || scalaVersion.startsWith("0.")
 
   override def munitTimeout: Duration = Duration("10min")
 
@@ -38,9 +42,6 @@ class BaseSuite extends munit.FunSuite with Assertions {
       ),
       munitFlakyTransform
     )
-
-  private def scalaBinary(scalaVersion: String): String =
-    scalaVersion.split("\\.").take(2).mkString(".")
 
   val compatProcess: Map[String, String => String] =
     Map.empty[String, String => String]
@@ -62,6 +63,10 @@ class BaseSuite extends munit.FunSuite with Assertions {
       .getOrElse(default)
 
     postProcess(result)
+  }
+  protected def toJsonArray(list: List[String]): String = {
+    if (list.isEmpty) "[]"
+    else s"[${list.mkString("\"", """", """", "\"")}]"
   }
 }
 

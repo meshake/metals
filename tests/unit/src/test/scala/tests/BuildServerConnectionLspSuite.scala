@@ -1,7 +1,7 @@
 package tests
 
-import scala.meta.internal.metals.ServerCommands
 import scala.meta.internal.metals.Messages
+import scala.meta.internal.metals.ServerCommands
 
 class BuildServerConnectionLspSuite
     extends BaseLspSuite("build-server-connection") {
@@ -23,7 +23,7 @@ class BuildServerConnectionLspSuite
       )
       _ <- server.didOpen("a/src/main/scala/a/A.scala")
       _ = assertNoDiagnostics()
-      _ = server.server.buildServer.get.cancel()
+      _ = server.server.bspSession.get.cancel()
       _ = assertNoDiagnostics()
       _ <- server.executeCommand(ServerCommands.ConnectBuildServer.id)
       _ <- server.didSave("a/src/main/scala/a/A.scala")(

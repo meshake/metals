@@ -1,8 +1,9 @@
 package tests
 
-import scala.meta.io.AbsolutePath
 import scala.meta.internal.metals.RecursivelyDelete
 import scala.meta.internal.metals.UserConfiguration
+import scala.meta.io.AbsolutePath
+
 import munit.Location
 
 trait BaseDigestSuite extends BaseSuite {
@@ -28,7 +29,7 @@ trait BaseDigestSuite extends BaseSuite {
       name: String,
       layout: String,
       altLayout: String,
-      isEqual: Boolean = true
+      isEqual: Boolean
   )(implicit loc: Location): Unit = {
     test(name) {
       val root = FileLayout.fromString(layout)

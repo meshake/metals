@@ -12,8 +12,57 @@ import java.nio.file.attribute.BasicFileAttributes
 import java.util
 import java.util.Collections
 import java.util.concurrent.ScheduledExecutorService
+
+import scala.collection.concurrent.TrieMap
+import scala.collection.mutable
+import scala.collection.mutable.ListBuffer
+import scala.concurrent.ExecutionContextExecutorService
+import scala.concurrent.Future
+import scala.concurrent.Promise
+import scala.util.Properties
+import scala.util.matching.Regex
+import scala.{meta => m}
+
+import scala.meta.Input
+import scala.meta.internal.implementation.Supermethods.GoToSuperMethodParams
+import scala.meta.internal.implementation.Supermethods.formatMethodSymbolForQuickPick
+import scala.meta.internal.io.FileIO
+import scala.meta.internal.io.PathIO
+import scala.meta.internal.metals.Buffers
+import scala.meta.internal.metals.ClientCommands
+import scala.meta.internal.metals.Debug
+import scala.meta.internal.metals.DebugSession
+import scala.meta.internal.metals.DebugUnresolvedMainClassParams
+import scala.meta.internal.metals.DidFocusResult
+import scala.meta.internal.metals.Directories
+import scala.meta.internal.metals.InitializationOptions
+import scala.meta.internal.metals.MetalsEnrichments._
+import scala.meta.internal.metals.MetalsLanguageServer
+import scala.meta.internal.metals.MetalsServerConfig
+import scala.meta.internal.metals.PositionSyntax._
+import scala.meta.internal.metals.ProgressTicks
+import scala.meta.internal.metals.ServerCommands
+import scala.meta.internal.metals.TextEdits
+import scala.meta.internal.metals.Time
+import scala.meta.internal.metals.Trees
+import scala.meta.internal.metals.UserConfiguration
+import scala.meta.internal.metals.WindowStateDidChangeParams
+import scala.meta.internal.metals.debug.Stoppage
+import scala.meta.internal.metals.debug.TestDebugger
+import scala.meta.internal.mtags.Semanticdbs
+import scala.meta.internal.semanticdb.Scala.Symbols
+import scala.meta.internal.semanticdb.Scala._
+import scala.meta.internal.tvp.TreeViewChildrenParams
+import scala.meta.internal.tvp.TreeViewProvider
+import scala.meta.internal.{semanticdb => s}
+import scala.meta.io.AbsolutePath
+import scala.meta.io.RelativePath
+
 import ch.epfl.scala.{bsp4j => b}
+import com.google.gson.JsonElement
 import org.eclipse.lsp4j.ClientCapabilities
+import org.eclipse.lsp4j.CodeActionContext
+import org.eclipse.lsp4j.CodeActionParams
 import org.eclipse.lsp4j.CodeLensParams
 import org.eclipse.lsp4j.CompletionList
 import org.eclipse.lsp4j.CompletionParams
@@ -24,6 +73,7 @@ import org.eclipse.lsp4j.DidOpenTextDocumentParams
 import org.eclipse.lsp4j.DidSaveTextDocumentParams
 import org.eclipse.lsp4j.DocumentFormattingParams
 import org.eclipse.lsp4j.DocumentOnTypeFormattingParams
+import org.eclipse.lsp4j.DocumentRangeFormattingParams
 import org.eclipse.lsp4j.DocumentSymbolParams
 import org.eclipse.lsp4j.ExecuteCommandParams
 import org.eclipse.lsp4j.FoldingRangeCapabilities
@@ -34,6 +84,8 @@ import org.eclipse.lsp4j.InitializedParams
 import org.eclipse.lsp4j.Location
 import org.eclipse.lsp4j.ReferenceContext
 import org.eclipse.lsp4j.ReferenceParams
+import org.eclipse.lsp4j.RenameFile
+import org.eclipse.lsp4j.RenameParams
 import org.eclipse.lsp4j.TextDocumentClientCapabilities
 import org.eclipse.lsp4j.TextDocumentContentChangeEvent
 import org.eclipse.lsp4j.TextDocumentIdentifier
@@ -42,56 +94,10 @@ import org.eclipse.lsp4j.TextDocumentPositionParams
 import org.eclipse.lsp4j.TextEdit
 import org.eclipse.lsp4j.VersionedTextDocumentIdentifier
 import org.eclipse.lsp4j.WorkspaceClientCapabilities
+import org.eclipse.lsp4j.WorkspaceEdit
 import org.eclipse.lsp4j.WorkspaceFolder
 import org.eclipse.{lsp4j => l}
 import tests.MetalsTestEnrichments._
-import scala.collection.concurrent.TrieMap
-import scala.collection.mutable
-import scala.collection.mutable.ListBuffer
-import scala.concurrent.ExecutionContextExecutorService
-import scala.concurrent.Future
-import scala.meta.Input
-import scala.meta.internal.io.FileIO
-import scala.meta.internal.io.PathIO
-import scala.meta.internal.metals.Buffers
-import scala.meta.internal.metals.Debug
-import scala.meta.internal.metals.DidFocusResult
-import scala.meta.internal.metals.WindowStateDidChangeParams
-import scala.meta.internal.metals.Directories
-import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.MetalsLanguageServer
-import scala.meta.internal.metals.PositionSyntax._
-import scala.meta.internal.metals.ProgressTicks
-import scala.meta.internal.metals.Time
-import scala.meta.internal.metals.UserConfiguration
-import scala.meta.internal.mtags.Semanticdbs
-import scala.meta.internal.semanticdb.Scala.Symbols
-import scala.meta.internal.semanticdb.Scala._
-import scala.meta.internal.{semanticdb => s}
-import scala.meta.internal.tvp.TreeViewChildrenParams
-import scala.meta.io.AbsolutePath
-import scala.meta.io.RelativePath
-import scala.{meta => m}
-import scala.meta.internal.tvp.TreeViewProvider
-import org.eclipse.lsp4j.DocumentRangeFormattingParams
-import scala.concurrent.Promise
-import scala.meta.internal.metals.ServerCommands
-import scala.meta.internal.metals.debug.TestDebugger
-import scala.meta.internal.metals.DebugSession
-import scala.util.matching.Regex
-import org.eclipse.lsp4j.RenameParams
-import scala.meta.internal.metals.TextEdits
-import org.eclipse.lsp4j.WorkspaceEdit
-import org.eclipse.lsp4j.RenameFile
-import scala.meta.internal.metals.debug.Stoppage
-import scala.util.Properties
-import org.eclipse.lsp4j.CodeActionParams
-import org.eclipse.lsp4j.CodeActionContext
-import scala.meta.internal.implementation.Supermethods.GoToSuperMethodParams
-import scala.meta.internal.implementation.Supermethods.formatMethodSymbolForQuickPick
-import scala.meta.internal.metals.ClientCommands
-import scala.meta.internal.metals.MetalsServerConfig
-import scala.meta.internal.metals.ClientExperimentalCapabilities
 
 /**
  * Wrapper around `MetalsLanguageServer` with helpers methods for testing purposes.
@@ -107,13 +113,13 @@ import scala.meta.internal.metals.ClientExperimentalCapabilities
  */
 final class TestingServer(
     workspace: AbsolutePath,
-    client: TestingClient,
+    val client: TestingClient,
     buffers: Buffers,
     config: MetalsServerConfig,
     bspGlobalDirectories: List[AbsolutePath],
     sh: ScheduledExecutorService,
     time: Time,
-    experimentalCapabilities: Option[ClientExperimentalCapabilities]
+    initializationOptions: Option[InitializationOptions]
 )(implicit ex: ExecutionContextExecutorService) {
   import scala.meta.internal.metals.JsonParser._
   val server = new MetalsLanguageServer(
@@ -168,25 +174,29 @@ final class TestingServer(
     for {
       sourceItem <- server.buildTargets.sourceItems.toSeq
       if sourceItem.exists
-      source <- if (sourceItem.isScalaOrJava)
-        Seq(sourceItem)
-      else FileIO.listAllFilesRecursively(sourceItem)
+      source <-
+        if (sourceItem.isScalaOrJava)
+          Seq(sourceItem)
+        else FileIO.listAllFilesRecursively(sourceItem)
     } yield source
   }
 
   def buildTargetSourceJars(buildTarget: String): Future[Seq[String]] = {
-    server.buildServer match {
-      case Some(build) =>
+    server.bspSession match {
+      case Some(session) =>
+        val main = session.mainConnection
         for {
-          workspaceBuildTargets <- build.workspaceBuildTargets()
-          ids = workspaceBuildTargets.getTargets
-            .map(_.getId)
-            .asScala
-            .filter(_.getUri().contains(s"?id=$buildTarget"))
-          dependencySources <- build
-            .buildTargetDependencySources(
-              new b.DependencySourcesParams(ids.asJava)
-            )
+          workspaceBuildTargets <- main.workspaceBuildTargets()
+          ids =
+            workspaceBuildTargets.getTargets
+              .map(_.getId)
+              .asScala
+              .filter(_.getUri().contains(s"?id=$buildTarget"))
+          dependencySources <-
+            main
+              .buildTargetDependencySources(
+                new b.DependencySourcesParams(ids.asJava)
+              )
         } yield {
           dependencySources
             .getItems()
@@ -275,7 +285,7 @@ final class TestingServer(
       base: Map[String, String]
   )(implicit loc: munit.Location): Future[Unit] = {
     for {
-      referenceLocations <- getReferenceLocations(filename, query, base)
+      referenceLocations <- getReferenceLocations(filename, query)
     } yield {
       Assertions.assertSimpleLocationOrdering(referenceLocations)
       val references =
@@ -291,8 +301,8 @@ final class TestingServer(
     }
   }
 
-  def assertReferenceDefinitionBijection()(
-      implicit loc: munit.Location
+  def assertReferenceDefinitionBijection()(implicit
+      loc: munit.Location
   ): Unit = {
     val compare = workspaceReferences()
     assert(compare.definition.nonEmpty)
@@ -331,7 +341,7 @@ final class TestingServer(
       source <- workspaceSources()
       input = source.toInputFromBuffers(buffers)
       identifier = source.toTextDocumentIdentifier
-      token <- input.tokenize.get
+      token <- Trees.defaultDialect(input).tokenize.get
       if token.isIdentifier
       params = token.toPositionParams(identifier)
       definition = server.definitionResult(params).asJava.get()
@@ -382,18 +392,37 @@ final class TestingServer(
     val workspaceCapabilities = new WorkspaceClientCapabilities()
     val textDocumentCapabilities = new TextDocumentClientCapabilities
     textDocumentCapabilities.setFoldingRange(new FoldingRangeCapabilities)
-    val experimental = experimentalCapabilities.getOrElse(
-      ClientExperimentalCapabilities.Default.copy(
-        debuggingProvider = true,
-        treeViewProvider = true,
-        slowTaskProvider = true
+    val initOptions = initializationOptions.getOrElse(
+      InitializationOptions.Default.copy(
+        debuggingProvider = Some(true),
+        treeViewProvider = Some(true),
+        slowTaskProvider = Some(true)
       )
     )
+
+    // Yes, this is a bit gross :/
+    // However, I want to only get the existing fields that are being set
+    // much like it'd be when a client actually sends this. This will just
+    // collect the fields that are set, get the values, and then make them into
+    // a map that will become a JsonObject to pass in as the InitializationOptions
+    val existingInitOptions =
+      initOptions.getClass.getDeclaredFields
+        .map { field =>
+          field.setAccessible(true)
+          field.getName -> field.get(initOptions)
+        }
+        .collect {
+          case (key, Some(value)) => key -> value
+        }
+        .toMap
+        .asJava
+
+    params.setInitializationOptions(existingInitOptions.toJson)
     params.setCapabilities(
       new ClientCapabilities(
         workspaceCapabilities,
         textDocumentCapabilities,
-        experimental.toJson
+        Map.empty.asJava.toJson
       )
     )
     params.setWorkspaceFolders(
@@ -414,7 +443,7 @@ final class TestingServer(
   }
 
   def assertBuildServerConnection(): Unit = {
-    require(server.buildServer.isDefined, "Build server did not initialize")
+    require(server.bspSession.isDefined, "Build server did not initialize")
   }
 
   def toPath(filename: String): AbsolutePath =
@@ -435,19 +464,50 @@ final class TestingServer(
       parameter: AnyRef,
       stoppageHandler: Stoppage.Handler = Stoppage.Handler.Continue
   ): Future[TestDebugger] = {
+
+    assertSystemExit(parameter)
     val targets = List(new b.BuildTargetIdentifier(buildTarget(target)))
     val params =
       new b.DebugSessionParams(targets.asJava, kind, parameter.toJson)
 
     executeCommand(ServerCommands.StartDebugAdapter.id, params).collect {
       case DebugSession(_, uri) =>
+        scribe.info(s"Starting debug session for $uri")
         TestDebugger(URI.create(uri), stoppageHandler)
     }
   }
 
+  // note(@tgodzik) all test should have `System.exit(0)` added to avoid occasional issue due to:
+  // https://stackoverflow.com/questions/2225737/error-jdwp-unable-to-get-jni-1-2-environment
+  private def assertSystemExit(parameter: AnyRef) = {
+    def check() = {
+      val workspaceFiles =
+        workspace.listRecursive.filter(_.isScalaOrJava).toList
+      val usesSystemExit =
+        workspaceFiles.exists(_.text.contains("System.exit(0)"))
+      if (!usesSystemExit)
+        throw new RuntimeException(
+          "All debug test for main classes should have `System.exit(0)`"
+        )
+    }
+
+    parameter match {
+      case _: b.ScalaMainClass =>
+        check()
+      case json: JsonElement =>
+        val mainParams = json.as[DebugUnresolvedMainClassParams]
+        val mainClass = mainParams.toOption
+          .flatMap(main => Option(main.mainClass))
+        if (mainClass.isDefined)
+          check()
+      case _ =>
+    }
+  }
+
   def startDebuggingUnresolved(
-      params: Object
+      params: AnyRef
   ): Future[TestDebugger] = {
+    assertSystemExit(params)
     executeCommand(ServerCommands.StartDebugAdapter.id, params).collect {
       case DebugSession(_, uri) =>
         TestDebugger(URI.create(uri), Stoppage.Handler.Continue)
@@ -493,6 +553,10 @@ final class TestingServer(
         )
       )
       .asScala
+  }
+
+  def analyzeStacktrace(stacktrace: String): Seq[l.CodeLens] = {
+    server.stacktraceAnalyzer.stacktraceLenses(stacktrace.split('\n').toList)
   }
 
   def didOpen(filename: String): Future[Unit] = {
@@ -558,8 +622,8 @@ final class TestingServer(
     } yield TextEdits.applyEdits(textContents(filename), textEdits)
   }
 
-  def assertFolded(filename: String, expected: String)(
-      implicit loc: munit.Location
+  def assertFolded(filename: String, expected: String)(implicit
+      loc: munit.Location
   ): Future[Unit] =
     for {
       folded <- foldingRange(filename)
@@ -571,10 +635,17 @@ final class TestingServer(
       query: String,
       expected: String,
       autoIndent: String,
+      replaceWith: String,
       root: AbsolutePath = workspace
   )(implicit loc: munit.Location): Future[Unit] = {
     for {
-      (text, params) <- onTypeParams(filename, query, root, autoIndent)
+      (text, params) <- onTypeParams(
+        filename,
+        query,
+        root,
+        autoIndent,
+        replaceWith
+      )
       multiline <- server.onTypeFormatting(params).asScala
       format = TextEdits.applyEdits(
         textContents(filename),
@@ -635,28 +706,30 @@ final class TestingServer(
     // or fails if it could nat be achieved withing [[maxRetries]] number of tries
     var retries = maxRetries
     val codeLenses = Promise[List[l.CodeLens]]()
-    val handler = { () =>
-      for {
-        lenses <- server.codeLens(params).asScala.map(_.asScala)
-      } {
-        if (lenses.nonEmpty) codeLenses.trySuccess(lenses.toList)
-        else if (retries > 0) {
-          retries -= 1
-          server.compilations.compileFiles(List(path))
-        } else {
-          val error = s"Could not fetch any code lenses in $maxRetries tries"
-          codeLenses.tryFailure(new NoSuchElementException(error))
+    val handler = { refreshCount: Int =>
+      if (refreshCount > 0)
+        for {
+          lenses <- server.codeLens(params).asScala.map(_.asScala)
+        } {
+          if (lenses.nonEmpty) codeLenses.trySuccess(lenses.toList)
+          else if (retries > 0) {
+            retries -= 1
+            server.compilations.compileFile(path)
+          } else {
+            val error = s"Could not fetch any code lenses in $maxRetries tries"
+            codeLenses.tryFailure(new NoSuchElementException(error))
+          }
         }
-      }
     }
 
     for {
-      _ <- server
-        .didFocus(uri)
-        .asScala // model is refreshed only for focused document
+      _ <-
+        server
+          .didFocus(uri)
+          .asScala // model is refreshed only for focused document
       _ = client.refreshModelHandler = handler
       // first compilation, to trigger the handler
-      _ <- server.compilations.compileFiles(List(path))
+      _ <- server.compilations.compileFile(path)
       lenses <- codeLenses.future
       textEdits = CodeLensesTextEdits(lenses)
     } yield TextEdits.applyEdits(textContents(filename), textEdits.toList)
@@ -669,6 +742,7 @@ final class TestingServer(
   ): String = {
     val items =
       completion.getItems.asScala
+        .sortBy(_.getLabel())
         .map(item => server.completionItemResolve(item).get())
     items.iterator
       .filter(item => filter(item.getLabel()))
@@ -768,22 +842,26 @@ final class TestingServer(
       filename: String,
       original: String,
       root: AbsolutePath,
-      autoIndent: String
+      autoIndent: String,
+      triggerChar: String
   ): Future[(String, DocumentOnTypeFormattingParams)] = {
     positionFromString(
       filename,
       original,
       root,
-      replaceWith = "\n" + autoIndent
+      replaceWith =
+        if (triggerChar == "\n") triggerChar + autoIndent else triggerChar
     ) {
       case (text, textId, start) =>
-        start.setLine(start.getLine() + 1) // + newline
-        start.setCharacter(autoIndent.size)
+        if (triggerChar == "\n") {
+          start.setLine(start.getLine() + 1) // + newline
+          start.setCharacter(autoIndent.size)
+        }
         val params = new DocumentOnTypeFormattingParams(
           textId,
           new FormattingOptions,
           start,
-          "\n"
+          triggerChar
         )
         (text, params)
     }
@@ -839,10 +917,11 @@ final class TestingServer(
       filename: String,
       query: String,
       expected: String,
+      kind: List[String],
       root: AbsolutePath = workspace
   )(implicit loc: munit.Location): Future[List[l.CodeAction]] =
     for {
-      (codeActions, codeActionString) <- codeAction(filename, query, root)
+      (codeActions, codeActionString) <- codeAction(filename, query, root, kind)
     } yield {
       Assertions.assertNoDiff(codeActionString, expected)
       codeActions
@@ -868,7 +947,8 @@ final class TestingServer(
   def codeAction(
       filename: String,
       query: String,
-      root: AbsolutePath
+      root: AbsolutePath,
+      kind: List[String]
   ): Future[(List[l.CodeAction], String)] =
     for {
       (_, params) <- codeActionParams(
@@ -876,7 +956,8 @@ final class TestingServer(
         query,
         root,
         new CodeActionContext(
-          client.diagnostics.getOrElse(toPath(filename), Nil).asJava
+          client.diagnostics.getOrElse(toPath(filename), Nil).asJava,
+          if (kind.nonEmpty) kind.asJava else null
         )
       )
       codeActions <- server.codeAction(params).asScala
@@ -946,11 +1027,12 @@ final class TestingServer(
       _ = renameParams.setNewName(newName)
       _ = renameParams.setPosition(params.getPosition())
       _ = renameParams.setTextDocument(params.getTextDocument())
-      renames <- if (prepare != null) {
-        server.rename(renameParams).asScala
-      } else {
-        Future.successful(new WorkspaceEdit)
-      }
+      renames <-
+        if (prepare != null) {
+          server.rename(renameParams).asScala
+        } else {
+          Future.successful(new WorkspaceEdit)
+        }
       // save current file to simulate user saving in the editor
       _ <- didSave(filename)(identity)
     } yield {
@@ -1029,8 +1111,7 @@ final class TestingServer(
 
   def getReferenceLocations(
       filename: String,
-      query: String,
-      base: Map[String, String]
+      query: String
   ): Future[List[Location]] = {
     for {
       (_, params) <- offsetParams(filename, query, workspace)
@@ -1118,7 +1199,7 @@ final class TestingServer(
     val identifier = path.toTextDocumentIdentifier
     val occurrences = ListBuffer.empty[s.SymbolOccurrence]
     var last = List[String]()
-    input.tokenize.get.foreach { token =>
+    Trees.defaultDialect(input).tokenize.get.foreach { token =>
       val params = token.toPositionParams(identifier)
       val definition = server
         .definitionOrReferences(params, definitionOnly = true)
@@ -1197,9 +1278,9 @@ final class TestingServer(
   }
 
   def buildTarget(displayName: String): String = {
-    server.buildTargets.all
-      .find(_.displayName == displayName)
-      .map(_.id.getUri())
+    server.buildTargets
+      .findByDisplayName(displayName)
+      .map(_.getId().getUri())
       .getOrElse {
         val alternatives =
           server.buildTargets.all.map(_.displayName).mkString(" ")
@@ -1226,7 +1307,7 @@ final class TestingServer(
       filename: String,
       linePattern: String,
       isIgnored: String => Boolean = _ => true
-  )(implicit loc: munit.Location): String = {
+  ): String = {
     val path = toPath(filename)
     val line = path.toInput.value.linesIterator.zipWithIndex
       .collectFirst {
@@ -1241,6 +1322,7 @@ final class TestingServer(
     val parents = (reveal.uriChain :+ null).map { uri =>
       server.treeView.children(TreeViewChildrenParams(reveal.viewId, uri))
     }
+
     val label = parents.iterator
       .flatMap { r =>
         r.nodes.iterator.map { n =>
@@ -1249,19 +1331,20 @@ final class TestingServer(
             case Some(value) => s" $value"
           }
           val label = n.label + icon
-          n.nodeUri -> label
+          n.nodeUri.toLowerCase -> label
         }
       }
       .toMap
       .updated("root", "root")
+
     val tree = parents
       .zip(reveal.uriChain :+ "root")
       .foldLeft(PrettyPrintTree.empty) {
         case (child, (parent, uri)) =>
           PrettyPrintTree(
-            label(uri),
+            label(uri.toLowerCase),
             parent.nodes
-              .map(n => PrettyPrintTree(label(n.nodeUri)))
+              .map(n => PrettyPrintTree(label(n.nodeUri.toLowerCase)))
               .filterNot(t => isIgnored(t.value))
               .toList :+ child
           )

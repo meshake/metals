@@ -1,11 +1,13 @@
 package tests
 
 import scala.collection.SortedSet
+
 import scala.meta.internal.tvp.TreeViewProvider
 
 class TreeViewLspSuite extends BaseLspSuite("tree-view") {
 
-  /** The libraries we expect to find for tests in this file.
+  /**
+   * The libraries we expect to find for tests in this file.
    *
    * @note this value changes depending on the JVM version in use as some JAR
    *       files have moved to become modules on JVM > 8.
@@ -30,10 +32,14 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
       "scala-library", "scala-reflect", "sourcecode_2.12"
     )
 
-    if (scala.util.Properties.isJavaAtLeast(9.toString)) {
-      otherLibraries
-    } else {
-      otherLibraries ++ jdk8Libraries
+    (
+      scala.util.Properties.isJavaAtLeast(9.toString),
+      scala.util.Properties.javaVmVendor
+    ) match {
+      case (true, _) => otherLibraries
+      case (false, "Oracle Corporation") =>
+        otherLibraries ++ jdk8Libraries + "jfr"
+      case _ => otherLibraries ++ jdk8Libraries
     }
   }
 
@@ -53,6 +59,10 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
                                |{
                                |  "a": {},
                                |  "b": {}
+                               |}
+                               |/a/src/main/scala/a/Zero.scala
+                               |class Zero {
+                               | val a = 1
                                |}
                                |/a/src/main/scala/a/First.scala
                                |package a
@@ -93,7 +103,19 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
       _ <- server.didOpen("b/src/main/scala/b/Third.scala")
       _ = server.assertTreeViewChildren(
         s"projects:${server.buildTarget("a")}",
-        "a/ +"
+        """|_empty_/ -
+           |a/ -
+           |""".stripMargin
+      )
+      _ = server.assertTreeViewChildren(
+        s"projects:${server.buildTarget("a")}!/_empty_/",
+        """|Zero class +
+           |""".stripMargin
+      )
+      _ = server.assertTreeViewChildren(
+        s"projects:${server.buildTarget("a")}!/_empty_/Zero#",
+        """|a val
+           |""".stripMargin
       )
       _ = server.assertTreeViewChildren(
         s"projects:${server.buildTarget("a")}!/a/",

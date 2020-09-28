@@ -1,24 +1,26 @@
 package scala.meta.internal.metals
 
-import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import java.net.URI
 import java.nio.charset.Charset
 import java.nio.file.Paths
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicReference
-import org.eclipse.lsp4j.DiagnosticSeverity
-import org.eclipse.lsp4j.PublishDiagnosticsParams
-import org.eclipse.{lsp4j => l}
+
 import scala.collection.concurrent.TrieMap
-import scala.concurrent.ExecutionContext
+
 import scala.meta.internal.io.FileIO
+import scala.meta.internal.metals.Messages._
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.mtags.Semanticdbs
 import scala.meta.internal.mtags.TextDocumentLookup
 import scala.meta.internal.semanticdb.TextDocument
 import scala.meta.internal.{semanticdb => s}
 import scala.meta.io.AbsolutePath
-import scala.meta.internal.metals.Messages._
+
+import ch.epfl.scala.bsp4j.BuildTargetIdentifier
+import org.eclipse.lsp4j.DiagnosticSeverity
+import org.eclipse.lsp4j.PublishDiagnosticsParams
+import org.eclipse.{lsp4j => l}
 
 /**
  * Produces SemanticDBs on-demand by using the presentation compiler.
@@ -38,8 +40,7 @@ final class InteractiveSemanticdbs(
     statusBar: StatusBar,
     compilers: () => Compilers,
     clientConfig: ClientConfiguration
-)(implicit ec: ExecutionContext)
-    extends Cancelable
+) extends Cancelable
     with Semanticdbs {
   private val activeDocument = new AtomicReference[Option[String]](None)
   private val textDocumentCache = Collections.synchronizedMap(
@@ -66,8 +67,10 @@ final class InteractiveSemanticdbs(
   }
 
   override def textDocument(source: AbsolutePath): TextDocumentLookup = {
-    if (!source.toLanguage.isScala ||
-      !source.isDependencySource(workspace)) {
+    if (
+      !source.toLanguage.isScala ||
+      !source.isDependencySource(workspace)
+    ) {
       TextDocumentLookup.NotFound(source)
     } else {
       val result =
@@ -76,7 +79,9 @@ final class InteractiveSemanticdbs(
     }
   }
 
-  /** Persist relationship between this dependency source and its enclosing build target */
+  /**
+   * Persist relationship between this dependency source and its enclosing build target
+   */
   def didDefinition(source: AbsolutePath, result: DefinitionResult): Unit = {
     for {
       destination <- result.definition
@@ -111,7 +116,7 @@ final class InteractiveSemanticdbs(
           new l.Diagnostic(range.toLSP, diag.message, severity, "scala")
         }
         if (diagnostics.nonEmpty) {
-          statusBar.addMessage(PartialNavigation)
+          statusBar.addMessage(partialNavigation(clientConfig.icons))
           client.publishDiagnostics(
             new PublishDiagnosticsParams(doc.uri, diagnostics.asJava)
           )

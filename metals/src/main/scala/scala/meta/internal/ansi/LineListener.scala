@@ -2,8 +2,9 @@ package scala.meta.internal.ansi
 
 import java.lang.StringBuilder
 import java.nio.ByteBuffer
-import java.nio.charset.StandardCharsets
 import java.nio.CharBuffer
+import java.nio.charset.StandardCharsets
+
 import scala.collection.mutable
 
 object LineListener {
@@ -19,16 +20,20 @@ object LineListener {
 class LineListener(onLine: String => Unit) {
 
   private var buffer = new StringBuilder()
-  private var stack = mutable.ListBuffer.empty[Char]
+  private val stack = mutable.ListBuffer.empty[Char]
   private var state = AnsiStateMachine.Start
 
-  /** Clear buffered output. */
+  /**
+   * Clear buffered output.
+   */
   def flush(): Unit = {
     onLine(buffer.toString())
     buffer = new StringBuilder()
   }
 
-  /** Clear buffered output, if there exists any. */
+  /**
+   * Clear buffered output, if there exists any.
+   */
   def flushIfNonEmpty(): Unit = {
     if (buffer.length() > 0) {
       flush()

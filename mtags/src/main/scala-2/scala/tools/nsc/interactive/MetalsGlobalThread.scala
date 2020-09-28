@@ -12,27 +12,30 @@ import scala.meta.internal.pc.InterruptException
 final class MetalsGlobalThread(var compiler: Global, name: String = "")
     extends Thread("Scala Presentation Compiler [" + name + "]") {
 
-  /** The presentation compiler loop.
+  /**
+   * The presentation compiler loop.
    */
   override def run(): Unit = {
     compiler.debugLog("starting new runner thread")
     while (compiler ne null) try {
       compiler.checkNoResponsesOutstanding()
-      compiler.log.logreplay("wait for more work", {
-        compiler.scheduler.waitForMoreWork(); true
-      })
+      compiler.log.logreplay(
+        "wait for more work", {
+          compiler.scheduler.waitForMoreWork(); true
+        }
+      )
       compiler.pollForWork(compiler.NoPosition)
       while (compiler.isOutOfDate) {
         try {
           compiler.backgroundCompile()
         } catch {
-          case ex: FreshRunReq =>
+          case _: FreshRunReq =>
             compiler.debugLog("fresh run req caught, starting new pass")
         }
         compiler.log.flush()
       }
     } catch {
-      case ex @ ShutdownReq =>
+      case ShutdownReq =>
         compiler.debugLog("exiting presentation compiler")
         compiler.log.close()
 
@@ -48,7 +51,7 @@ final class MetalsGlobalThread(var compiler: Global, name: String = "")
           case _: ThreadDeath =>
             compiler = null
           // - scalac deviation
-          case ex: FreshRunReq =>
+          case _: FreshRunReq =>
             compiler.debugLog(
               "fresh run req caught outside presentation compiler loop; ignored"
             ) // This shouldn't be reported

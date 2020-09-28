@@ -1,8 +1,8 @@
 package scala.meta.internal.metals
 
-import net.jpountz.xxhash.XXHashFactory
 import com.google.common.hash.BloomFilter
 import com.google.common.hash.Funnels
+import net.jpountz.xxhash.XXHashFactory
 
 /**
  * A wrapper around a bloom filter that is optimized for fast insertions of
@@ -28,7 +28,7 @@ import com.google.common.hash.Funnels
  * up search queries by allowing the client to pre-compute the hash of the
  * query string and re-use `mightContain` calls to multiple bloom filters. For
  * every single fuzzy symbol search (which happens on every single scope
- * completion request) we usually perform several thousant bloom filter
+ * completion request) we usually perform several thousand bloom filter
  * `mightContain` calls so should also help avoid a non-trivial amount of
  * unnecessary hashing.
  */
@@ -50,10 +50,14 @@ class StringBloomFilter(estimatedSize: Int) {
   // Chars are 16 bit so we need two bytes per character.
   private val buffer = new Array[Byte](2)
 
-  /** Resets the hash value. */
+  /**
+   * Resets the hash value.
+   */
   def reset(): Unit = streamingHash.reset()
 
-  /** Returns the current hash value. */
+  /**
+   * Returns the current hash value.
+   */
   def value(): Long = streamingHash.getValue()
 
   /**
@@ -82,12 +86,16 @@ class StringBloomFilter(estimatedSize: Int) {
     streamingHash.update(buffer, 0, 2)
   }
 
-  /** Insert a single string into the bloom filter. */
+  /**
+   * Insert a single string into the bloom filter.
+   */
   def putCharSequence(chars: CharSequence): Boolean = {
     bloom.put(computeHashCode(chars))
   }
 
-  /** Computes the hascode of a single string that can be later passed to `mightContain(Long)`. */
+  /**
+   * Computes the hascode of a single string that can be later passed to `mightContain(Long)`.
+   */
   def computeHashCode(chars: CharSequence): Long = {
     streamingHash.reset()
     var i = 0
@@ -99,7 +107,9 @@ class StringBloomFilter(estimatedSize: Int) {
     value()
   }
 
-  /** Returns true if the bloom filter contains the given string. */
+  /**
+   * Returns true if the bloom filter contains the given string.
+   */
   def mightContain(chars: CharSequence): Boolean = {
     bloom.mightContain(computeHashCode(chars))
   }

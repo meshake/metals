@@ -1,6 +1,5 @@
 package scala.meta.internal.metals
 
-import io.undertow.server.HttpServerExchange
 import java.nio.charset.Charset
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentLinkedDeque
@@ -8,16 +7,20 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+
+import scala.concurrent.CancellationException
+import scala.concurrent.ExecutionContext
+import scala.util.Try
+
+import scala.meta.internal.decorations.PublishDecorationsParams
+import scala.meta.internal.metals.MetalsEnrichments._
+import scala.meta.io.AbsolutePath
+
+import io.undertow.server.HttpServerExchange
 import org.eclipse.lsp4j.ExecuteCommandParams
 import org.eclipse.lsp4j.MessageActionItem
 import org.eclipse.lsp4j.MessageParams
 import org.eclipse.lsp4j.ShowMessageRequestParams
-import scala.concurrent.CancellationException
-import scala.concurrent.ExecutionContext
-import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.io.AbsolutePath
-import scala.util.Try
-import scala.meta.internal.decorations.PublishDecorationsParams
 
 /**
  * Editor client that implement dialogue UIs like window/showMessageRequest.
@@ -48,7 +51,7 @@ final class MetalsHttpClient(
     icons: Icons,
     time: Time,
     sh: ScheduledExecutorService,
-    config: MetalsServerConfig
+    clientConfig: ClientConfiguration
 )(implicit ec: ExecutionContext)
     extends DelegatingLanguageClient(initial) {
 
@@ -181,7 +184,11 @@ final class MetalsHttpClient(
 
   override def metalsPublishDecorations(
       params: PublishDecorationsParams
-  ): Unit = ()
+  ): Unit = {
+    if (clientConfig.isDecorationProvider) {
+      underlying.metalsPublishDecorations(params)
+    }
+  }
 
   // =======
   // Helpers

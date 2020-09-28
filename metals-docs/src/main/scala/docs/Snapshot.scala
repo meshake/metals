@@ -2,11 +2,14 @@ package docs
 
 import java.time._
 import java.time.format.DateTimeFormatter
-import org.jsoup.Jsoup
+
+import scala.util.Try
+import scala.util.control.NonFatal
+
 import scala.meta.internal.jdk.CollectionConverters._
 import scala.meta.internal.metals.BuildInfo
-import scala.util.control.NonFatal
-import scala.util.Try
+
+import org.jsoup.Jsoup
 
 case class Snapshot(version: String, lastModified: LocalDateTime) {
   def date: String = Snapshot.snapshotOutputFormatter.format(lastModified)
@@ -39,7 +42,9 @@ object Snapshot {
   private def current: Snapshot =
     Snapshot(BuildInfo.metalsVersion, LocalDateTime.now())
 
-  /** Returns the latest published snapshot release, or the current release if. */
+  /**
+   * Returns the latest published snapshot release, or the current release if.
+   */
   private def fetchLatest(repo: String): Snapshot = {
     val url =
       s"https://oss.sonatype.org/content/repositories/$repo/org/scalameta/metals_2.12/"

@@ -1,7 +1,9 @@
 package tests
 
 import java.util.Properties
+
 import scala.meta.internal.metals.UserConfiguration
+
 import munit.Location
 
 class UserConfigurationSuite extends BaseSuite {
@@ -71,6 +73,10 @@ class UserConfigurationSuite extends BaseSuite {
     assert(
       obtained.scalafmtConfigPath ==
         UserConfiguration.default.scalafmtConfigPath
+    )
+    assert(
+      obtained.scalafixConfigPath ==
+        UserConfiguration.default.scalafixConfigPath
     )
   }
 
@@ -167,49 +173,12 @@ class UserConfigurationSuite extends BaseSuite {
   )
 
   checkOK(
-    "pants-targets-string",
+    "strip-margin false",
     """
       |{
-      | "pants-targets": "a b"
+      | "enable-strip-margin-on-type-formatting": false
       |}
     """.stripMargin
-  ) { ok => assert(ok.pantsTargets == Some(List("a", "b"))) }
-
-  checkOK(
-    "pants-targets-string2",
-    """
-      |{
-      | "pants-targets": "a  b"
-      |}
-    """.stripMargin
-  ) { ok => assert(ok.pantsTargets == Some(List("a", "b"))) }
-
-  checkOK(
-    "pants-targets-list",
-    """
-      |{
-      | "pants-targets": ["a  b"]
-      |}
-    """.stripMargin
-  ) { ok => assert(ok.pantsTargets == Some(List("a", "b"))) }
-
-  checkOK(
-    "pants-targets-list2",
-    """
-      |{
-      | "pants-targets": ["a", "b"]
-      |}
-    """.stripMargin
-  ) { ok => assert(ok.pantsTargets == Some(List("a", "b"))) }
-
-  checkError(
-    "pants-error",
-    """
-      |{
-      | "pants-targets": 42
-      |}
-    """.stripMargin,
-    """Unexpected 'pants-targets' configuration. Expected a string or a list of strings. Obtained: 42"""
-  )
+  ) { ok => assert(ok.enableStripMarginOnTypeFormatting == false) }
 
 }

@@ -9,3 +9,7 @@ docs.CommandsModifiers
 docs.BootstrapModifier
 docs.RequirementsModifier
 docs.VersionedDocsModifier
+docs.AutomaticInstallationModifier
+docs.ParentLensesModifier
+docs.NewProjectModifier
+docs.WorksheetModifier

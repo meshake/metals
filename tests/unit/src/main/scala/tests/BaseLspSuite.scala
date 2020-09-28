@@ -2,21 +2,24 @@ package tests
 
 import java.nio.file.Files
 import java.util.concurrent.Executors
+
 import scala.concurrent.ExecutionContext
 import scala.concurrent.ExecutionContextExecutorService
+import scala.util.control.NonFatal
+
 import scala.meta.internal.io.PathIO
 import scala.meta.internal.metals.Buffers
-import scala.meta.internal.metals.ClientExperimentalCapabilities
 import scala.meta.internal.metals.ExecuteClientCommandConfig
 import scala.meta.internal.metals.Icons
+import scala.meta.internal.metals.InitializationOptions
 import scala.meta.internal.metals.MetalsLogger
 import scala.meta.internal.metals.MetalsServerConfig
 import scala.meta.internal.metals.RecursivelyDelete
+import scala.meta.internal.metals.SlowTaskConfig
 import scala.meta.internal.metals.Time
 import scala.meta.internal.metals.UserConfiguration
 import scala.meta.io.AbsolutePath
-import scala.meta.internal.metals.SlowTaskConfig
-import scala.util.control.NonFatal
+
 import munit.Ignore
 import munit.Location
 
@@ -38,8 +41,7 @@ abstract class BaseLspSuite(suiteName: String) extends BaseSuite {
   var client: TestingClient = _
   var workspace: AbsolutePath = _
 
-  protected def experimentalCapabilities
-      : Option[ClientExperimentalCapabilities] = None
+  protected def initializationOptions: Option[InitializationOptions] = None
 
   override def afterAll(): Unit = {
     if (server != null) {
@@ -52,7 +54,7 @@ abstract class BaseLspSuite(suiteName: String) extends BaseSuite {
   def assertConnectedToBuildServer(
       expectedName: String
   )(implicit loc: Location): Unit = {
-    val obtained = server.server.buildServer.get.name
+    val obtained = server.server.bspSession.get.mainConnection.name
     assertNoDiff(obtained, expectedName)
   }
 
@@ -73,7 +75,7 @@ abstract class BaseLspSuite(suiteName: String) extends BaseSuite {
       bspGlobalDirectories,
       sh,
       time,
-      experimentalCapabilities
+      initializationOptions
     )(ex)
     server.server.userConfig = this.userConfig
   }
@@ -101,8 +103,8 @@ abstract class BaseLspSuite(suiteName: String) extends BaseSuite {
     path
   }
 
-  def assertNoDiagnostics()(
-      implicit loc: Location
+  def assertNoDiagnostics()(implicit
+      loc: Location
   ): Unit = {
     assertNoDiff(client.workspaceDiagnostics, "")
   }

@@ -1,11 +1,13 @@
 package tests.codeactions
 
 import scala.meta.internal.metals.Messages.NewScalaFile
-import scala.meta.internal.metals.codeactions.ImportMissingSymbol
-import scala.meta.internal.metals.codeactions.CreateNewSymbol
-import munit.Location
-import org.eclipse.lsp4j.ShowMessageRequestParams
 import scala.meta.internal.metals.MetalsEnrichments._
+import scala.meta.internal.metals.codeactions.CreateNewSymbol
+import scala.meta.internal.metals.codeactions.ImportMissingSymbol
+
+import munit.Location
+import munit.TestOptions
+import org.eclipse.lsp4j.ShowMessageRequestParams
 
 class CreateNewSymbolLspSuite extends BaseCodeActionLspSuite("createNew") {
 
@@ -15,9 +17,15 @@ class CreateNewSymbolLspSuite extends BaseCodeActionLspSuite("createNew") {
        |
        |case class School(name: String, location: <<Location>>)
        |""".stripMargin,
-    s"""|${ImportMissingSymbol.title("Location", "scala.collection.script")}
+    s"""|${ImportMissingSymbol.title(
+      "Location",
+      "javax.tools.DocumentationTool"
+    )}
+        |${ImportMissingSymbol.title("Location", "javax.tools.JavaFileManager")}
+        |${ImportMissingSymbol.title("Location", "javax.xml.stream")}
+        |${ImportMissingSymbol.title("Location", "scala.collection.script")}
         |${CreateNewSymbol.title("Location")}""".stripMargin,
-    selectedActionIndex = 1,
+    selectedActionIndex = 4,
     pickedKind = "case-class",
     newFile =
       "a/src/main/scala/a/Location.scala" ->
@@ -33,9 +41,15 @@ class CreateNewSymbolLspSuite extends BaseCodeActionLspSuite("createNew") {
        |
        |case class School(name: String, location: <<Location>>)
        |""".stripMargin,
-    s"""|${ImportMissingSymbol.title("Location", "scala.collection.script")}
+    s"""|${ImportMissingSymbol.title(
+      "Location",
+      "javax.tools.DocumentationTool"
+    )}
+        |${ImportMissingSymbol.title("Location", "javax.tools.JavaFileManager")}
+        |${ImportMissingSymbol.title("Location", "javax.xml.stream")}
+        |${ImportMissingSymbol.title("Location", "scala.collection.script")}
         |${CreateNewSymbol.title("Location")}""".stripMargin,
-    selectedActionIndex = 1,
+    selectedActionIndex = 4,
     pickedKind = "trait",
     newFile =
       "a/src/main/scala/a/Location.scala" ->
@@ -53,11 +67,17 @@ class CreateNewSymbolLspSuite extends BaseCodeActionLspSuite("createNew") {
        |
        |<<case class School(name: Missing, location: Location)>>
        |""".stripMargin,
-    s"""|${ImportMissingSymbol.title("Location", "scala.collection.script")}
+    s"""|${ImportMissingSymbol.title(
+      "Location",
+      "javax.tools.DocumentationTool"
+    )}
+        |${ImportMissingSymbol.title("Location", "javax.tools.JavaFileManager")}
+        |${ImportMissingSymbol.title("Location", "javax.xml.stream")}
+        |${ImportMissingSymbol.title("Location", "scala.collection.script")}
         |${CreateNewSymbol.title("Missing")}
         |${CreateNewSymbol.title("Location")}
         |""".stripMargin,
-    selectedActionIndex = 1,
+    selectedActionIndex = 4,
     pickedKind = "class",
     newFile =
       "a/src/main/scala/a/Missing.scala" ->
@@ -73,7 +93,7 @@ class CreateNewSymbolLspSuite extends BaseCodeActionLspSuite("createNew") {
   private def indent = "  "
 
   def checkNewSymbol(
-      name: String,
+      name: TestOptions,
       input: String,
       expectedActions: String,
       pickedKind: String,
@@ -89,11 +109,12 @@ class CreateNewSymbolLspSuite extends BaseCodeActionLspSuite("createNew") {
                                   |{"a":{}}
                                   |/$path
                                   |${input
-                                    .replace("<<", "")
-                                    .replace(">>", "")}
+          .replace("<<", "")
+          .replace(">>", "")}
                                   |""".stripMargin)
         _ <- server.didOpen(path)
-        codeActions <- server.assertCodeAction(path, input, expectedActions)
+        codeActions <-
+          server.assertCodeAction(path, input, expectedActions, Nil)
         _ <- {
           if (selectedActionIndex >= codeActions.length) {
             fail(s"selectedActionIndex ($selectedActionIndex) is out of bounds")
@@ -114,7 +135,10 @@ class CreateNewSymbolLspSuite extends BaseCodeActionLspSuite("createNew") {
         _ = {
           val (path, content) = newFile
           val absolutePath = workspace.resolve(path)
-          assert(absolutePath.exists)
+          assert(
+            absolutePath.exists,
+            s"File $absolutePath should have been created"
+          )
           assertNoDiff(absolutePath.readText, content)
         }
       } yield ()

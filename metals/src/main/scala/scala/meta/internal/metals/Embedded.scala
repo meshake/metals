@@ -1,21 +1,25 @@
 package scala.meta.internal.metals
 
-import ch.epfl.scala.bsp4j.ScalaBuildTarget
-import ch.epfl.scala.bsp4j.ScalacOptionsItem
 import java.net.URLClassLoader
+import java.nio.file.Path
 import java.util.ServiceLoader
+
 import scala.collection.concurrent.TrieMap
+
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.pc.ScalaPresentationCompiler
+import scala.meta.internal.worksheets.MdocClassLoader
+import scala.meta.io.Classpath
 import scala.meta.pc.PresentationCompiler
+
+import ch.epfl.scala.bsp4j.ScalaBuildTarget
+import ch.epfl.scala.bsp4j.ScalacOptionsItem
 import coursierapi.Dependency
 import coursierapi.Fetch
 import coursierapi.MavenRepository
 import coursierapi.Repository
 import coursierapi.ResolutionParams
-import scala.meta.internal.worksheets.MdocClassLoader
 import mdoc.interfaces.Mdoc
-import java.nio.file.Path
 
 /**
  * Wrapper around software that is embedded with Metals.
@@ -108,7 +112,15 @@ object Embedded {
       scalaVersion: String,
       scalaBinaryVersion: String
   ): URLClassLoader = {
-    val jars = downloadMdoc(scalaVersion, scalaBinaryVersion)
+    val resolutionParams = ResolutionParams
+      .create()
+
+    /* note(@tgodzik) we add an exclusion so that the mdoc classlaoder does not try to
+     * load coursierapi.Logger and instead will use the already loaded one
+     */
+    resolutionParams.addExclusion("io.get-coursier", "interface")
+    val jars = downloadMdoc(scalaVersion, scalaBinaryVersion, resolutionParams)
+
     val parent = new MdocClassLoader(this.getClass.getClassLoader)
     val urls = jars.iterator.map(_.toUri().toURL()).toArray
     new URLClassLoader(urls, parent)
@@ -147,20 +159,22 @@ object Embedded {
     Dependency.of("ch.epfl.lamp", s"dotty-library_$binaryVersion", scalaVersion)
   }
 
-  private def mtagsDependency(scalaVersion: String): Dependency = Dependency.of(
-    "org.scalameta",
-    s"mtags_$scalaVersion",
-    BuildInfo.metalsVersion
-  )
+  private def mtagsDependency(scalaVersion: String): Dependency =
+    Dependency.of(
+      "org.scalameta",
+      s"mtags_$scalaVersion",
+      BuildInfo.metalsVersion
+    )
 
   private def mdocDependency(
       scalaVersion: String,
       scalaBinaryVersion: String
-  ): Dependency = Dependency.of(
-    "org.scalameta",
-    s"mdoc_${scalaBinaryVersion}",
-    BuildInfo.mdocVersion
-  )
+  ): Dependency =
+    Dependency.of(
+      "org.scalameta",
+      s"mdoc_${scalaBinaryVersion}",
+      BuildInfo.mdocVersion
+    )
 
   private def semanticdbScalacDependency(scalaVersion: String): Dependency =
     Dependency.of(
@@ -172,10 +186,12 @@ object Embedded {
   private def downloadDependency(
       dep: Dependency,
       scalaVersion: String,
-      classfiers: Seq[String] = Seq.empty
+      classfiers: Seq[String] = Seq.empty,
+      resolution: ResolutionParams = ResolutionParams.create()
   ): List[Path] =
     fetchSettings(dep, scalaVersion)
       .addClassifiers(classfiers: _*)
+      .withResolutionParams(resolution)
       .fetch()
       .asScala
       .toList
@@ -199,14 +215,26 @@ object Embedded {
     downloadDependency(semanticdbScalacDependency(scalaVersion), scalaVersion)
   def downloadMtags(scalaVersion: String): List[Path] =
     downloadDependency(mtagsDependency(scalaVersion), scalaVersion)
+
   def downloadMdoc(
       scalaVersion: String,
-      scalaBinaryVersion: String
+      scalaBinaryVersion: String,
+      resolutionParams: ResolutionParams = ResolutionParams.create()
   ): List[Path] =
     downloadDependency(
       mdocDependency(scalaVersion, scalaBinaryVersion),
-      scalaVersion
+      scalaVersion,
+      resolution = resolutionParams
     )
+
+  def organizeImportRule(scalaBinaryVersion: String): List[Path] = {
+    val dep = Dependency.of(
+      "com.github.liancheng",
+      s"organize-imports_$scalaBinaryVersion",
+      BuildInfo.organizeImportVersion
+    )
+    downloadDependency(dep, scalaBinaryVersion)
+  }
 
   def newPresentationCompilerClassLoader(
       info: ScalaBuildTarget,
@@ -226,6 +254,14 @@ object Embedded {
     val parent =
       new PresentationCompilerClassLoader(this.getClass.getClassLoader)
     new URLClassLoader(allURLs, parent)
+  }
+
+  def toClassLoader(
+      classpath: Classpath,
+      classLoader: ClassLoader
+  ): URLClassLoader = {
+    val urls = classpath.entries.map(_.toNIO.toUri.toURL).toArray
+    new URLClassLoader(urls, classLoader)
   }
 
 }

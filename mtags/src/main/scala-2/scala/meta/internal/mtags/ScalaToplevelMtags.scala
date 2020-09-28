@@ -3,13 +3,13 @@ package scala.meta.internal.mtags
 import scala.meta.dialects
 import scala.meta.inputs.Input
 import scala.meta.inputs.Position
-import scala.meta.internal.semanticdb.Language
-import scala.meta.internal.tokenizers.LegacyScanner
-import scala.meta.internal.semanticdb.SymbolInformation.Kind
-import scala.meta.internal.tokenizers.LegacyToken._
 import scala.meta.internal.inputs._
+import scala.meta.internal.semanticdb.Language
 import scala.meta.internal.semanticdb.Scala._
+import scala.meta.internal.semanticdb.SymbolInformation.Kind
 import scala.meta.internal.semanticdb.SymbolInformation.{Kind => k}
+import scala.meta.internal.tokenizers.LegacyScanner
+import scala.meta.internal.tokenizers.LegacyToken._
 import scala.meta.tokenizers.TokenizeException
 
 final class Identifier(val name: String, val pos: Position) {
@@ -113,7 +113,9 @@ class ScalaToplevelMtags(
     }
   }
 
-  /** Enters a toplevel symbol such as class, trait or object */
+  /**
+   * Enters a toplevel symbol such as class, trait or object
+   */
   def emitMember(isPackageObject: Boolean): Unit = {
     val kind = scanner.curr.token
     acceptTrivia()
@@ -136,14 +138,18 @@ class ScalaToplevelMtags(
     currentOwner = old
   }
 
-  /** Returns position of the current token */
+  /**
+   * Returns position of the current token
+   */
   def newPosition: Position = {
     val start = scanner.curr.offset
     val end = scanner.curr.endOffset + 1
     Position.Range(input, start, end)
   }
 
-  /** Returns a name and position for the current identifier token */
+  /**
+   * Returns a name and position for the current identifier token
+   */
   def newIdentifier: Identifier = {
     scanner.curr.token match {
       case IDENTIFIER | BACKQUOTED_IDENT => // OK
@@ -154,7 +160,9 @@ class ScalaToplevelMtags(
     new Identifier(name, pos)
   }
 
-  /** Consume token stream like "a.b.c" and return List(a, b, c) */
+  /**
+   * Consume token stream like "a.b.c" and return List(a, b, c)
+   */
   def parsePath(): List[Identifier] = {
     val buf = List.newBuilder[Identifier]
     def loop(): Unit = {
@@ -171,7 +179,9 @@ class ScalaToplevelMtags(
     buf.result()
   }
 
-  /** Consumes the token stream until the matching closing delimiter */
+  /**
+   * Consumes the token stream until the matching closing delimiter
+   */
   def acceptBalancedDelimeters(Open: Int, Close: Int): Unit = {
     require(scanner.curr.token == Open, "open delimeter { or (")
     var count = 1
@@ -210,14 +220,18 @@ class ScalaToplevelMtags(
     currentOwner = old
   }
 
-  /** Consumes the token stream until the next non-trivia token */
+  /**
+   * Consumes the token stream until the next non-trivia token
+   */
   def acceptTrivia(): Unit = {
     scanner.nextToken()
-    while (!isDone &&
+    while (
+      !isDone &&
       (scanner.curr.token match {
         case WHITESPACE | COMMENT => true
         case _ => false
-      })) {
+      })
+    ) {
       scanner.nextToken()
     }
   }

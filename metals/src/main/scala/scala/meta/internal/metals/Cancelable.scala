@@ -13,9 +13,10 @@ trait Cancelable {
 }
 
 object Cancelable {
-  def apply(fn: () => Unit): Cancelable = new Cancelable {
-    override def cancel(): Unit = fn()
-  }
+  def apply(fn: () => Unit): Cancelable =
+    new Cancelable {
+      override def cancel(): Unit = fn()
+    }
   val empty: Cancelable = Cancelable(() => ())
 
   def cancelEach[T](iterable: Iterable[T])(fn: T => Unit): Unit = {
@@ -23,7 +24,7 @@ object Cancelable {
   }
 
   def cancelAll(iterable: Iterable[Cancelable]): Unit = {
-    var errors = ListBuffer.empty[Throwable]
+    val errors = ListBuffer.empty[Throwable]
     iterable.foreach { cancelable =>
       try cancelable.cancel()
       catch { case ex if NonFatal(ex) => errors += ex }

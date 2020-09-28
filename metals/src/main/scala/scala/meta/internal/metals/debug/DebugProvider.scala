@@ -4,56 +4,59 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URI
-import java.{util => ju}
-import java.util.concurrent.TimeUnit
 import java.util.Collections.singletonList
+import java.util.concurrent.TimeUnit
+import java.{util => ju}
+
+import scala.concurrent.ExecutionContext
+import scala.concurrent.Future
+import scala.concurrent.Promise
+import scala.util.Failure
+import scala.util.Try
+
+import scala.meta.internal.metals.BuildServerConnection
+import scala.meta.internal.metals.BuildTargets
+import scala.meta.internal.metals.ClientCommands
+import scala.meta.internal.metals.Compilations
+import scala.meta.internal.metals.Compilers
+import scala.meta.internal.metals.DebugUnresolvedMainClassParams
+import scala.meta.internal.metals.DebugUnresolvedTestClassParams
+import scala.meta.internal.metals.DefinitionProvider
+import scala.meta.internal.metals.JsonParser
+import scala.meta.internal.metals.JsonParser._
+import scala.meta.internal.metals.Messages
+import scala.meta.internal.metals.Messages.UnresolvedDebugSessionParams
+import scala.meta.internal.metals.MetalsBuildClient
+import scala.meta.internal.metals.MetalsEnrichments._
+import scala.meta.internal.metals.MetalsLanguageClient
+import scala.meta.internal.metals.StatusBar
+import scala.meta.internal.mtags.OnDemandSymbolIndex
+
 import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import ch.epfl.scala.{bsp4j => b}
 import com.google.common.net.InetAddresses
 import com.google.gson.JsonElement
-import scala.meta.internal.metals.DefinitionProvider
-import scala.meta.internal.metals.BuildTargets
-import scala.meta.internal.metals.BuildTargetClasses
-import scala.meta.internal.metals.MetalsLanguageClient
-import ch.epfl.scala.{bsp4j => b}
-import scala.concurrent.Future
-import scala.concurrent.Promise
-import scala.concurrent.ExecutionContext
-import scala.meta.internal.metals.BuildServerConnection
-import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.DebugUnresolvedMainClassParams
-import scala.meta.internal.metals.DebugUnresolvedTestClassParams
-import scala.meta.internal.metals.BuildTargetClassesFinder
-import scala.meta.internal.metals.Compilations
-import scala.util.Try
-import scala.util.Failure
+import org.eclipse.lsp4j.ExecuteCommandParams
 import org.eclipse.lsp4j.MessageParams
 import org.eclipse.lsp4j.MessageType
-import scala.meta.internal.metals.JsonParser
-import scala.meta.internal.metals.JsonParser._
-import scala.meta.internal.metals.ClassNotFoundInBuildTargetException
-import scala.meta.internal.metals.Messages.UnresolvedDebugSessionParams
-import scala.meta.internal.metals.MetalsBuildClient
-import org.eclipse.lsp4j.ExecuteCommandParams
-import scala.meta.internal.metals.ClientCommands
-import scala.meta.internal.metals.StatusBar
-import scala.meta.internal.metals.BuildTargetNotFoundException
-import scala.meta.internal.metals.Messages
 
 class DebugProvider(
     definitionProvider: DefinitionProvider,
-    buildServer: => Option[BuildServerConnection],
+    buildServer: () => Option[BuildServerConnection],
     buildTargets: BuildTargets,
     buildTargetClasses: BuildTargetClasses,
     compilations: Compilations,
     languageClient: MetalsLanguageClient,
     buildClient: MetalsBuildClient,
-    statusBar: StatusBar
+    statusBar: StatusBar,
+    compilers: Compilers,
+    index: OnDemandSymbolIndex
 ) {
 
   lazy val buildTargetClassesFinder = new BuildTargetClassesFinder(
     buildTargets,
-    buildTargetClasses
+    buildTargetClasses,
+    index
   )
 
   def start(
@@ -63,22 +66,29 @@ class DebugProvider(
       val proxyServer = new ServerSocket(0)
       val host = InetAddresses.toUriString(proxyServer.getInetAddress)
       val port = proxyServer.getLocalPort
+      proxyServer.setSoTimeout(10 * 1000)
       val uri = URI.create(s"tcp://$host:$port")
       val connectedToServer = Promise[Unit]()
 
       val awaitClient =
-        () => Future(proxyServer.accept()).withTimeout(10, TimeUnit.SECONDS)
+        () => Future(proxyServer.accept())
 
+      val jvmOptionsTranslatedParams = translateJvmParams(parameters)
       // long timeout, since server might take a while to compile the project
       val connectToServer = () => {
-        buildServer
-          .map(_.startDebugSession(parameters))
+        buildServer()
+          .map(_.startDebugSession(jvmOptionsTranslatedParams))
           .getOrElse(BuildServerUnavailableError)
           .withTimeout(60, TimeUnit.SECONDS)
           .map { uri =>
             val socket = connect(uri)
             connectedToServer.trySuccess(())
             socket
+          }
+          .recover {
+            case exception =>
+              connectedToServer.tryFailure(exception)
+              throw exception
           }
       }
 
@@ -92,7 +102,13 @@ class DebugProvider(
           targets.toList
         )
         DebugProxy
-          .open(sessionName, sourcePathProvider, awaitClient, connectToServer)
+          .open(
+            sessionName,
+            sourcePathProvider,
+            awaitClient,
+            connectToServer,
+            compilers
+          )
       }
       val server = new DebugServer(sessionName, uri, proxyFactory)
 
@@ -112,8 +128,7 @@ class DebugProvider(
           Option(params.buildTarget)
         )
     ).flatMap {
-      case (clazz, target) :: others
-          if buildClient.buildHasErrors(target.getId()) =>
+      case (_, target) :: _ if buildClient.buildHasErrors(target.getId()) =>
         Future.failed(WorkspaceErrorsException)
       case (clazz, target) :: others =>
         if (others.nonEmpty) {
@@ -153,8 +168,7 @@ class DebugProvider(
           Option(params.buildTarget)
         )
     }).flatMap {
-      case (clazz, target) :: others
-          if buildClient.buildHasErrors(target.getId()) =>
+      case (_, target) :: _ if buildClient.buildHasErrors(target.getId()) =>
         Future.failed(WorkspaceErrorsException)
       case (clazz, target) :: others =>
         if (others.nonEmpty) {
@@ -181,7 +195,7 @@ class DebugProvider(
   }
 
   private val reportErrors: PartialFunction[Throwable, Unit] = {
-    case t if buildClient.buildHasErrors =>
+    case _ if buildClient.buildHasErrors =>
       statusBar.addMessage(Messages.DebugErrorsPresent)
       languageClient.metalsExecuteClientCommand(
         new ExecuteCommandParams(
@@ -193,12 +207,12 @@ class DebugProvider(
       languageClient.showMessage(
         Messages.DebugClassNotFound.invalidClass(t.getMessage())
       )
-    case t @ ClassNotFoundInBuildTargetException(cls, buildTarget) =>
+    case ClassNotFoundInBuildTargetException(cls, buildTarget) =>
       languageClient.showMessage(
         Messages.DebugClassNotFound
           .invalidTargetClass(cls, buildTarget.getDisplayName())
       )
-    case t @ BuildTargetNotFoundException(target) =>
+    case BuildTargetNotFoundException(target) =>
       languageClient.showMessage(
         Messages.DebugClassNotFound
           .invalidTarget(target)
@@ -223,6 +237,26 @@ class DebugProvider(
     }
   }
 
+  private def translateJvmParams(
+      parameters: b.DebugSessionParams
+  ): b.DebugSessionParams = {
+    parameters.getData match {
+      case json: JsonElement if parameters.getDataKind == "scala-main-class" =>
+        json.as[b.ScalaMainClass].foreach { main =>
+          val translated = main.getJvmOptions().asScala.map { param =>
+            if (!param.startsWith("-J"))
+              s"-J$param"
+            else
+              param
+          }
+          main.setJvmOptions(translated.asJava)
+          parameters.setData(main.toJsonObject)
+        }
+        parameters
+      case _ =>
+        parameters
+    }
+  }
   private def connect(uri: URI): Socket = {
     val socket = new Socket()
 

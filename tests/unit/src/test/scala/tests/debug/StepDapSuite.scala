@@ -1,12 +1,16 @@
 package tests.debug
 
-import tests.BaseDapSuite
 import scala.meta.internal.metals.debug.DebugStep._
 import scala.meta.internal.metals.debug.DebugWorkspaceLayout
 import scala.meta.internal.metals.debug.StepNavigator
-import munit.Location
 
+import munit.Location
+import tests.BaseDapSuite
+
+// note(@tgodzik) all test have `System.exit(0)` added to avoid occasional issue due to:
+// https://stackoverflow.com/questions/2225737/error-jdwp-unable-to-get-jni-1-2-environment
 class StepDapSuite extends BaseDapSuite("debug-step") {
+
   assertSteps("step-out")(
     sources = """|/a/src/main/scala/Main.scala
                  |package a
@@ -18,6 +22,7 @@ class StepDapSuite extends BaseDapSuite("debug-step") {
                  |
                  |  def main(args: Array[String]): Unit = {
                  |    foo()
+                 |    System.exit(0)
                  |  }
                  |}
                  |""".stripMargin,
@@ -25,7 +30,7 @@ class StepDapSuite extends BaseDapSuite("debug-step") {
     instrument = steps =>
       steps
         .at("a/src/main/scala/Main.scala", line = 5)(StepOut)
-        .at("a/src/main/scala/Main.scala", line = 9)(Continue)
+        .at("a/src/main/scala/Main.scala", line = 10)(Continue)
   )
 
   assertSteps("step-over")(
@@ -36,6 +41,7 @@ class StepDapSuite extends BaseDapSuite("debug-step") {
                  |  def main(args: Array[String]): Unit = {
                  |>>  println(1)
                  |    println(2)
+                 |    System.exit(0)
                  |  }
                  |}
                  |""".stripMargin,
@@ -53,6 +59,7 @@ class StepDapSuite extends BaseDapSuite("debug-step") {
                  |object ScalaMain {
                  |  def main(args: Array[String]): Unit = {
                  |>>  JavaClass.foo(7)
+                 |    System.exit(0)
                  |  }
                  |}
                  |
@@ -69,7 +76,7 @@ class StepDapSuite extends BaseDapSuite("debug-step") {
       steps
         .at("a/src/main/scala/a/ScalaMain.scala", line = 5)(StepIn)
         .at("a/src/main/java/a/JavaClass.java", line = 5)(StepOut)
-        .at("a/src/main/scala/a/ScalaMain.scala", line = 5)(Continue)
+        .at("a/src/main/scala/a/ScalaMain.scala", line = 6)(Continue)
   )
 
   assertSteps("step-into-scala-lib")(
@@ -79,6 +86,7 @@ class StepDapSuite extends BaseDapSuite("debug-step") {
                  |object Main {
                  |  def main(args: Array[String]): Unit = {
                  |>>  println("foo")
+                 |    System.exit(0)
                  |  }
                  |}
                  |""".stripMargin,
@@ -96,6 +104,7 @@ class StepDapSuite extends BaseDapSuite("debug-step") {
                  |object Main {
                  |  def main(args: Array[String]): Unit = {
                  |>>  System.out.println("foo")
+                 |    System.exit(0)
                  |  }
                  |}
                  |""".stripMargin,
@@ -119,6 +128,7 @@ class StepDapSuite extends BaseDapSuite("debug-step") {
                  |  def main(args: Array[String]): Unit = {
                  |    val foo = new Foo
                  |>>  foo.call()
+                 |    System.exit(0)
                  |  }
                  |}
                  |
@@ -132,7 +142,7 @@ class StepDapSuite extends BaseDapSuite("debug-step") {
     instrument = steps =>
       steps
         .at("a/src/main/scala/a/Main.scala", line = 6)(Continue)
-        .at("a/src/main/scala/a/Main.scala", line = 12)(Continue)
+        .at("a/src/main/scala/a/Main.scala", line = 13)(Continue)
   )
 
   def assertSteps(name: String)(

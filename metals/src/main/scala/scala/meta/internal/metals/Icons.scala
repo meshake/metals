@@ -7,14 +7,19 @@ abstract class Icons {
   def info: String
   def check: String
   def findsuper: String
-  final def all: List[String] = List(
-    rocket,
-    sync,
-    alert,
-    info,
-    check,
-    findsuper
-  )
+  def folder: String
+  def github: String
+  final def all: List[String] =
+    List(
+      rocket,
+      sync,
+      alert,
+      info,
+      check,
+      findsuper,
+      folder,
+      github
+    )
 }
 object Icons {
   def translate(from: Icons, to: Icons, message: String): String = {
@@ -23,14 +28,15 @@ object Icons {
         b + message.stripPrefix(a)
     }
   }.getOrElse(message)
-  def default: Icons = {
-    System.getProperty("metals.icons") match {
+  def default: Icons = none
+  def fromString(value: String): Icons =
+    value match {
       case "octicons" | "vscode" => vscode
       case "unicode" => unicode
       case "atom" => atom
       case _ => none
     }
-  }
+
   case object unicode extends Icons {
     override def rocket: String = "🚀 "
     override def sync: String = "🔄 "
@@ -38,6 +44,8 @@ object Icons {
     override def info: String = "ℹ️ "
     override def check: String = "✅ "
     override def findsuper: String = "⏫ "
+    override def folder: String = "📁 "
+    override def github: String = ""
   }
   case object none extends Icons {
     override def rocket: String = ""
@@ -46,6 +54,8 @@ object Icons {
     override def info: String = ""
     override def check: String = ""
     override def findsuper: String = ""
+    override def folder: String = ""
+    override def github: String = ""
   }
   // icons for vscode can be found here("Icons in Labels"):
   // https://code.visualstudio.com/api/references/icons-in-labels
@@ -56,6 +66,8 @@ object Icons {
     override def info: String = "$(info) "
     override def check: String = "$(check) "
     override def findsuper: String = "$(arrow-up)"
+    override def folder: String = "$(folder)"
+    override def github: String = "$(github) "
   }
   case object atom extends Icons {
     private def span(id: String) = s"<span class='icon icon-$id'></span> "
@@ -65,5 +77,7 @@ object Icons {
     override def info: String = span("info")
     override def check: String = span("check")
     override def findsuper: String = span("up-arrow")
+    override def folder: String = span("file-directory")
+    override def github: String = span("github")
   }
 }

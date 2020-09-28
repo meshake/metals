@@ -1,19 +1,13 @@
 package tests
 
-import bloop.config.{Config => C}
-import bloop.config.Tag
-import com.google.gson.Gson
-import com.google.gson.JsonObject
-import com.google.gson.JsonParser
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.security.MessageDigest
-import bloop.config.Config
-import coursierapi.Dependency
-import coursierapi.Fetch
-import coursierapi.Repository
+
+import scala.util.matching.Regex
+
 import scala.meta.internal.io.FileIO
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.ScalaVersions
@@ -22,7 +16,16 @@ import scala.meta.internal.metals.Timer
 import scala.meta.internal.metals.{BuildInfo => V}
 import scala.meta.internal.mtags.MD5
 import scala.meta.io.AbsolutePath
-import scala.util.matching.Regex
+
+import bloop.config.Config
+import bloop.config.Tag
+import bloop.config.{Config => C}
+import com.google.gson.Gson
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import coursierapi.Dependency
+import coursierapi.Fetch
+import coursierapi.Repository
 
 /**
  * A basic build tool for faster testing.
@@ -63,7 +66,9 @@ case class QuickBuild(
     compilerPlugins: Array[String],
     scalacOptions: Array[String],
     dependsOn: Array[String],
-    additionalSources: Array[String]
+    additionalSources: Array[String],
+    sbtVersion: String,
+    sbtAutoImports: Array[String]
 ) {
   def withId(id: String): QuickBuild =
     QuickBuild(
@@ -74,7 +79,9 @@ case class QuickBuild(
       orEmpty(compilerPlugins),
       orEmpty(scalacOptions),
       orEmpty(dependsOn),
-      orEmpty(additionalSources)
+      orEmpty(additionalSources),
+      sbtVersion,
+      orEmpty(sbtAutoImports)
     )
   private def orEmpty(array: Array[String]): Array[String] =
     if (array == null) new Array(0) else array
@@ -99,7 +106,7 @@ case class QuickBuild(
       s"src/main/scala-$binaryVersion",
       s"src/main/scala-$binaryVersion"
     ).map(relpath => baseDirectory.resolve(relpath))
-    val allDependencies =
+    val scalaDependencies =
       if (ScalaVersions.isScala3Version(scalaVersion)) {
         Array(
           s"org.scala-lang:scala-library:2.13.1",
@@ -110,7 +117,9 @@ case class QuickBuild(
           s"org.scala-lang:scala-library:$scalaVersion",
           s"org.scala-lang:scala-reflect:$scalaVersion"
         )
-      } ++ libraryDependencies
+      }
+
+    val allDependencies = scalaDependencies ++ libraryDependencies
     val allJars = classDirectory :: QuickBuild.fetch(
       allDependencies,
       scalaVersion,
@@ -195,6 +204,10 @@ case class QuickBuild(
         s"dotty-compiler_$binaryVersion"
       else s"scala-compiler"
 
+    val sbt = Option(sbtVersion).map { version =>
+      C.Sbt(version, sbtAutoImports.toList)
+    }
+
     C.Project(
       id,
       baseDirectory,
@@ -234,7 +247,7 @@ case class QuickBuild(
         )
       ),
       java = Some(C.Java(Nil)),
-      sbt = None,
+      sbt = sbt,
       test = testFrameworks,
       platform =
         Some(C.Platform.Jvm(C.JvmConfig(javaHome, Nil), None, None, None)),
@@ -260,16 +273,17 @@ object QuickBuild {
       module: String,
       scalaVersion: String,
       scalaBinaryVersion: String
-  ): Dependency = module match {
-    case Full(org, name, version) =>
-      Dependency.of(org, s"${name}_$scalaVersion", version)
-    case Half(org, name, version) =>
-      Dependency.of(org, s"${name}_$scalaBinaryVersion", version)
-    case Java(org, name, version) =>
-      Dependency.of(org, name, version)
-    case _ =>
-      throw new IllegalArgumentException(module)
-  }
+  ): Dependency =
+    module match {
+      case Full(org, name, version) =>
+        Dependency.of(org, s"${name}_$scalaVersion", version)
+      case Half(org, name, version) =>
+        Dependency.of(org, s"${name}_$scalaBinaryVersion", version)
+      case Java(org, name, version) =>
+        Dependency.of(org, name, version)
+      case _ =>
+        throw new IllegalArgumentException(module)
+    }
   def fetch(
       dependencies: Array[String],
       scalaVersion: String,

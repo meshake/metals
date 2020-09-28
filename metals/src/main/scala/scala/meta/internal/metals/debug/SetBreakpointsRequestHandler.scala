@@ -1,60 +1,74 @@
 package scala.meta.internal.metals.debug
-import org.eclipse.lsp4j.debug.SetBreakpointsArguments
-import org.eclipse.lsp4j.debug.SetBreakpointsResponse
-import org.eclipse.lsp4j.debug.Source
-import org.eclipse.lsp4j.debug.SourceBreakpoint
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
+
+import scala.meta.internal.metals.Compilers
 import scala.meta.internal.metals.JvmSignatures
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.mtags.Mtags
 import scala.meta.internal.semanticdb.Language
-import scala.meta.internal.semanticdb.SymbolInformation
 import scala.meta.internal.semanticdb.SymbolOccurrence
+
+import org.eclipse.lsp4j.Position
+import org.eclipse.lsp4j.debug.SetBreakpointsArguments
+import org.eclipse.lsp4j.debug.SetBreakpointsResponse
+import org.eclipse.lsp4j.debug.Source
+import org.eclipse.lsp4j.debug.SourceBreakpoint
 
 private[debug] final class SetBreakpointsRequestHandler(
     server: ServerAdapter,
-    adapters: MetalsDebugAdapters
+    adapters: MetalsDebugAdapters,
+    compilers: Compilers
 )(implicit ec: ExecutionContext) {
 
-  // TODO: https://github.com/scalameta/metals/issues/1195
+  @volatile private var previousBreakpointUris = Set.empty[String]
+
   def apply(
       request: SetBreakpointsArguments
   ): Future[SetBreakpointsResponse] = {
     val path =
       adapters.adaptPathForServer(request.getSource.getPath).toAbsolutePath
 
-    val topLevels = Mtags.allToplevels(path.toInput)
-    val occurrences = path.toLanguage match {
+    val originalSource = DebugProtocol.copy(request.getSource)
+
+    val breakPointSymbols = path.toLanguage match {
       case Language.JAVA =>
-        def isTypeSymbol(symbol: SymbolInformation): Boolean = {
-          val kind = symbol.kind
-          kind.isClass || kind.isInterface // enum is of `class` kind
+        val topLevels = Mtags.allToplevels(path.toInput)
+        request.getBreakpoints.map { breakpoint =>
+          val symbol = topLevels.occurrences.minBy(distanceFrom(breakpoint))
+          Future.successful(
+            (breakpoint, Option(JvmSignatures.toTypeSignature(symbol).value))
+          )
         }
-
-        // make sure only type symbols are under consideration,
-        // as static methods are also included in top-levels
-        val isType = topLevels.symbols.filter(isTypeSymbol).map(_.symbol).toSet
-        topLevels.occurrences.filter(occ => isType(occ.symbol))
       case _ =>
-        topLevels.occurrences
+        request.getBreakpoints.map { breakpoint =>
+          val pos = new Position(breakpoint.getLine(), breakpoint.getColumn())
+          compilers.enclosingClass(pos, path).map(sym => (breakpoint, sym))
+        }
     }
 
-    val groups = request.getBreakpoints.groupBy { breakpoint =>
-      val definition = occurrences.minBy(distanceFrom(breakpoint))
-      JvmSignatures.toTypeSignature(definition)
-    }
+    Future.sequence(breakPointSymbols.toList).flatMap { symbols =>
+      val groups = symbols.groupBy(_._2)
+      val partitions = groups.flatMap {
+        case (Some(fqcn), breakpoints) =>
+          Some(createPartition(request, fqcn, breakpoints.map(_._1).toArray))
+        case _ => None
+      }
 
-    val partitions = groups.map {
-      case (fqcn, breakpoints) =>
-        createPartition(request, fqcn.value, breakpoints)
-    }
+      val allUris = partitions.map(_.getSource().getPath()).toSet
+      val removed = previousBreakpointUris.diff(allUris)
+      previousBreakpointUris = allUris
 
-    server
-      .sendPartitioned(partitions.map(DebugProtocol.syntheticRequest))
-      .map(_.map(DebugProtocol.parseResponse[SetBreakpointsResponse]))
-      .map(_.flatMap(_.toList))
-      .map(assembleResponse(_, request.getSource))
+      val requests = partitions ++ removed.map { uri =>
+        createEmptyPartition(request, uri)
+      }
+
+      server
+        .sendPartitioned(requests.map(DebugProtocol.syntheticRequest))
+        .map(_.map(DebugProtocol.parseResponse[SetBreakpointsResponse]))
+        .map(_.flatMap(_.toList))
+        .map(assembleResponse(_, originalSource))
+    }
   }
 
   private def assembleResponse(
@@ -72,6 +86,21 @@ private[debug] final class SetBreakpointsRequestHandler(
     val response = new SetBreakpointsResponse
     response.setBreakpoints(breakpoints.toArray)
     response
+  }
+
+  private def createEmptyPartition(
+      request: SetBreakpointsArguments,
+      uri: String
+  ) = {
+    val source = DebugProtocol.copy(request.getSource)
+    source.setPath(uri)
+
+    val partition = new SetBreakpointsArguments
+    partition.setBreakpoints(Array.empty)
+    partition.setSource(source)
+    partition.setLines(Array.empty)
+    partition.setSourceModified(request.getSourceModified)
+    partition
   }
 
   private def createPartition(

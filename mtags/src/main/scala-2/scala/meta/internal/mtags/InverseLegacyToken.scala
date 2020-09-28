@@ -2,14 +2,18 @@ package scala.meta.internal.mtags
 
 import scala.meta.internal.tokenizers.LegacyToken._
 
-/** Utility to print helpful messages for parse errors. */
+/**
+ * Utility to print helpful messages for parse errors.
+ */
 object InverseLegacyToken {
   val category: Map[Int, String] = Map[Int, String](
     EMPTY -> "EMPTY",
     UNDEF -> "UNDEF",
     ERROR -> "ERROR",
     EOF -> "EOF",
-    /** literals */
+    /**
+     * literals
+     */
     CHARLIT -> "CHARLIT",
     INTLIT -> "INTLIT",
     LONGLIT -> "LONGLIT",
@@ -21,17 +25,23 @@ object InverseLegacyToken {
     INTERPOLATIONID -> "INTERPOLATIONID",
     XMLLIT -> "XMLLIT",
     XMLLITEND -> "XMLLITEND",
-    /** identifiers */
+    /**
+     * identifiers
+     */
     IDENTIFIER -> "IDENTIFIER",
     BACKQUOTED_IDENT -> "BACKQUOTED_IDENT",
-    /** keywords */
+    /**
+     * keywords
+     */
     NEW -> "NEW",
     THIS -> "THIS",
     SUPER -> "SUPER",
     NULL -> "NULL",
     TRUE -> "TRUE",
     FALSE -> "FALSE",
-    /** modifiers */
+    /**
+     * modifiers
+     */
     IMPLICIT -> "IMPLICIT",
     OVERRIDE -> "OVERRIDE",
     PROTECTED -> "PROTECTED",
@@ -41,7 +51,9 @@ object InverseLegacyToken {
     SEALED -> "SEALED",
     LAZY -> "LAZY",
     MACRO -> "MACRO",
-    /** templates */
+    /**
+     * templates
+     */
     PACKAGE -> "PACKAGE",
     IMPORT -> "IMPORT",
     CLASS -> "CLASS",
@@ -57,7 +69,9 @@ object InverseLegacyToken {
     VAL -> "VAL",
     VAR -> "VAR",
     ENUM -> "ENUM",
-    /** control structures */
+    /**
+     * control structures
+     */
     IF -> "IF",
     THEN -> "THEN",
     ELSE -> "ELSE",
@@ -72,21 +86,27 @@ object InverseLegacyToken {
     CASE -> "CASE",
     RETURN -> "RETURN",
     MATCH -> "MATCH",
-    /** parenthesis */
+    /**
+     * parenthesis
+     */
     LPAREN -> "LPAREN",
     RPAREN -> "RPAREN",
     LBRACKET -> "LBRACKET",
     RBRACKET -> "RBRACKET",
     LBRACE -> "LBRACE",
     RBRACE -> "RBRACE",
-    /** special symbols */
+    /**
+     * special symbols
+     */
     COMMA -> "COMMA",
     SEMI -> "SEMI",
     DOT -> "DOT",
     COLON -> "COLON",
     EQUALS -> "EQUALS",
     AT -> "AT",
-    /** special symbols */
+    /**
+     * special symbols
+     */
     HASH -> "HASH",
     USCORE -> "USCORE",
     ARROW -> "ARROW",

@@ -1,22 +1,29 @@
 package tests.sbt
 
-import com.google.gson.JsonObject
-import com.google.gson.JsonPrimitive
 import java.util.concurrent.TimeUnit
-import tests.BaseImportSuite
+
 import scala.concurrent.Future
+
 import scala.meta.internal.builds.SbtBuildTool
 import scala.meta.internal.builds.SbtDigest
 import scala.meta.internal.metals.ClientCommands
 import scala.meta.internal.metals.Messages._
+import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.MetalsSlowTaskResult
 import scala.meta.internal.metals.ServerCommands
+import scala.meta.internal.metals.UserConfiguration
 import scala.meta.internal.metals.{BuildInfo => V}
 import scala.meta.io.AbsolutePath
 
-class SbtLspSuite extends BaseImportSuite("sbt-import") {
+import com.google.gson.JsonObject
+import com.google.gson.JsonPrimitive
+import tests.BaseImportSuite
+import tests.ScriptsAssertions
+
+class SbtLspSuite extends BaseImportSuite("sbt-import") with ScriptsAssertions {
 
   val sbtVersion = V.sbtVersion
+  val scalaVersion = V.scala212
   val buildTool: SbtBuildTool = SbtBuildTool(None, () => userConfig)
 
   override def currentDigest(
@@ -74,6 +81,8 @@ class SbtLspSuite extends BaseImportSuite("sbt-import") {
             |""".stripMargin
       )
       _ = assertStatus(_.isInstalled)
+      projectVersion = workspace.resolve("project/build.properties").readText
+      _ = assertNoDiff(projectVersion, s"sbt.version=${V.sbtVersion}")
     } yield ()
   }
 
@@ -128,11 +137,12 @@ class SbtLspSuite extends BaseImportSuite("sbt-import") {
            |libraryDependencies += "com.lihaoyi" %% "sourcecode" % "0.1.4"
            |""".stripMargin
       }
-      _ <- server
-        .didSave("src/main/scala/reload/Main.scala") { text =>
-          text.replaceAll("\"", "")
-        }
-        .recover { case e => scribe.error("compile", e) }
+      _ <-
+        server
+          .didSave("src/main/scala/reload/Main.scala") { text =>
+            text.replaceAll("\"", "")
+          }
+          .recover { case e => scribe.error("compile", e) }
       _ = assertNoDiff(client.workspaceDiagnostics, "")
     } yield ()
   }
@@ -411,5 +421,171 @@ class SbtLspSuite extends BaseImportSuite("sbt-import") {
           .getMessage
       )
     } yield ()
+  }
+
+  test("min-sbt-version") {
+    val minimal =
+      SbtBuildTool(None, () => UserConfiguration.default).minimumVersion
+    cleanWorkspace()
+    for {
+      _ <- server.initialize(
+        s"""|/project/build.properties
+            |sbt.version=$minimal
+            |""".stripMargin
+      )
+      _ = assertStatus(_.isInstalled)
+    } yield ()
+  }
+
+  test("definition-deps") {
+    cleanWorkspace()
+    for {
+      _ <- server.initialize(
+        s"""|/project/build.properties
+            |sbt.version=${V.sbtVersion}
+            |
+            |/build.sbt
+            |scalaVersion := "$scalaVersion"
+         """.stripMargin
+      )
+      _ <- assertDefinitionAtLocation(
+        "build.sbt",
+        "sc@@alaVersion := \"2.12.11\"",
+        ".metals/readonly/sbt/Keys.scala",
+        expectedLine = 170
+      )
+    } yield ()
+  }
+
+  test("definition-meta") {
+    cleanWorkspace()
+    for {
+      _ <- server.initialize(
+        s"""|/project/plugins.sbt
+            |addSbtPlugin("ch.epfl.scala" % "sbt-scalafix" % "0.9.20")
+            |
+            |/build.sbt
+            |scalaVersion := "$scalaVersion"
+         """.stripMargin
+      )
+      _ <- assertDefinitionAtLocation(
+        "project/plugins.sbt",
+        "addSbt@@Plugin(\"ch.epfl.scala\" % \"sbt-scalafix\" % \"0.9.19\")",
+        ".metals/readonly/sbt/Defaults.scala"
+      )
+    } yield ()
+  }
+
+  test("definition-local") {
+    cleanWorkspace()
+    for {
+      _ <- server.initialize(
+        s"""
+           |/build.sbt
+           |scalaVersion := "$scalaVersion"
+           |val hello = "Hello"
+           |
+           |
+           |val bye = hello
+         """.stripMargin
+      )
+      _ <- assertDefinitionAtLocation(
+        "build.sbt",
+        "val bye = hel@@lo",
+        "build.sbt",
+        1
+      )
+    } yield ()
+  }
+
+  test("sbt-file-hover") {
+    cleanWorkspace()
+    for {
+      _ <- server.initialize(
+        s"""|/build.sbt
+            |scalaVersion := "$scalaVersion"
+         """.stripMargin
+      )
+      hoverRes <- assertHoverAtPos("build.sbt", 0, 2)
+      expectedHoverRes = """```scala
+                           |val scalaVersion: SettingKey[String]
+                           |```
+                           |```range
+                           |scalaVersion
+                           |```""".stripMargin
+      _ = assertNoDiff(hoverRes, expectedHoverRes)
+    } yield ()
+
+  }
+
+  test("scala-file-hover") {
+    cleanWorkspace()
+    for {
+      _ <- server.initialize(
+        s"""|/build.sbt
+            |scalaVersion := "$scalaVersion"
+            |/project/Deps.scala
+            |import sbt._
+            |import Keys._
+            |object Deps {
+            |  val scalatest = "org.scalatest" %% "scalatest" % "3.0.5"
+            |}
+         """.stripMargin
+      )
+      hoverRes <- assertHoverAtPos("project/Deps.scala", 3, 9)
+      expectedHoverRes =
+        """|```scala
+           |val scalatest: ModuleID
+           |```
+           |```range
+           |val scalatest = "org.scalatest" %% "scalatest" % "3.0.5"
+           |```
+           |""".stripMargin
+      _ = assertNoDiff(hoverRes, expectedHoverRes)
+    } yield ()
+
+  }
+
+  test("sbt-file-autocomplete") {
+    cleanWorkspace()
+    for {
+      _ <- server.initialize(
+        s"""|/build.sbt
+            |scalaVersion := "$scalaVersion"
+            |libraryDependencies ++= Seq()
+         """.stripMargin
+      )
+      completionList <- server.completion("build.sbt", "libraryDependencies@@")
+      expectedCompletionList = "libraryDependencies: SettingKey[Seq[ModuleID]]"
+      _ = assertNoDiff(completionList, expectedCompletionList)
+    } yield ()
+
+  }
+
+  test("sbt-meta-scala-source-basics") {
+    cleanWorkspace()
+    for {
+      _ <- server.initialize(
+        s"""|/build.sbt
+            |scalaVersion := MetaValues.scalaVersion
+            |/project/MetaValues.scala
+            |import scala.util.Success
+            |object MetaValues {
+            |  val scalaVersion = "$scalaVersion"
+            |}
+         """.stripMargin
+      )
+      _ <- server.didOpen("project/MetaValues.scala")
+      _ = assertNoDiff(
+        server.workspaceDefinitions,
+        """|/project/MetaValues.scala
+           |import scala.util.Success/*Try.scala*/
+           |object MetaValues/*L1*/ {
+           |  val scalaVersion/*L2*/ = "2.12.12"
+           |}
+           |""".stripMargin
+      )
+    } yield ()
+
   }
 }

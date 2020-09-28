@@ -1,12 +1,14 @@
 package scala.meta.internal.pc.completions
 
+import scala.collection.immutable.Nil
+import scala.collection.mutable
+
+import scala.meta.internal.pc.CompletionFuzzy
+import scala.meta.internal.pc.Identifier
+import scala.meta.internal.pc.MetalsGlobal
 import scala.meta.pc.PresentationCompilerConfig.OverrideDefFormat
 
 import org.eclipse.{lsp4j => l}
-
-import scala.collection.mutable
-import scala.collection.immutable.Nil
-import scala.meta.internal.pc.{CompletionFuzzy, MetalsGlobal, Identifier}
 
 trait OverrideCompletions { this: MetalsGlobal =>
 
@@ -213,6 +215,16 @@ trait OverrideCompletions { this: MetalsGlobal =>
         if (sym.isLazy) "lazy "
         else ""
 
+      val _modifs =
+        sym.flagString.replace(
+          sym.privateWithin.toString(),
+          sym.privateWithin.name.toString()
+        )
+
+      val modifs =
+        if (_modifs.isEmpty) ""
+        else _modifs + " "
+
       val keyword: String =
         if (isVarSetter(sym)) "var "
         else if (sym.isStable) "val "
@@ -233,34 +245,38 @@ trait OverrideCompletions { this: MetalsGlobal =>
       val name: String = Identifier(sym.name)
 
       val filterText: String = s"${overrideKeyword}${lzy}${keyword}${name}"
+      val insertText: String =
+        s"${overrideKeyword}${modifs}${keyword}${name}$signature"
 
       // if we had no val or def then filter will be empty
-      def toMember = new OverrideDefMember(
-        label,
-        edit,
-        filterText,
-        sym,
-        history.autoImports(
-          pos,
-          importContext,
-          autoImport.offset,
-          autoImport.indent,
-          autoImport.padTop
-        ),
-        details
-      )
+      def toMember =
+        new OverrideDefMember(
+          label,
+          edit,
+          filterText,
+          sym,
+          history.autoImports(
+            pos,
+            importContext,
+            autoImport.offset,
+            autoImport.indent,
+            autoImport.padTop
+          ),
+          details
+        )
 
       private def label = overrideDef + name + signature
       private def details = asciOverrideDef + name + signature
       private def signature = printer.defaultMethodSignature()
-      private def edit = new l.TextEdit(
-        range,
-        if (clientSupportsSnippets && shouldMoveCursor) {
-          s"$filterText$signature = $${0:???}"
-        } else {
-          s"$filterText$signature = ???"
-        }
-      )
+      private def edit =
+        new l.TextEdit(
+          range,
+          if (clientSupportsSnippets && shouldMoveCursor) {
+            s"$insertText = $${0:???}"
+          } else {
+            s"$insertText = ???"
+          }
+        )
     }
 
     typed.tpe.members.iterator.toList
@@ -276,8 +292,7 @@ trait OverrideCompletions { this: MetalsGlobal =>
       (List.empty[l.TextEdit], Set.empty[l.TextEdit])
     ) { (editsAndImports, overrideDefMember) =>
       val edits = overrideDefMember.edit :: editsAndImports._1
-      val imports = overrideDefMember.autoImports.toSet ++ editsAndImports
-        ._2
+      val imports = overrideDefMember.autoImports.toSet ++ editsAndImports._2
       (edits, imports)
     }
   }
@@ -300,7 +315,6 @@ trait OverrideCompletions { this: MetalsGlobal =>
         inferEditPosition(text, t).toLSP,
         t,
         text,
-        true,
         _ => true
       )
     }
@@ -325,14 +339,14 @@ trait OverrideCompletions { this: MetalsGlobal =>
       // new Foo {}
       //     ~~~~~~
       case (_: Ident) ::
-            (t: Template) :: _ =>
+          (t: Template) :: _ =>
         implementAllFor(t)
 
       // new Foo[T] {}
       //     ~~~~~~~~~
       case (_: Ident) ::
-            (_: AppliedTypeTree) ::
-            (t: Template) :: _ =>
+          (_: AppliedTypeTree) ::
+          (t: Template) :: _ =>
         implementAllFor(t)
 
       case _ =>
@@ -356,7 +370,6 @@ trait OverrideCompletions { this: MetalsGlobal =>
       range: l.Range,
       t: Template,
       text: String,
-      shouldAddOverrideKwd: Boolean,
       isCandidate: Symbol => Boolean
   ): List[l.TextEdit] = {
     val overrideMembers = getMembers(
@@ -422,8 +435,10 @@ trait OverrideCompletions { this: MetalsGlobal =>
       //   }
       // }
       val lastIndent =
-        if (t.pos.source.offsetToLine(t.pos.start) ==
-            t.pos.source.offsetToLine(t.pos.end) || shouldCompleteBraces)
+        if (
+          t.pos.source.offsetToLine(t.pos.start) ==
+            t.pos.source.offsetToLine(t.pos.end) || shouldCompleteBraces
+        )
           "\n" + " " * necessaryIndent
         else ""
 
@@ -481,7 +496,6 @@ trait OverrideCompletions { this: MetalsGlobal =>
    */
   private def hasBody(text: String, t: Template): Option[Int] = {
     val start = t.pos.start
-    val end = t.pos.end
     val offset = text.indexOf('{', start)
     if (offset > 0 && offset < t.pos.end) Some(offset)
     else None

@@ -2,8 +2,13 @@ package scala.meta.internal.builds
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.util.Properties
+
+import scala.meta.inputs.Input
+import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals._
 import scala.meta.io.AbsolutePath
+
+import org.eclipse.lsp4j.Position
 
 case class SbtBuildTool(
     workspaceVersion: Option[String],
@@ -42,8 +47,11 @@ case class SbtBuildTool(
           "-jar",
           embeddedSbtLauncher.toString()
         )
+        val sbtVersion =
+          if (workspaceVersion.isEmpty) List(s"-Dsbt.version=$version") else Nil
         List(
           javaArgs,
+          sbtVersion,
           SbtOpts.fromWorkspace(workspace),
           JvmOpts.fromWorkspace(workspace),
           jarArgs,
@@ -51,7 +59,7 @@ case class SbtBuildTool(
         ).flatten
     }
     removeLegacyGlobalPlugin()
-    writeSbtMetalsPlugin(workspace)
+    writeSbtMetalsPlugins(workspace)
     allArgs
   }
 
@@ -78,16 +86,44 @@ case class SbtBuildTool(
     Files.deleteIfExists(metalsFile.toNIO)
   }
 
-  private def writeSbtMetalsPlugin(
+  private def writeSbtMetalsPlugins(
       workspace: AbsolutePath
+  ): Unit = {
+
+    def sbtMetaDirs(
+        meta: AbsolutePath,
+        acc: Set[AbsolutePath]
+    ): Set[AbsolutePath] = {
+      if (meta.exists) {
+        val files = meta.list.toList
+        val hasSbtSrc = files.exists(f => f.isSbt && f.filename != "metals.sbt")
+        if (hasSbtSrc) {
+          val forSbtSupport = meta.resolve("project/project")
+          sbtMetaDirs(meta.resolve("project"), acc + forSbtSupport)
+        } else {
+          acc
+        }
+      } else {
+        acc
+      }
+    }
+
+    val mainMeta = workspace.resolve("project")
+    val metaMeta = workspace.resolve("project").resolve("project")
+    sbtMetaDirs(mainMeta, Set(mainMeta, metaMeta)).foreach(
+      writeSingleSbtMetalsPlugin
+    )
+  }
+
+  private def writeSingleSbtMetalsPlugin(
+      projectDir: AbsolutePath
   ): Unit = {
     if (userConfig().bloopSbtAlreadyInstalled) return
     val versionToUse = userConfig().currentBloopVersion
     val bytes = SbtBuildTool
       .sbtPlugin(versionToUse)
       .getBytes(StandardCharsets.UTF_8)
-    val projectDir = workspace.resolve("project")
-    projectDir.toFile.mkdir()
+    projectDir.toFile.mkdirs()
     val metalsPluginFile = projectDir.resolve("metals.sbt")
     val pluginFileShouldChange = !metalsPluginFile.isFile ||
       !metalsPluginFile.readAllBytes.sameElements(bytes)
@@ -153,5 +189,29 @@ object SbtBuildTool {
     SbtBuildTool(version, userConfig)
   }
 
-  private def unknown = "<unknown>"
+  def sbtInputPosAdjustment(
+      originInput: Input.VirtualFile,
+      autoImports: Seq[String],
+      uri: String,
+      position: Position
+  ): (Input.VirtualFile, Position, AdjustLspData) = {
+
+    val appendStr = autoImports.mkString("", "\n", "\n")
+    val appendLineSize = autoImports.size
+
+    val modifiedInput =
+      originInput.copy(value = appendStr + originInput.value)
+    val pos = new Position(
+      appendLineSize + position.getLine(),
+      position.getCharacter()
+    )
+    val adjustLspData = AdjustedLspData.create(
+      pos => {
+        new Position(pos.getLine() - appendLineSize, pos.getCharacter())
+      },
+      filterOutLocations = { loc => !loc.getUri().isSbt }
+    )
+    (modifiedInput, pos, adjustLspData)
+
+  }
 }

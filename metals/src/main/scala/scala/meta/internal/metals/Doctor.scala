@@ -1,26 +1,32 @@
 package scala.meta.internal.metals
 
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import org.eclipse.lsp4j.ExecuteCommandParams
+
 import scala.collection.mutable.ListBuffer
 import scala.concurrent.ExecutionContext
+
 import scala.meta.internal.metals.Messages.CheckDoctor
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.ScalaVersions._
-import scala.meta.io.AbsolutePath
+import scala.meta.internal.metals.config.DoctorFormat
 import scala.meta.internal.semver.SemVer
+import scala.meta.io.AbsolutePath
+
+import org.eclipse.lsp4j.ExecuteCommandParams
 
 /**
  * Helps the user figure out what is mis-configured in the build through the "Run doctor" command.
  *
  * At the moment, the doctor only validates that SemanticDB is enabled for all projects.
- *
  */
 final class Doctor(
     workspace: AbsolutePath,
     buildTargets: BuildTargets,
     languageClient: MetalsLanguageClient,
+    currentBuildServer: () => Option[String],
+    calculateNewBuildServer: () => BspResolveResult,
     httpServer: () => Option[MetalsHttpServer],
     tables: Tables,
     clientConfig: ClientConfiguration
@@ -36,7 +42,9 @@ final class Doctor(
     )
   }
 
-  /** Returns a full HTML page for the HTTP client. */
+  /**
+   * Returns a full HTML page for the HTTP client.
+   */
   def problemsHtmlPage(url: String): String = {
     val livereload = Urls.livereload(url)
     new HtmlBuilder()
@@ -46,34 +54,50 @@ final class Doctor(
       .render
   }
 
-  /** Executes the "Run doctor" server command. */
+  /**
+   * Executes the "Run doctor" server command.
+   */
   def executeRunDoctor(): Unit = {
-    executeDoctor(ClientCommands.RunDoctor, server => {
-      Urls.openBrowser(server.address + "/doctor")
-    })
+    executeDoctor(
+      ClientCommands.RunDoctor,
+      server => {
+        Urls.openBrowser(server.address + "/doctor")
+      }
+    )
   }
 
-  /** Executes the "Reload doctor" server command. */
+  /**
+   * Executes the "Reload doctor" server command.
+   */
   private def executeReloadDoctor(summary: Option[String]): Unit = {
     val hasProblemsNow = summary.isDefined
     if (hasProblems.get() && !hasProblemsNow) {
       hasProblems.set(false)
       languageClient.showMessage(CheckDoctor.problemsFixed)
     }
-    executeDoctor(ClientCommands.ReloadDoctor, server => {
-      server.reload()
-    })
+    executeRefreshDoctor()
+  }
+
+  def executeRefreshDoctor(): Unit = {
+    executeDoctor(
+      ClientCommands.ReloadDoctor,
+      server => {
+        server.reload()
+      }
+    )
   }
 
   private def executeDoctor(
       clientCommand: Command,
       onServer: MetalsHttpServer => Unit
   ): Unit = {
-    if (clientConfig.isExecuteClientCommandProvider) {
-      val output =
-        if (clientConfig.doctorFormatIsJson)
-          buildTargetsJson()
-        else buildTargetsHtml()
+    if (
+      clientConfig.isExecuteClientCommandProvider && !clientConfig.isHttpEnabled
+    ) {
+      val output = clientConfig.doctorFormat match {
+        case DoctorFormat.Json => buildTargetsJson()
+        case DoctorFormat.Html => buildTargetsHtml()
+      }
       val params = new ExecuteCommandParams(
         clientCommand.id,
         List(output: AnyRef).asJava
@@ -85,13 +109,15 @@ final class Doctor(
           onServer(server)
         case None =>
           scribe.warn(
-            "Unable to run doctor. To fix this problem enable -Dmetals.http=true"
+            "Unable to run doctor. Make sure `isHttpEnabled` is set to `true`."
           )
       }
     }
   }
 
-  /** Checks if there are any potential problems and if any, notifies the user. */
+  /**
+   * Checks if there are any potential problems and if any, notifies the user.
+   */
   def check(serverName: String, serverVersion: String): Unit = {
     bspServerName = Some(serverName)
     bspServerVersion = Some(serverVersion)
@@ -126,11 +152,12 @@ final class Doctor(
     def isMaven: Boolean = workspace.resolve("pom.xml").isFile
     def hint() =
       if (isMaven) {
-        val website =
-          if (clientConfig.doctorFormatIsJson)
+        val website = clientConfig.doctorFormat match {
+          case DoctorFormat.Json =>
             "Metals Website - https://scalameta.org/metals/docs/build-tools/maven.html"
-          else
+          case DoctorFormat.Html =>
             "<a href=https://scalameta.org/metals/docs/build-tools/maven.html>Metals website</a>"
+        }
         "enable SemanticDB following instructions on the " + website
       } else s"run 'Build import' to enable code navigation."
 
@@ -138,9 +165,11 @@ final class Doctor(
       if (bspServerVersion.exists(isUnsupportedBloopVersion)) {
         s"""|The installed Bloop server version is ${bspServerVersion.get} while Metals requires at least Bloop version ${BuildInfo.bloopVersion},
             |To fix this problem please update your Bloop server.""".stripMargin
-      } else if (isSupportedScalaVersion(
+      } else if (
+        isSupportedScalaVersion(
           scalaVersion
-        )) {
+        )
+      ) {
         hint.capitalize
       } else if (isSupportedScalaBinaryVersion(scalaVersion)) {
         val recommended = recommendedVersion(scalaVersion)
@@ -204,20 +233,18 @@ final class Doctor(
       ScalaVersions.isFutureVersion,
       Messages.FutureScalaVersion.message
     ).orElse {
-        message(
-          ver => !ScalaVersions.isSupportedScalaVersion(ver),
-          Messages.UnsupportedScalaVersion.message
-        )
-      }
-      .orElse {
-        possiblyMissingSemanticDB
-      }
-      .orElse {
-        message(
-          ScalaVersions.isDeprecatedScalaVersion,
-          Messages.DeprecatedScalaVersion.message
-        )
-      }
+      message(
+        ver => !ScalaVersions.isSupportedScalaVersion(ver),
+        Messages.UnsupportedScalaVersion.message
+      )
+    }.orElse {
+      possiblyMissingSemanticDB
+    }.orElse {
+      message(
+        ScalaVersions.isDeprecatedScalaVersion,
+        Messages.DeprecatedScalaVersion.message
+      )
+    }
   }
 
   private def possiblyMissingSemanticDB: Option[String] = {
@@ -239,6 +266,38 @@ final class Doctor(
 
   def allTargets(): List[ScalaTarget] = buildTargets.all.toList
 
+  private def selectedBuildToolMessage(): Option[String] = {
+    tables.buildTool.selectedBuildTool().map { value =>
+      s"Build definition is coming from ${value}"
+    }
+  }
+
+  private def selectedImportBuildMessage(): Option[String] = {
+    import scala.concurrent.duration._
+    tables.dismissedNotifications.ImportChanges.whenExpires().map {
+      expiration =>
+        val whenString =
+          if (expiration > 1000.days.toMillis) "forever"
+          else "temporarily"
+        s"Build import popup on configuration changes has been dismissed $whenString"
+    }
+  }
+
+  private def selectedBuildServerMessage(): String = {
+    val current = currentBuildServer().getOrElse("<none>")
+    val onRestart = calculateNewBuildServer() match {
+      case ResolveNone => "<none>"
+      case ResolveBloop => "Bloop"
+      case ResolveBspOne(details) => details.getName
+      case ResolveMultiple(_, _) => "<ask user>"
+    }
+    if (current != onRestart) {
+      s"Build server currently used: ${current}. After reload will try connect to: ${onRestart}"
+    } else {
+      s"Build server currently used: ${current}."
+    }
+  }
+
   private def buildTargetsHtml(): String = {
     new HtmlBuilder()
       .element("h1")(_.text(doctorTitle))
@@ -248,10 +307,17 @@ final class Doctor(
 
   private def buildTargetsJson(): String = {
     val targets = allTargets()
+    val buildToolHeading = selectedBuildToolMessage()
+    val importBuildHeading = selectedImportBuildMessage()
+
+    val heading =
+      List(buildToolHeading, importBuildHeading, Some(doctorHeading)).flatten
+        .mkString("\n\n")
+
     val results = if (targets.isEmpty) {
       DoctorResults(
         doctorTitle,
-        doctorHeading,
+        heading,
         Some(
           List(
             DoctorMessage(
@@ -266,16 +332,48 @@ final class Doctor(
     } else {
       val targetResults =
         targets.sortBy(_.baseDirectory).map(extractTargetInfo)
-      DoctorResults(doctorTitle, doctorHeading, None, Some(targetResults)).toJson
+      DoctorResults(doctorTitle, heading, None, Some(targetResults)).toJson
     }
     ujson.write(results)
   }
 
+  private def resetChoiceCommand(choice: String): String = {
+    val param = s"""["$choice"]"""
+    s"command:metals.reset-choice?${URLEncoder.encode(param)}"
+  }
+
   private def buildTargetsTable(html: HtmlBuilder): Unit = {
+    selectedBuildToolMessage().foreach { msg =>
+      html.element("p")(
+        _.text(msg)
+          .optionally(!clientConfig.isHttpEnabled)(
+            _.text("(")
+              .link(resetChoiceCommand(PopupChoiceReset.BuildTool), "Reset")
+              .text(")")
+          )
+      )
+    }
+
+    selectedImportBuildMessage().foreach { msg =>
+      html.element("p")(
+        _.text(msg)
+          .optionally(!clientConfig.isHttpEnabled)(
+            _.text("(")
+              .link(resetChoiceCommand(PopupChoiceReset.BuildImport), "Reset")
+              .text(")")
+          )
+      )
+    }
+
+    html.element("p")(
+      _.text(selectedBuildServerMessage())
+    )
+
     html
       .element("p")(
         _.text(doctorHeading)
       )
+
     val targets = allTargets()
     if (targets.isEmpty) {
       html

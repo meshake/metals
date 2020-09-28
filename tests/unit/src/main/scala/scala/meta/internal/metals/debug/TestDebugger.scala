@@ -4,20 +4,24 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
 import java.util.concurrent.TimeUnit
-import org.eclipse.lsp4j.debug.Capabilities
-import org.eclipse.lsp4j.debug.OutputEventArguments
-import org.eclipse.lsp4j.debug.SetBreakpointsResponse
-import org.eclipse.lsp4j.debug.StoppedEventArguments
+
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.concurrent.Promise
 import scala.concurrent.TimeoutException
-import scala.meta.inputs.Position
-import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.io.AbsolutePath
-import tests.DapTestEnrichments._
 import scala.util.Failure
 import scala.util.Success
+
+import scala.meta.inputs.Position
+import scala.meta.internal.metals.Debug
+import scala.meta.internal.metals.MetalsEnrichments._
+import scala.meta.io.AbsolutePath
+
+import org.eclipse.lsp4j.debug.Capabilities
+import org.eclipse.lsp4j.debug.OutputEventArguments
+import org.eclipse.lsp4j.debug.SetBreakpointsResponse
+import org.eclipse.lsp4j.debug.StoppedEventArguments
+import tests.DapTestEnrichments._
 
 final class TestDebugger(
     connect: RemoteServer.Listener => Debugger,
@@ -32,18 +36,22 @@ final class TestDebugger(
   @volatile private var failure: Option[Throwable] = None
 
   def initialize: Future[Capabilities] = {
+    Debug.printEnclosing()
     ifNotFailed(debugger.initialize)
   }
 
   def launch: Future[Unit] = {
+    Debug.printEnclosing()
     ifNotFailed(debugger.launch(debug = true))
   }
 
   def launch(debug: Boolean): Future[Unit] = {
+    Debug.printEnclosing()
     ifNotFailed(debugger.launch(debug))
   }
 
   def configurationDone: Future[Unit] = {
+    Debug.printEnclosing()
     ifNotFailed(debugger.configurationDone)
   }
 
@@ -57,12 +65,21 @@ final class TestDebugger(
       .map { response =>
         // the breakpoint notification we receive does not contain the source
         // hence we have to register breakpoints here
-        response.getBreakpoints.foreach(this.breakpoints.register)
+        response.getBreakpoints.foreach { brPoint =>
+          // note(@tgodzik) from time to time breakpoints are sent back without the source,
+          // it's pretty rare, but we were unable to find the reason
+          // more details here https://github.com/scalameta/metals/issues/1569
+          if (brPoint.getSource() == null) {
+            brPoint.setSource(source)
+          }
+          this.breakpoints.register(brPoint)
+        }
         response
       }
   }
 
   def restart: Future[Unit] = {
+    Debug.printEnclosing()
     ifNotFailed(debugger.restart).andThen {
       case _ =>
         debugger = connect(this)
@@ -80,9 +97,12 @@ final class TestDebugger(
    * Not waiting for exited because it might not be sent
    */
   def shutdown: Future[Unit] = {
+    Debug.printEnclosing()
     for {
       _ <- terminated.future
+      _ = scribe.info("TestingDebugger terminated")
       _ <- debugger.shutdown(60)
+      _ = scribe.info("Remote server shutdown")
       _ <- onStoppage.shutdown
     } yield ()
   }
@@ -105,22 +125,28 @@ final class TestDebugger(
   }
 
   override def onOutput(event: OutputEventArguments): Unit = {
+    Debug.printEnclosing()
     import org.eclipse.lsp4j.debug.{OutputEventArgumentsCategory => Category}
     event.getCategory match {
       case Category.STDOUT =>
         output.append(event.getOutput)
       case Category.STDERR =>
-        fail(new IllegalStateException(event.getOutput))
+        val output = event.getOutput()
+        // This might sometimes be printed in the JVM, but does not cause any actual issues
+        if (!output.contains("Picked up JAVA_TOOL_OPTIONS"))
+          fail(new IllegalStateException(output))
       case _ =>
       // ignore
     }
   }
 
   override def onTerminated(): Unit = {
+    Debug.printEnclosing()
     terminated.trySuccess(()) // might already be completed in [[fail]]
   }
 
   override def onStopped(event: StoppedEventArguments): Unit = {
+    Debug.printEnclosing()
     val nextStep = for {
       frame <- ifNotFailed(debugger.stackFrame(event.getThreadId))
       cause <- findStoppageCause(event, frame)
@@ -174,7 +200,7 @@ final class TestDebugger(
           case Success(value) =>
             failure match {
               case Some(
-                  error
+                    error
                   ) => // propagate failure that occurred while processing action
                 Future.failed(error)
               case None =>
@@ -185,6 +211,7 @@ final class TestDebugger(
   }
 
   private def fail(error: Throwable): Unit = {
+    Debug.printEnclosing()
     if (failure.isEmpty) {
       failure = Some(error)
       terminated.tryFailure(error)
@@ -196,8 +223,8 @@ final class TestDebugger(
 object TestDebugger {
   private val timeout = TimeUnit.SECONDS.toMillis(60).toInt
 
-  def apply(uri: URI, stoppageHandler: Stoppage.Handler)(
-      implicit ec: ExecutionContext
+  def apply(uri: URI, stoppageHandler: Stoppage.Handler)(implicit
+      ec: ExecutionContext
   ): TestDebugger = {
     def connect(listener: RemoteServer.Listener): Debugger = {
       val socket = new Socket()

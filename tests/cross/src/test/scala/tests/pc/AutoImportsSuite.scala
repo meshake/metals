@@ -1,12 +1,14 @@
 package tests.pc
 
-import tests.BaseCodeActionSuite
-import scala.meta.pc.AutoImportsResult
-import scala.meta.internal.metals.CompilerOffsetParams
-import scala.meta.internal.jdk.CollectionConverters._
-import scala.meta.internal.metals.TextEdits
-import munit.Location
 import java.nio.file.Paths
+
+import scala.meta.internal.jdk.CollectionConverters._
+import scala.meta.internal.metals.CompilerOffsetParams
+import scala.meta.internal.metals.TextEdits
+import scala.meta.pc.AutoImportsResult
+
+import munit.Location
+import tests.BaseCodeActionSuite
 import tests.BuildInfoVersions
 
 class AutoImportsSuite extends BaseCodeActionSuite {
@@ -125,6 +127,103 @@ class AutoImportsSuite extends BaseCodeActionSuite {
        |""".stripMargin
   )
 
+  checkEdit(
+    "multiple-packages",
+    """|package a
+       |package b
+       |package c
+       |
+       |object A {
+       |  val l = s"${<<ListBuffer>>(2)}"
+       |}
+       |""".stripMargin,
+    """|package a
+       |package b
+       |package c
+       |
+       |import scala.collection.mutable
+       |
+       |object A {
+       |  val l = s"${mutable.ListBuffer(2)}"
+       |}
+       |""".stripMargin
+  )
+
+  checkEdit(
+    "multiple-packages-existing-imports",
+    """|package a
+       |package b
+       |package c
+       |
+       |import scala.concurrent.Future
+       |
+       |object A {
+       |  val l = s"${<<ListBuffer>>(2)}"
+       |}
+       |""".stripMargin,
+    """|package a
+       |package b
+       |package c
+       |
+       |import scala.concurrent.Future
+       |import scala.collection.mutable
+       |
+       |object A {
+       |  val l = s"${mutable.ListBuffer(2)}"
+       |}
+       |""".stripMargin
+  )
+
+  checkEdit(
+    "first-auto-import-amm-script",
+    "script.sc.scala",
+    ammoniteWrapper(
+      """val p: <<Path>> = ???
+        |""".stripMargin
+    ),
+    // Import added *before* the wrapper here…
+    // This *seems* wrong, but the logic converting the scala file
+    // edits to sc file edits will simply add it at the beginning of
+    // the sc file, as expected.
+    "import java.nio.file.Path\n" +
+      ammoniteWrapper(
+        """val p: Path = ???
+          |""".stripMargin
+      )
+  )
+
+  checkEdit(
+    "second-auto-import-amm-script",
+    "script.sc.scala",
+    ammoniteWrapper(
+      """import java.nio.file.Files
+        |val p: <<Path>> = ???
+        |""".stripMargin
+    ),
+    ammoniteWrapper(
+      """import java.nio.file.Files
+        |import java.nio.file.Path
+        |val p: Path = ???
+        |""".stripMargin
+    )
+  )
+
+  private def ammoniteWrapper(code: String): String =
+    // Vaguely looks like a scala file that Ammonite generates
+    // from a sc file.
+    // Just not referencing any Ammonite class, that we don't pull
+    // in the tests here.
+    s"""|package ammonite
+        |package $$file.`auto-import`
+        |import _root_.scala.collection.mutable.{
+        |  HashMap => MutableHashMap
+        |}
+        |
+        |object test{
+        |$code
+        |}
+        |""".stripMargin
+
   def check(
       name: String,
       original: String,
@@ -132,7 +231,7 @@ class AutoImportsSuite extends BaseCodeActionSuite {
       compat: Map[String, String] = Map.empty
   )(implicit loc: Location): Unit =
     test(name) {
-      val imports = getAutoImports(original)
+      val imports = getAutoImports(original, "A.scala")
       val obtained = imports.map(_.packageName()).mkString("\n")
       assertNoDiff(
         obtained,
@@ -140,11 +239,21 @@ class AutoImportsSuite extends BaseCodeActionSuite {
       )
     }
 
-  def checkEdit(name: String, original: String, expected: String)(
-      implicit loc: Location
+  def checkEdit(name: String, original: String, expected: String)(implicit
+      loc: Location
+  ): Unit =
+    checkEdit(name, "A.scala", original, expected)
+
+  def checkEdit(
+      name: String,
+      filename: String,
+      original: String,
+      expected: String
+  )(implicit
+      loc: Location
   ): Unit =
     test(name) {
-      val imports = getAutoImports(original)
+      val imports = getAutoImports(original, filename)
       if (imports.isEmpty) fail("obtained no imports")
       val edits = imports.head.edits().asScala.toList
       val (code, _, _) = params(original)
@@ -154,7 +263,7 @@ class AutoImportsSuite extends BaseCodeActionSuite {
 
   def getAutoImports(
       original: String,
-      filename: String = "A.scala"
+      filename: String
   ): List[AutoImportsResult] = {
     val (code, symbol, offset) = params(original)
     val result = presentationCompiler

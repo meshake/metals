@@ -23,10 +23,14 @@ Install the Metals extension from the
 > if they are installed. The
 > [Dotty Language Server](https://marketplace.visualstudio.com/items?itemName=lampepfl.dotty)
 > does **not** need to be disabled because the Metals and Dotty extensions don't
-> conflict with each other.
+> conflict with each other. However, if you want to work on Scala 3 code in a
+> workspace that was previously opened with `Dotty Language Server` you need to
+> first remove `.dotty-ide-artifact` before opening the workspace with Metals.
 
-Next, open a directory containing a `build.sbt` file. The extension activates
-when a `*.scala` or `*.sbt` file is opened.
+Next, open a directory containing your Scala code. The extension activates when
+the main directory contains `build.sbt` or `build.sc` file, a Scala file is
+opened, which includes `*.sbt`, `*.scala` and `*.sc` file, or a standard Scala
+directory structure `src/main/scala` is detected.
 
 ```scala mdoc:editor:vscode
 Update the "Sbt Script" setting to use a custom `sbt` script instead of the
@@ -120,29 +124,116 @@ without opening the sidebar.
 As you type, the symbol outline is also visible at the top of the file.
 ![Document Symbols Outline](https://i.imgur.com/L217n4q.png)
 
-## Enable on type formatting for multiline string formatting
+```scala mdoc:parent-lenses:vscode
 
-![pipes](https://i.imgur.com/iXGYOf0.gif)
+```
+
+```scala mdoc:new-project:vscode
+
+```
+
+## Running and debugging your code
+
+Metals supports running and debugging tests and main methods via the
+[Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/).
+The protocol is used to communicate between the editor and debugger, which means
+that applications can be run the same as for any other language in the natively
+supported `Run` view. When using Metals the debugger itself is
+[Bloop](https://scalacenter.github.io/bloop/), which is also responsible for
+starting the actual process.
+
+Users can begin the debugging session in two ways:
+
+### via code lenses
+
+![lenses](https://i.imgur.com/5nTnrcS.png)
+
+For each main or test class Metals shows two code lenses `run | debug` or
+`test | test debug`, which show up above the definition as a kind of virtual
+text. Clicking `run` or `test` will start running the main class or test without
+stopping at any breakpoints, while clicking `debug` or `test debug` will pause
+once any of them are hit. It's not possible to add any arguments or java
+properties when running using this method.
+
+### via a `launch.json` configuration
+
+Visual Studio Code uses `.vscode/launch.json` to store user defined
+configurations, which can be run using:
+
+- The `Run -> Start Debugging` menu item or `workbench.action.debug.start`
+  shortcut.
+- The `Run -> Run Without Debugging` menu item or `workbench.action.debug.run`
+  shortcut.
+
+If a user doesn't have anything yet saved, a configuration wizard will pop up to
+guide them. In the end users should end up with something like this:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    // Main class configuration
+    {
+      "type": "scala",
+      "request": "launch",
+      // configuration name visible for the user
+      "name": "Main class",
+      // full name of the class to run
+      "mainClass": "com.example.Main",
+      // optional arguments for the main class
+      "args": [],
+      // optional jvm properties to use
+      "jvmOptions": [],
+      // optional build target name in case there more than one
+      // class with the same name
+      "buildTarget": "root"
+    },
+    // Test class configuration
+    {
+      "type": "scala",
+      "request": "launch",
+      // configuration name visible for the user
+      "name": "Test class",
+      // full name of the class to run
+      "testClass": "com.example.Test",
+      // optional build target name in case there more than one
+      // class with the same name
+      "buildTarget": "root"
+    }
+  ]
+}
+```
+
+Multiple configurations can be stored in that file and can be chosen either
+manually in the `Run` view or can be picked by invoking a shortcut defined under
+`workbench.action.debug.selectandstart`.
+
+## On type formatting for multiline string formatting
+
+![on-type](https://imgur.com/a0O2vCs.gif)
 
 To properly support adding `|` in multiline strings we are using the
-`onTypeFormatting` method. To enable the functionality you need to enable
-`onTypeFormatting` inside Visual Studio Code.
+`onTypeFormatting` method. The functionality is enabled by default, but you can
+disable/enable `onTypeFormatting` inside Visual Studio Code settings by checking
+`Editor: Format On Type`:
 
-This needs to be done in settings by checking `Editor: Format On Type`:
+![on-type-setting](https://i.imgur.com/s6nT9rC.png)
 
-![on-type](https://i.imgur.com/4eVvSP5.gif)
-
-## Enable formatting on paste for multiline strings
+## Formatting on paste for multiline strings
 
 Whenever text is paste into a multiline string with `|` it will be properly
 formatted by Metals:
 
-![format-on-paste](https://i.imgur.com/yJLAIxQ.gif)
+![format-on-paste](https://i.imgur.com/fF0XWYC.gif)
 
-To enable this feature you need to enable formatting on paste in Visual Studio
-Code by checking `Editor: Format On Paste`:
+This feature is enabled by default. If you need to disable/enable formatting on
+paste in Visual Studio Code you can check the `Editor: Format On Paste` setting:
 
-![format-on-paste](https://i.imgur.com/OaBxwer.png)
+![format-on-paste-setting](https://i.imgur.com/rMrk27F.png)
+
+```scala mdoc:worksheet:vscode
+
+```
 
 ## Coming from IntelliJ
 

@@ -1,12 +1,13 @@
 package tests
 
 import scala.meta.internal.docstrings.MarkdownGenerator
+
 import munit.Location
 
 class JavadocSuite extends BaseSuite {
 
-  def check(name: String, original: String, expected: String)(
-      implicit loc: Location
+  def check(name: String, original: String, expected: String)(implicit
+      loc: Location
   ): Unit = {
     test(name) {
       val obtained = MarkdownGenerator.toMarkdown(original).mkString

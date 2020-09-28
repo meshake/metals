@@ -1,13 +1,18 @@
 package scala.meta.internal.mtags
 
-import java.net.{URL, URLClassLoader}
+import java.net.URL
+import java.net.URLClassLoader
 import java.util
+
+import scala.collection.Seq
+import scala.util.Try
+
 import scala.meta.internal.jdk.CollectionConverters._
 import scala.meta.io.AbsolutePath
 import scala.meta.io.Classpath
 import scala.meta.io.RelativePath
+
 import sun.misc.Unsafe
-import scala.collection.Seq
 
 object ClasspathLoader {
 
@@ -19,10 +24,12 @@ object ClasspathLoader {
     if (classLoader.isInstanceOf[URLClassLoader]) {
       classLoader.asInstanceOf[URLClassLoader].getURLs()
       // java9+
-    } else if (classLoader
+    } else if (
+      classLoader
         .getClass()
         .getName()
-        .startsWith("jdk.internal.loader.ClassLoaders$")) {
+        .startsWith("jdk.internal.loader.ClassLoaders$")
+    ) {
       try {
         val field = classOf[Unsafe].getDeclaredField("theUnsafe")
         field.setAccessible(true)
@@ -72,12 +79,20 @@ final class ClasspathLoader() {
     loader.addEntry(entry)
   }
 
-  /** Load a resource from the classpath. */
+  /**
+   * Load a resource from the classpath.
+   */
   def load(path: RelativePath): Option[AbsolutePath] = {
     loader.resolve(path)
   }
 
-  /** Load a resource from the classpath. */
+  def loadClass(symbol: String): Option[Class[_]] = {
+    Try(loader.loadClass(symbol)).toOption
+  }
+
+  /**
+   * Load a resource from the classpath.
+   */
   def load(path: String): Option[AbsolutePath] = {
     loader.resolve(path)
   }

@@ -1,8 +1,9 @@
 package docs
 
+import scala.meta.inputs.Input
+
 import mdoc.Reporter
 import mdoc.StringModifier
-import scala.meta.inputs.Input
 
 class BootstrapModifier extends StringModifier {
   override val name: String = "bootstrap"
@@ -33,6 +34,8 @@ class BootstrapModifier extends StringModifier {
            |  -o /usr/local/bin/$binary -f
            |```
            |Make sure the generated `$binary` binary is available on your `$$PATH`.
+           |
+           |You can check version of your binary by executing `$binary -version`.
            |
            |Configure the system properties `-Dhttps.proxyHost=… -Dhttps.proxyPort=…`
            |if you are behind an HTTP proxy.

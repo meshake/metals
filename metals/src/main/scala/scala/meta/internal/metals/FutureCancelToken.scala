@@ -2,12 +2,14 @@ package scala.meta.internal.metals
 
 import java.lang
 import java.util.concurrent.CompletionStage
+
+import scala.compat.java8.FutureConverters._
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
-import scala.meta.pc.CancelToken
-import scala.compat.java8.FutureConverters._
-import scala.util.Success
 import scala.util.Failure
+import scala.util.Success
+
+import scala.meta.pc.CancelToken
 
 /**
  * A cancel token backed by a Scala future.
@@ -16,7 +18,7 @@ case class FutureCancelToken(f: Future[Boolean])(implicit ec: ExecutionContext)
     extends CancelToken {
   var isCancelled: Boolean = false
   f.onComplete {
-    case Failure(exception) =>
+    case Failure(_) =>
       isCancelled = true
     case Success(cancel) =>
       isCancelled = cancel

@@ -1,6 +1,7 @@
 package tests.feature
 
 import scala.meta.internal.metals.{BuildInfo => V}
+
 import tests.BaseCompletionLspSuite
 
 class CompletionCrossLspSuite
@@ -72,12 +73,11 @@ class CompletionCrossLspSuite
       _ = assertNoDiagnostics()
       _ <- assertCompletion(
         "extends Serializable@@",
-        """|Serializable a
-           |Serializable - java.io
-           |DefaultSerializable - scala.collection.generic
-           |SerializablePermission - java.io
+        """|DefaultSerializable - scala.collection.generic
            |NotSerializableException - java.io
-           |
+           |Serializable a
+           |Serializable - java.io
+           |SerializablePermission - java.io
            |""".stripMargin
       )
     } yield ()

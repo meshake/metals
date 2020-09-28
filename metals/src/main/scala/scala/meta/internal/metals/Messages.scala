@@ -1,15 +1,17 @@
 package scala.meta.internal.metals
 
+import scala.collection.mutable
+
+import scala.meta.internal.builds.BuildTool
+import scala.meta.internal.jdk.CollectionConverters._
+import scala.meta.internal.semver.SemVer
+import scala.meta.io.AbsolutePath
+
 import ch.epfl.scala.bsp4j.BspConnectionDetails
 import org.eclipse.lsp4j.MessageActionItem
 import org.eclipse.lsp4j.MessageParams
 import org.eclipse.lsp4j.MessageType
 import org.eclipse.lsp4j.ShowMessageRequestParams
-import scala.meta.internal.jdk.CollectionConverters._
-import scala.collection.mutable
-import scala.meta.internal.builds.BuildTool
-import scala.meta.io.AbsolutePath
-import scala.meta.internal.semver.SemVer
 
 /**
  * Constants for requests/dialogues via LSP window/showMessage and window/showMessageRequest.
@@ -66,17 +68,31 @@ object Messages {
       )
       params
     }
-
   }
 
-  val PartialNavigation = new MetalsStatusParams(
-    "$(info) Partial navigation",
-    tooltip =
-      "This external library source has compile errors. " +
-        "To fix this problem, update your build settings to use the same compiler plugins and compiler settings as " +
-        "the external library.",
-    command = ClientCommands.FocusDiagnostics.id
-  )
+  object ChooseBuildTool {
+    def params(builtTools: List[BuildTool]): ShowMessageRequestParams = {
+      val messageActionItems =
+        builtTools.map(bt => new MessageActionItem(bt.executableName))
+      val params = new ShowMessageRequestParams()
+      params.setMessage(
+        "Multiple build definitions found. Which would you like to use?"
+      )
+      params.setType(MessageType.Info)
+      params.setActions(messageActionItems.asJava)
+      params
+    }
+  }
+
+  def partialNavigation(icons: Icons) =
+    new MetalsStatusParams(
+      s"${icons.info} Partial navigation",
+      tooltip =
+        "This external library source has compile errors. " +
+          "To fix this problem, update your build settings to use the same compiler plugins and compiler settings as " +
+          "the external library.",
+      command = ClientCommands.FocusDiagnostics.id
+    )
 
   object CheckDoctor {
     def problemsFixed: MessageParams =
@@ -173,6 +189,27 @@ object Messages {
       params.setActions(
         List(
           reconnect,
+          notNow
+        ).asJava
+      )
+      params
+    }
+  }
+
+  object AmmoniteJvmParametersChange {
+    def restart: MessageActionItem =
+      new MessageActionItem("Restart Ammonite")
+    def notNow: MessageActionItem =
+      new MessageActionItem("Not now")
+    def params(): ShowMessageRequestParams = {
+      val params = new ShowMessageRequestParams()
+      params.setMessage(
+        s"Ammonite JVM parameters have been updated, do you want to restart the ammonite BSP server? (the changes will only be picked up after the restart)"
+      )
+      params.setType(MessageType.Info)
+      params.setActions(
+        List(
+          restart,
           notNow
         ).asJava
       )
@@ -291,11 +328,12 @@ object Messages {
       )
     def isMissingScalafmtVersion(params: ShowMessageRequestParams): Boolean =
       params.getMessage == messageRequestMessage
-    def inputBox(): MetalsInputBoxParams = MetalsInputBoxParams(
-      prompt =
-        "No Scalafmt version is configured for this workspace, what version would you like to use?",
-      value = BuildInfo.scalafmtVersion
-    )
+    def inputBox(): MetalsInputBoxParams =
+      MetalsInputBoxParams(
+        prompt =
+          "No Scalafmt version is configured for this workspace, what version would you like to use?",
+        value = BuildInfo.scalafmtVersion
+      )
     def messageRequestMessage: String =
       s"No Scalafmt version is configured for this workspace. " +
         s"To fix this problem, update .scalafmt.conf to include 'version=${BuildInfo.scalafmtVersion}'."
@@ -478,5 +516,95 @@ object Messages {
         s"but class(es) with the same name also found in $anotherTargetsStr.\n" +
         "Build target can be specified with 'buildTarget' debug configuration"
     }
+  }
+
+  object ImportAmmoniteScript {
+    val message: String = "Ammonite script detected."
+    val importAll: String = "Import scripts automatically"
+    val doImport: String = "Import"
+    val dismiss: String = "Dismiss"
+    def params(): ShowMessageRequestParams = {
+      val params = new ShowMessageRequestParams(
+        List(importAll, doImport, dismiss)
+          .map(new MessageActionItem(_))
+          .asJava
+      )
+      params.setMessage(message)
+      params.setType(MessageType.Info)
+      params
+    }
+    def ImportFailed(script: String) =
+      new MessageParams(
+        MessageType.Error,
+        s"Error importing $script. See the logs for more details."
+      )
+  }
+
+  object NewScalaProject {
+    def selectTheTemplate: String = "Select the template to use"
+    def enterName: String =
+      "Enter a name or a relative path for the new project"
+    def enterG8Template: String =
+      "Enter the giter template, for example `scala/hello-world.g8`," +
+        " which corresponds to a github path `github.com/scala/hello-world.g8`"
+    def creationFailed(what: String, where: String) =
+      new MessageParams(
+        MessageType.Error,
+        s"Could not create $what in $where"
+      )
+    def templateDownloadFailed(why: String) =
+      new MessageParams(
+        MessageType.Error,
+        s"Failed to download templates from the web.\n" + why
+      )
+    def yes = new MessageActionItem("Yes")
+    def no = new MessageActionItem("No")
+    def newWindowMessage =
+      "Do you want to open the new project in a new window?"
+    def newProjectCreated(path: AbsolutePath) =
+      new MessageParams(
+        MessageType.Info,
+        s"New project has been in created in $path"
+      )
+
+    def askForNewWindowParams(): ShowMessageRequestParams = {
+      val params = new ShowMessageRequestParams()
+      params.setMessage(newWindowMessage)
+      params.setType(MessageType.Info)
+      params.setActions(
+        List(
+          yes,
+          no
+        ).asJava
+      )
+      params
+    }
+
+  }
+
+  object NoBuildTool {
+
+    def newProject: String =
+      "No build tool detected in the current folder." +
+        " Do you want to create a new project?"
+
+    def inCurrent = new MessageActionItem("In the current directory")
+    def newWindow = new MessageActionItem("In a new directory")
+    def dismiss = new MessageActionItem("Not now")
+
+    def noBuildToolAskForTemplate(): ShowMessageRequestParams = {
+      val params = new ShowMessageRequestParams()
+      params.setMessage(newProject)
+      params.setType(MessageType.Info)
+      params.setActions(
+        List(
+          inCurrent,
+          newWindow,
+          dismiss
+        ).asJava
+      )
+      params
+    }
+
   }
 }

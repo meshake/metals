@@ -1,9 +1,13 @@
 package tests
 
-import munit.Location
 import scala.concurrent.Future
 
+import munit.Location
+
 abstract class BaseRangesSuite(name: String) extends BaseLspSuite(name) {
+
+  protected def libraryDependencies: List[String] = Nil
+  protected def compilerPlugins: List[String] = Nil
 
   def assertCheck(
       filename: String,
@@ -12,7 +16,9 @@ abstract class BaseRangesSuite(name: String) extends BaseLspSuite(name) {
       base: Map[String, String]
   ): Future[Unit]
 
-  def check(name: String, input: String)(implicit loc: Location): Unit = {
+  def check(name: String, input: String, scalaVersion: Option[String] = None)(
+      implicit loc: Location
+  ): Unit = {
     val files = FileLayout.mapFromString(input)
     val (filename, edit) = files
       .find(_._2.contains("@@"))
@@ -34,6 +40,8 @@ abstract class BaseRangesSuite(name: String) extends BaseLspSuite(name) {
         fileName -> code.replaceAll("(<<|>>|@@)", "")
     }
 
+    val actualScalaVersion = scalaVersion.getOrElse(BuildInfo.scalaVersion)
+
     test(name) {
       cleanWorkspace()
       for {
@@ -41,17 +49,13 @@ abstract class BaseRangesSuite(name: String) extends BaseLspSuite(name) {
           s"""/metals.json
              |{"a":
              |  {
-             |    "compilerPlugins": [
-             |      "org.scalamacros:::paradise:2.1.1"
-             |    ],
-             |    "libraryDependencies": [
-             |      "org.scalatest::scalatest:3.0.5",
-             |      "io.circe::circe-generic:0.12.0"
-             |    ]
+             |    "scalaVersion" : "$actualScalaVersion",
+             |    "compilerPlugins": ${toJsonArray(compilerPlugins)},
+             |    "libraryDependencies": ${toJsonArray(libraryDependencies)}
              |  }
              |}
              |${input
-               .replaceAll("(<<|>>|@@)", "")}""".stripMargin
+            .replaceAll("(<<|>>|@@)", "")}""".stripMargin
         )
         _ <- Future.sequence(
           files.map(file => server.didOpen(s"${file._1}"))

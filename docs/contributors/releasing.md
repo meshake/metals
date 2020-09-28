@@ -33,9 +33,17 @@ title: Making a release
 - While waiting for Travis, draft the release notes:
 
   - Copy `website/blog/2018-12-06-iron.md` as a template
-  - You might use `.bin/release_notes.py` script to generate merged PRs list. It
-    requires the official Github library (`pip install PyGithub`) and you will
-    also need to fill in tag names.
+  - You might use `./bin/merged_prs.sc` script to generate merged PRs list
+    between two last release tags. It can be run using ammonite:
+
+  ```
+  cs install ammonite
+  amm ./bin/merged_prs.sc <tag1> <tag2> "<github_api_token>"
+  ```
+
+  It will need a basic github API token to run, which may be specified via
+  environment variable `GITHUB_TOKEN` or via the last argument.
+
   - Update Metals SNAPSHOT version in `build.sbt` and the default version in
     Github issue templates.
   - Open a PR to the repo.
@@ -48,7 +56,8 @@ title: Making a release
   - Run `./bin/test-release.sh $VERSION` to ensure that all artifacts have
     successfully been released. It's important to ensure that this script passes
     before announcing the release since it takes a while for all published
-    artifacts to sync with Maven Central.
+    artifacts to sync with Maven Central. You might need to update the script if
+    the list of supported versions changed in the meantime.
   - To check that the release to Sonatype succeed even if the artifacts are not
     yet available on Maven Central run:
     `./bin/test-release.sh $VERSION -r sonatype:public`

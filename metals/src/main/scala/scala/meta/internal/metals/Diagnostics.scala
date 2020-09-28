@@ -1,22 +1,25 @@
 package scala.meta.internal.metals
 
-import ch.epfl.scala.bsp4j
-import ch.epfl.scala.bsp4j.BuildTargetIdentifier
-import java.{util => ju}
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicReference
+import java.{util => ju}
+
+import scala.collection.concurrent.TrieMap
+import scala.collection.mutable
+import scala.{meta => m}
+
+import scala.meta.inputs.Input
+import scala.meta.internal.metals.MetalsEnrichments._
+import scala.meta.internal.metals.PositionSyntax._
+import scala.meta.io.AbsolutePath
+
+import ch.epfl.scala.bsp4j
+import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import org.eclipse.lsp4j.Diagnostic
 import org.eclipse.lsp4j.DiagnosticSeverity
 import org.eclipse.lsp4j.PublishDiagnosticsParams
 import org.eclipse.lsp4j.services.LanguageClient
 import org.eclipse.{lsp4j => l}
-import scala.collection.concurrent.TrieMap
-import scala.collection.mutable
-import scala.meta.inputs.Input
-import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.PositionSyntax._
-import scala.meta.io.AbsolutePath
-import scala.{meta => m}
 
 /**
  * Converts diagnostics from the build server and Scalameta parser into LSP diagnostics.
@@ -56,6 +59,12 @@ final class Diagnostics(
     diagnostics.clear()
     keys.foreach { key => publishDiagnostics(key) }
   }
+
+  def resetAmmoniteScripts(): Unit =
+    for (key <- diagnostics.keys if key.isAmmoniteScript) {
+      diagnostics.remove(key)
+      publishDiagnostics(key)
+    }
 
   def onStartCompileBuildTarget(target: BuildTargetIdentifier): Unit = {
     if (statistics.isDiagnostics) {
@@ -192,11 +201,12 @@ final class Diagnostics(
     for {
       d <- syntaxError.get(path)
       // De-duplicate only the most common and basic syntax errors.
-      isDuplicate = d.getMessage.startsWith("identifier expected but") &&
-        all.asScala.exists { other =>
-          other.getMessage.startsWith("identifier expected") &&
-          other.getRange == d.getRange
-        }
+      isDuplicate =
+        d.getMessage.startsWith("identifier expected but") &&
+          all.asScala.exists { other =>
+            other.getMessage.startsWith("identifier expected") &&
+            other.getRange == d.getRange
+          }
       if !isDuplicate
     } {
       all.add(d)
@@ -243,21 +253,6 @@ final class Diagnostics(
       path = diagnosticsBuffer.poll()
     }
     toPublish
-  }
-
-  private def logStatistics(
-      path: AbsolutePath,
-      prefix: String,
-      suffix: String
-  ): Unit = {
-    if (statistics.isDiagnostics) {
-      for {
-        target <- buildTargets.inverseSources(path)
-        timer <- compileTimer.get(target)
-      } {
-        scribe.info(s"$prefix: $timer $suffix")
-      }
-    }
   }
 
 }

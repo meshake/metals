@@ -1,28 +1,32 @@
 package scala.meta.internal.metals
 
+import java.io.OutputStream
+import java.io.OutputStreamWriter
 import java.io.PrintWriter
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
-import java.nio.file.Paths
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.util
 import java.util.Collections
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
-import org.eclipse.lsp4j.jsonrpc.CancelChecker
-import org.eclipse.{lsp4j => l}
-import org.scalafmt.interfaces.PositionException
-import org.scalafmt.interfaces.Scalafmt
-import org.scalafmt.interfaces.ScalafmtReporter
+
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.concurrent.Promise
+
 import scala.meta._
 import scala.meta.internal.metals.Messages.MissingScalafmtConf
 import scala.meta.internal.metals.Messages.MissingScalafmtVersion
 import scala.meta.internal.metals.MetalsEnrichments._
-import java.io.OutputStream
-import java.io.OutputStreamWriter
-import java.util.concurrent.TimeUnit
+
+import org.eclipse.lsp4j.jsonrpc.CancelChecker
+import org.eclipse.{lsp4j => l}
+import org.scalafmt.dynamic.ScalafmtDynamicError
+import org.scalafmt.interfaces.PositionException
+import org.scalafmt.interfaces.Scalafmt
+import org.scalafmt.interfaces.ScalafmtReporter
 
 /**
  * Implement text formatting using Scalafmt
@@ -67,11 +71,19 @@ final class FormattingProvider(
   // Does nothing if there is no .scalafmt.conf or there is no configured version setting.
   def load(): Unit = {
     if (scalafmtConf.isFile && !Testing.isEnabled) {
-      scalafmt.format(
-        scalafmtConf.toNIO,
-        Paths.get("Main.scala"),
-        "object Main  {}"
-      )
+      try {
+        scalafmt.format(
+          scalafmtConf.toNIO,
+          Paths.get("Main.scala"),
+          "object Main  {}"
+        )
+      } catch {
+        case e: ScalafmtDynamicError =>
+          scribe.debug(
+            s"Scalafmt issue while warming up due to config issue: ${e.getMessage()}"
+          )
+      }
+
     }
   }
 
@@ -112,7 +124,19 @@ final class FormattingProvider(
 
   private def runFormat(path: AbsolutePath, input: Input): List[l.TextEdit] = {
     val fullDocumentRange = Position.Range(input, 0, input.chars.length).toLSP
-    val formatted = scalafmt.format(scalafmtConf.toNIO, path.toNIO, input.text)
+    val formatted =
+      try {
+        scalafmt.format(scalafmtConf.toNIO, path.toNIO, input.text)
+      } catch {
+        case e: ScalafmtDynamicError =>
+          scribe.debug(
+            s"Skipping Scalafmt due to config issue: ${e.getMessage()}"
+          )
+          // If we hit this, there is a config issue, and we just return the input.
+          // We don't need to worry about handling it here since it's handled by the
+          // reporter and showed as an error in the logs anyways.
+          input.text
+      }
     if (formatted != input.text) {
       List(new l.TextEdit(fullDocumentRange, formatted))
     } else {
@@ -157,11 +181,11 @@ final class FormattingProvider(
               tables.dismissedNotifications.ChangeScalafmtVersion
                 .dismiss(24, TimeUnit.HOURS)
               None
-            } else {
+            } else if (item == Messages.dontShowAgain) {
               tables.dismissedNotifications.ChangeScalafmtVersion
                 .dismissForever()
               None
-            }
+            } else None
           }
       }
     } else Future.successful(None)
@@ -183,11 +207,11 @@ final class FormattingProvider(
           tables.dismissedNotifications.CreateScalafmtFile
             .dismiss(24, TimeUnit.HOURS)
           false
-        } else {
+        } else if (item == Messages.dontShowAgain) {
           tables.dismissedNotifications.CreateScalafmtFile
             .dismissForever()
           false
-        }
+        } else false
       }
     } else Future.successful(false)
   }

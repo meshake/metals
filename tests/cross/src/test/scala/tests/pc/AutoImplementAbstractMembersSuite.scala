@@ -1,12 +1,13 @@
 package tests.pc
 
-import org.eclipse.{lsp4j => l}
+import java.net.URI
 
-import tests.BaseCodeActionSuite
+import scala.meta.internal.jdk.CollectionConverters._
 import scala.meta.internal.metals.CompilerOffsetParams
 import scala.meta.internal.metals.TextEdits
-import scala.meta.internal.jdk.CollectionConverters._
-import java.net.URI
+
+import org.eclipse.{lsp4j => l}
+import tests.BaseCodeActionSuite
 import tests.BuildInfoVersions
 
 class AutoImplementAbstractMembersSuite extends BaseCodeActionSuite {
@@ -631,6 +632,48 @@ class AutoImplementAbstractMembersSuite extends BaseCodeActionSuite {
        |
        |  override def foo(x: Int): Int = ???
        |
+       |}
+       |""".stripMargin
+  )
+
+  checkEdit(
+    "access-modifiers",
+    """|package a
+       |
+       |trait Base {
+       |  // private is not available for abstract members
+       |  protected[a] def f(): Unit
+       |  protected def d(): Unit
+       |  protected[a] val s: Unit
+       |  implicit val a: String
+       |  // lazy values might not be abstract
+       |}
+       |object Test {
+       |   class <<Concrete>> extends Base
+       |}
+       |""".stripMargin,
+    """|package a
+       |
+       |trait Base {
+       |  // private is not available for abstract members
+       |  protected[a] def f(): Unit
+       |  protected def d(): Unit
+       |  protected[a] val s: Unit
+       |  implicit val a: String
+       |  // lazy values might not be abstract
+       |}
+       |object Test {
+       |   class Concrete extends Base {
+       |
+       |     override protected[a] def f(): Unit = ???
+       |
+       |     override protected def d(): Unit = ???
+       |
+       |     override protected[a] val s: Unit = ???
+       |
+       |     override implicit val a: String = ???
+       |
+       |   }
        |}
        |""".stripMargin
   )

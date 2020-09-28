@@ -1,32 +1,35 @@
 package scala.meta.internal.mtags
 
-import scala.meta.internal.pc.CompletionItemData
-import org.eclipse.lsp4j.CompletionItem
-import com.google.gson.Gson
-import com.google.gson.JsonElement
-import scala.util.control.NonFatal
-import java.util.logging.Level
-import java.util.logging.Logger
-import org.eclipse.{lsp4j => l}
-import scala.{meta => m}
-import scala.meta.internal.semanticdb.Language
-import scala.meta.io.AbsolutePath
-import scala.meta.io.RelativePath
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.util
-import scala.annotation.tailrec
-import org.eclipse.lsp4j.MarkupContent
-import geny.Generator
-import java.nio.file.Files
-import scala.meta.internal.io.FileIO
-import java.nio.charset.StandardCharsets
-import scala.meta.internal.io.PathIO
-import scala.meta.inputs.Input
-import scala.collection.AbstractIterator
+import java.util.logging.Level
+import java.util.logging.Logger
 import java.{util => ju}
+
+import scala.annotation.tailrec
+import scala.collection.AbstractIterator
+import scala.util.control.NonFatal
+import scala.{meta => m}
+
+import scala.meta.inputs.Input
+import scala.meta.internal.io.FileIO
+import scala.meta.internal.io.PathIO
+import scala.meta.internal.pc.CompletionItemData
+import scala.meta.internal.semanticdb.Language
 import scala.meta.internal.{semanticdb => s}
+import scala.meta.io.AbsolutePath
+import scala.meta.io.RelativePath
+
+import com.google.gson.Gson
+import com.google.gson.JsonElement
+import geny.Generator
+import org.eclipse.lsp4j.CompletionItem
+import org.eclipse.lsp4j.MarkupContent
 import org.eclipse.lsp4j.jsonrpc.messages.{Either => JEither}
+import org.eclipse.{lsp4j => l}
 
 trait CommonMtagsEnrichments {
 
@@ -36,18 +39,19 @@ trait CommonMtagsEnrichments {
   protected def decodeJson[T](obj: AnyRef, cls: java.lang.Class[T]): Option[T] =
     for {
       data <- Option(obj)
-      value <- try {
-        Some(
-          new Gson().fromJson[T](
-            data.asInstanceOf[JsonElement],
-            cls
+      value <-
+        try {
+          Some(
+            new Gson().fromJson[T](
+              data.asInstanceOf[JsonElement],
+              cls
+            )
           )
-        )
-      } catch {
-        case NonFatal(e) =>
-          logger.log(Level.SEVERE, s"decode error: $cls", e)
-          None
-      }
+        } catch {
+          case NonFatal(e) =>
+            logger.log(Level.SEVERE, s"decode error: $cls", e)
+            None
+        }
     } yield value
 
   implicit class XtensionJEitherCross[A, B](either: JEither[A, B]) {
@@ -127,6 +131,12 @@ trait CommonMtagsEnrichments {
     def asScala: Option[T] =
       if (opt.isPresent) Some(opt.get())
       else None
+  }
+
+  implicit class XtensionOptionScala[T](opt: Option[T]) {
+    def asJava: ju.Optional[T] =
+      if (opt.isDefined) ju.Optional.of(opt.get)
+      else ju.Optional.empty()
   }
 
   implicit class XtensionCompletionItemData(item: CompletionItem) {
@@ -210,7 +220,10 @@ trait CommonMtagsEnrichments {
 
   protected def filenameToLanguage(filename: String): Language = {
     if (filename.endsWith(".java")) Language.JAVA
-    else if (filename.endsWith(".scala")) Language.SCALA
+    else if (
+      filename.endsWith(".scala") || (filename.endsWith(".sc") && !filename
+        .endsWith(".worksheet.sc"))
+    ) Language.SCALA
     else Language.UNKNOWN_LANGUAGE
   }
 
@@ -238,11 +251,20 @@ trait CommonMtagsEnrichments {
   }
 
   implicit class XtensionStringDoc(doc: String) {
+    def isScala: Boolean =
+      doc.endsWith(".scala")
+    def isSbt: Boolean =
+      doc.endsWith(".sbt")
     def isScalaScript: Boolean =
       doc.endsWith(".sc")
+    def isWorksheet: Boolean =
+      doc.endsWith(".worksheet.sc")
     def isScalaFilename: Boolean =
-      doc.endsWith(".scala") ||
-        doc.endsWith(".sc")
+      doc.isScala || isScalaScript || isSbt
+    def isAmmoniteGeneratedFile: Boolean =
+      doc.endsWith(".sc.scala")
+    def isAmmoniteScript: Boolean =
+      isScalaScript && !isWorksheet
     def asSymbol: Symbol = Symbol(doc)
     def endsWithAt(value: String, offset: Int): Boolean = {
       val start = offset - value.length
@@ -278,9 +300,23 @@ trait CommonMtagsEnrichments {
       AbsolutePath(path.toNIO.getParent)
     }
 
+    def parentOpt: Option[AbsolutePath] = {
+      if (hasParent)
+        Some(AbsolutePath(path.toNIO.getParent))
+      else
+        None
+    }
+
+    def hasParent: Boolean = {
+      path.toNIO.getParent != null
+    }
+
     def exists: Boolean = {
       Files.exists(path.toNIO)
     }
+
+    def root: Option[AbsolutePath] =
+      Option(path.toNIO.getRoot()).map(AbsolutePath(_))
 
     def list: Generator[AbsolutePath] = {
       if (path.isDirectory) Files.list(path.toNIO).asScala.map(AbsolutePath(_))
@@ -328,9 +364,14 @@ trait CommonMtagsEnrichments {
         case _ => false
       }
     }
+    def isSbt: Boolean = {
+      filename.endsWith(".sbt")
+    }
     def isScalaScript: Boolean = {
       filename.endsWith(".sc")
     }
+    def isAmmoniteScript: Boolean =
+      isScalaScript && !isWorksheet
     def isWorksheet: Boolean = {
       filename.endsWith(".worksheet.sc")
     }
@@ -363,10 +404,11 @@ trait CommonMtagsEnrichments {
     /**
      * Returns iterator that consumes the priority queue in-order using `poll()`.
      */
-    def pollingIterator: Iterator[A] = new AbstractIterator[A] {
-      override def hasNext: Boolean = !q.isEmpty
-      override def next(): A = q.poll()
-    }
+    def pollingIterator: Iterator[A] =
+      new AbstractIterator[A] {
+        override def hasNext: Boolean = !q.isEmpty
+        override def next(): A = q.poll()
+      }
 
   }
 }

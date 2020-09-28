@@ -1,33 +1,36 @@
 package scala.meta.internal.implementation
 
-import org.eclipse.lsp4j.Location
-import org.eclipse.lsp4j.TextDocumentPositionParams
+import java.nio.file.Path
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
+
+import scala.collection.mutable
+import scala.util.control.NonFatal
+
+import scala.meta.internal.metals.Buffers
+import scala.meta.internal.metals.BuildTargets
+import scala.meta.internal.metals.DefinitionProvider
+import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.mtags.GlobalSymbolIndex
 import scala.meta.internal.mtags.Mtags
 import scala.meta.internal.mtags.Semanticdbs
 import scala.meta.internal.mtags.SymbolDefinition
 import scala.meta.internal.mtags.{Symbol => MSymbol}
-import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.io.AbsolutePath
-import scala.meta.internal.semanticdb.TextDocuments
-import scala.meta.internal.semanticdb.SymbolOccurrence
 import scala.meta.internal.semanticdb.ClassSignature
-import scala.meta.internal.semanticdb.TypeRef
-import scala.meta.internal.semanticdb.Signature
-import scala.meta.internal.semanticdb.TextDocument
-import java.util.concurrent.ConcurrentHashMap
-import java.nio.file.Path
-import scala.meta.internal.semanticdb.SymbolInformation
 import scala.meta.internal.semanticdb.MethodSignature
-import scala.meta.internal.metals.BuildTargets
-import scala.meta.internal.metals.Buffers
-import scala.meta.internal.metals.DefinitionProvider
 import scala.meta.internal.semanticdb.Scala._
+import scala.meta.internal.semanticdb.Signature
+import scala.meta.internal.semanticdb.SymbolInformation
+import scala.meta.internal.semanticdb.SymbolOccurrence
+import scala.meta.internal.semanticdb.TextDocument
+import scala.meta.internal.semanticdb.TextDocuments
+import scala.meta.internal.semanticdb.TypeRef
 import scala.meta.internal.semanticdb.TypeSignature
-import scala.collection.mutable
 import scala.meta.internal.symtab.GlobalSymbolTable
-import scala.util.control.NonFatal
-import java.util.concurrent.ConcurrentLinkedQueue
+import scala.meta.io.AbsolutePath
+
+import org.eclipse.lsp4j.Location
+import org.eclipse.lsp4j.TextDocumentPositionParams
 
 final class ImplementationProvider(
     semanticdbs: Semanticdbs,
@@ -53,7 +56,8 @@ final class ImplementationProvider(
 
   def onChange(docs: TextDocuments, path: Path): Unit = {
     implementationsInPath.compute(
-      path, { (_, _) => computeInheritance(docs) }
+      path,
+      { (_, _) => computeInheritance(docs) }
     )
   }
 
@@ -126,12 +130,13 @@ final class ImplementationProvider(
   ): List[Location] = {
     val source = params.getTextDocument.getUri.toAbsolutePath
     val locations = for {
-      (symbolOccurrence, currentDocument) <- definitionProvider
-        .symbolOccurrence(
-          source,
-          params.getPosition
-        )
-        .toIterable
+      (symbolOccurrence, currentDocument) <-
+        definitionProvider
+          .symbolOccurrence(
+            source,
+            params.getPosition
+          )
+          .toIterable
     } yield {
       // 1. Search locally for symbol
       // 2. Search inside workspace
@@ -157,7 +162,7 @@ final class ImplementationProvider(
           )
         // symbol is in workspace,
         // we might need to search different places for related symbols
-        case Some(textDocument) =>
+        case Some(_) =>
           Some(
             InheritanceContext.fromDefinitions(
               symbolSearch,
@@ -363,13 +368,13 @@ final class ImplementationProvider(
   ): Map[Path, Set[ClassLocation]] = {
 
     def loop(symbol: String, currentPath: Option[Path]): Set[ClassLocation] = {
-      val directImplementations = classContext.getLocations(symbol).filterNot {
-        loc =>
+      val directImplementations =
+        classContext.getLocations(symbol).filterNot { loc =>
           // we are not interested in local symbols from outside the workspace
           (loc.symbol.isLocal && loc.file.isEmpty) ||
           // local symbols inheritance should only be picked up in the same file
           (loc.symbol.isLocal && loc.file != currentPath)
-      }
+        }
       directImplementations ++ directImplementations
         .flatMap { loc =>
           val allPossible = loop(loc.symbol, loc.file)
@@ -525,7 +530,7 @@ object ImplementationProvider {
         fromClassSignature(classSig)
       case ts: TypeSignature =>
         fromTypeSignature(ts)
-      case other =>
+      case _ =>
         Seq.empty
     }
   }

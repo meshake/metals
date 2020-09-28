@@ -1,15 +1,22 @@
 package scala.meta.internal.metals
 
+import java.util.logging.Logger
+
+import scala.annotation.tailrec
+
+import scala.meta.Input
+import scala.meta.Position
+import scala.meta.Token
+import scala.meta.Tokens
+import scala.meta.internal.mtags.MtagsEnrichments._
+
 import difflib._
 import difflib.myers.Equalizer
 import org.eclipse.{lsp4j => l}
-import scala.annotation.tailrec
-import scala.meta.Token
-import scala.meta._
-import scala.meta.internal.mtags.MtagsEnrichments._
-import java.util.logging.Logger
 
-/** Helper to map between position between two similar strings. */
+/**
+ * Helper to map between position between two similar strings.
+ */
 final class TokenEditDistance private (
     matching: Array[MatchingToken],
     empty: Option[EmptyResult]
@@ -146,7 +153,9 @@ final class TokenEditDistance private (
     else toRevised(originalInput.toOffset(originalLine, originalColumn))
   }
 
-  /** Convert from offset in original string to offset in revised string */
+  /**
+   * Convert from offset in original string to offset in revised string
+   */
   def toRevised(originalOffset: Int): Either[EmptyResult, Position] = {
     if (isUnchanged) EmptyResult.unchanged
     else if (isNoMatch) EmptyResult.noMatch
@@ -169,7 +178,9 @@ final class TokenEditDistance private (
     else toOriginal(revisedInput.toOffset(revisedLine, revisedColumn))
   }
 
-  /** Convert from offset in revised string to offset in original string */
+  /**
+   * Convert from offset in revised string to offset in original string
+   */
   def toOriginal(revisedOffset: Int): Either[EmptyResult, Position] = {
     if (isUnchanged) EmptyResult.unchanged
     else if (isNoMatch) EmptyResult.noMatch
@@ -217,7 +228,7 @@ object TokenEditDistance {
    * @param revised The current snapshot of a string, for example open buffer
    *                in an editor.
    */
-  def fromTokens(
+  private def fromTokens(
       original: Tokens,
       revised: Tokens
   ): TokenEditDistance = {
@@ -278,12 +289,14 @@ object TokenEditDistance {
     if (!isScala) {
       // Ignore non-scala Files.
       unchanged
+    } else if (originalInput.value.isEmpty() || revisedInput.value.isEmpty()) {
+      noMatch
     } else {
       val result = for {
-        revised <- revisedInput.tokenize.toOption
+        revised <- Trees.defaultDialect(revisedInput).tokenize.toOption
         original <- {
           if (originalInput == revisedInput) Some(revised)
-          else originalInput.tokenize.toOption
+          else Trees.defaultDialect(originalInput).tokenize.toOption
         }
       } yield {
         if (doNothingWhenUnchanged && revised == original) unchanged
@@ -293,7 +306,9 @@ object TokenEditDistance {
     }
   }
 
-  /** Compare tokens only by their text and token category. */
+  /**
+   * Compare tokens only by their text and token category.
+   */
   private object TokenEqualizer extends Equalizer[Token] {
     override def equals(original: Token, revised: Token): Boolean =
       original.productPrefix == revised.productPrefix &&

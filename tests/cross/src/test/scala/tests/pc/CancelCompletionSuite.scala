@@ -1,17 +1,20 @@
 package tests.pc
 
 import java.lang
-import scala.meta.internal.jdk.CollectionConverters._
+import java.net.URI
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.atomic.AtomicBoolean
+
+import scala.meta.internal.jdk.CollectionConverters._
 import scala.meta.internal.metals.CompilerOffsetParams
-import scala.meta.pc.CancelToken
-import tests.BaseCompletionSuite
-import scala.meta.internal.pc.InterruptException
-import munit.Location
-import java.net.URI
 import scala.meta.internal.metals.EmptyCancelToken
+import scala.meta.internal.pc.InterruptException
+import scala.meta.pc.CancelToken
+
+import munit.Location
+import munit.TestOptions
+import tests.BaseCompletionSuite
 
 class CancelCompletionSuite extends BaseCompletionSuite {
 
@@ -32,7 +35,7 @@ class CancelCompletionSuite extends BaseCompletionSuite {
   }
 
   def checkCancelled(
-      name: String,
+      name: TestOptions,
       query: String,
       expected: String,
       compat: Map[String, String]
@@ -72,13 +75,14 @@ class CancelCompletionSuite extends BaseCompletionSuite {
         getExpected(expected, compat, scalaVersion)
       val obtained = completion.getItems.asScala
         .map(_.getLabel)
+        .sorted
         .mkString("\n")
       assertNoDiff(obtained, expectedCompat)
     }
   }
 
   checkCancelled(
-    "basic",
+    "basic".tag(IgnoreScalaVersion("0.27.0-RC1")),
     """
       |object A {
       |  val x = asser@@
@@ -88,11 +92,7 @@ class CancelCompletionSuite extends BaseCompletionSuite {
        |assert(assertion: Boolean, message: => Any): Unit
        |""".stripMargin,
     compat = Map(
-      "0.23" ->
-        """|assert(assertion: => Boolean @InlineParam): Unit
-           |assertFail(message: => Any): Nothing
-           |""".stripMargin,
-      "0.24" ->
+      "0.2" ->
         """|assert(assertion: Boolean @InlineParam): Unit
            |assertFail(message: => Any): Nothing
            |""".stripMargin

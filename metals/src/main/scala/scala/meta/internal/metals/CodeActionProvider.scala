@@ -1,19 +1,26 @@
 package scala.meta.internal.metals
 
-import org.eclipse.{lsp4j => l}
-import scala.meta.pc.CancelToken
-import scala.meta.internal.metals.codeactions._
+import scala.collection.JavaConverters._
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
-import scala.collection.JavaConverters._
+
+import scala.meta.internal.metals.codeactions._
+import scala.meta.pc.CancelToken
+
+import org.eclipse.{lsp4j => l}
 
 final class CodeActionProvider(
-    compilers: Compilers
+    compilers: Compilers,
+    buffers: Buffers,
+    buildTargets: BuildTargets,
+    scalafixProvider: ScalafixProvider
 ) {
   private val allActions: List[CodeAction] = List(
     new ImplementAbstractMembers(compilers),
     new ImportMissingSymbol(compilers),
-    new CreateNewSymbol()
+    new CreateNewSymbol(),
+    new StringActions(buffers),
+    new OrganizeImports(scalafixProvider, buildTargets)
   )
 
   def codeActions(

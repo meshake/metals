@@ -1,9 +1,10 @@
 package scala.meta.internal.metals
 
 import java.sql.Connection
-import JdbcEnrichments._
 import java.sql.Timestamp
 import java.util.concurrent.TimeUnit
+
+import scala.meta.internal.metals.JdbcEnrichments._
 
 final class DismissedNotifications(conn: () => Connection, time: Time) {
 
@@ -15,6 +16,8 @@ final class DismissedNotifications(conn: () => Connection, time: Time) {
   val ReconnectBsp = new Notification(6)
   val CreateScalafmtFile = new Notification(7)
   val ChangeScalafmtVersion = new Notification(8)
+  val AmmoniteImportAuto = new Notification(9)
+  val ReconnectAmmonite = new Notification(10)
 
   class Notification(val id: Int)(implicit name: sourcecode.Name) {
     override def toString: String = s"Notification(${name.value}, $id)"
@@ -47,6 +50,23 @@ final class DismissedNotifications(conn: () => Connection, time: Time) {
         stmt.setTimestamp(3, whenExpire)
       }
     }
-  }
 
+    def reset(): Unit = {
+      conn().update("delete from dismissed_notification where id = ?") { stmt =>
+        stmt.setInt(1, id)
+      }
+    }
+
+    def whenExpires(): Option[Long] = {
+      val now = new Timestamp(time.currentMillis())
+      val timestamp = conn().query {
+        "select when_expires from dismissed_notification where id = ? and when_expires > ? limit 1;"
+      } { stmt =>
+        stmt.setInt(1, id)
+        stmt.setTimestamp(2, now)
+      }(rs => rs.getTimestamp(1).getTime()).headOption
+
+      timestamp.map(_ - now.getTime())
+    }
+  }
 }

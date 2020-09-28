@@ -41,7 +41,8 @@ To use Metals in Emacs, place this snippet in your Emacs configuration (for exam
 
 ;; Enable scala-mode for highlighting, indentation and motion commands
 (use-package scala-mode
-  :mode "\\.s\\(cala\\|bt\\)$")
+  :interpreter
+    ("scala" . scala-mode))
 
 ;; Enable sbt mode for executing sbt commands
 (use-package sbt-mode
@@ -67,6 +68,10 @@ To use Metals in Emacs, place this snippet in your Emacs configuration (for exam
          (lsp-mode . lsp-lens-mode)
   :config (setq lsp-prefer-flymake nil))
 
+;; Add metals backend for lsp-mode
+(use-package lsp-metals
+  :config (setq lsp-metals-treeview-show-when-views-received t))
+
 ;; Enable nice rendering of documentation on hover
 (use-package lsp-ui)
 
@@ -86,13 +91,6 @@ To use Metals in Emacs, place this snippet in your Emacs configuration (for exam
   :hook
   (lsp-mode . dap-mode)
   (lsp-mode . dap-ui-mode)
-  )
-
-;; Use the Tree View Protocol for viewing the project structure and triggering compilation
-(use-package lsp-treemacs
-  :config
-  (lsp-metals-treeview-enable t)
-  (setq lsp-metals-treeview-show-when-views-received t)
   )
 ```
 
@@ -155,7 +153,8 @@ To configure Eglot with Metals:
 
 ;; Enable scala-mode and sbt-mode
 (use-package scala-mode
-  :mode "^\w+\\.s\\(cala\\|bt\\)$")
+  :interpreter
+    ("scala" . scala-mode))
 
 ;; Enable sbt mode for executing sbt commands
 (use-package sbt-mode
@@ -181,4 +180,7 @@ To configure Eglot with Metals:
 
 ```scala mdoc:generic
 
+```
+
+```scala mdoc:worksheet
 ```

@@ -1,10 +1,14 @@
 package tests
 
-import munit.TestOptions
-import munit.Location
 import scala.concurrent.Future
 
+import munit.Location
+import munit.TestOptions
+
 class BaseRenameLspSuite(name: String) extends BaseLspSuite(name) {
+
+  protected def libraryDependencies: List[String] = Nil
+  protected def compilerPlugins: List[String] = Nil
 
   def same(
       name: String,
@@ -41,7 +45,7 @@ class BaseRenameLspSuite(name: String) extends BaseLspSuite(name) {
       name: TestOptions,
       input: String,
       newName: String,
-      notRenamed: Boolean = false,
+      notRenamed: Boolean,
       nonOpened: Set[String] = Set.empty,
       breakingChange: String => String = identity[String],
       fileRenames: Map[String, String] = Map.empty,
@@ -82,13 +86,8 @@ class BaseRenameLspSuite(name: String) extends BaseLspSuite(name) {
              |{
              |  "a" : {
              |    "scalaVersion": "$actualScalaVersion",
-             |    "compilerPlugins": [
-             |      "org.scalamacros:::paradise:2.1.1"
-             |    ],
-             |    "libraryDependencies": [
-             |      "org.scalatest::scalatest:3.0.5",
-             |      "io.circe::circe-generic:0.12.0"
-             |    ]
+             |    "compilerPlugins": ${toJsonArray(compilerPlugins)},
+             |    "libraryDependencies": ${toJsonArray(libraryDependencies)}
              |  },
              |  "b" : {
              |    "scalaVersion": "$actualScalaVersion",

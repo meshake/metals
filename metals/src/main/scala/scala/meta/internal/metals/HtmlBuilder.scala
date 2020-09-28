@@ -1,9 +1,11 @@
 package scala.meta.internal.metals
 
 import java.lang.StringBuilder
+
+import scala.meta.io.AbsolutePath
+
 import org.eclipse.lsp4j.MessageParams
 import org.eclipse.lsp4j.MessageType
-import scala.meta.io.AbsolutePath
 
 /**
  * A string builder with helper methods for rendering HTML.
@@ -58,12 +60,13 @@ final class HtmlBuilder() {
     this
   }
 
-  private def color(tpe: MessageType): String = tpe match {
-    case MessageType.Error => "#f44336"
-    case MessageType.Warning => "#ff9800"
-    case MessageType.Info => "#3f51b5"
-    case _ => "#009688"
-  }
+  private def color(tpe: MessageType): String =
+    tpe match {
+      case MessageType.Error => "#f44336"
+      case MessageType.Warning => "#ff9800"
+      case MessageType.Info => "#3f51b5"
+      case _ => "#009688"
+    }
 
   def path(p: AbsolutePath): HtmlBuilder = {
     raw("</br>").text(p.toString())
@@ -100,6 +103,18 @@ final class HtmlBuilder() {
 
   def raw(string: String): this.type = {
     sb.append(string)
+    this
+  }
+  def link(url: String, name: String): this.type = {
+    sb.append("<a href='")
+      .append(url)
+      .append("'>")
+      .append(name)
+      .append("</a>")
+    this
+  }
+  def optionally(condition: Boolean)(fn: HtmlBuilder => Unit): this.type = {
+    if (condition) fn(this)
     this
   }
   def text(string: String): this.type = {

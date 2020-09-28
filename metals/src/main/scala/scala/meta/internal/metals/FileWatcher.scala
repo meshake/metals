@@ -1,17 +1,24 @@
 package scala.meta.internal.metals
 
-import io.methvin.watcher.DirectoryChangeEvent
-import io.methvin.watcher.DirectoryChangeListener
-import io.methvin.watcher.DirectoryWatcher
-import java.nio.file.Files
+import java.io.IOException
 import java.nio.file.Path
-import java.util
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicReference
+
+import scala.collection.mutable
+
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.io.AbsolutePath
-import java.{util => ju}
+
+import com.swoval.files.FileTreeDataViews.CacheObserver
+import com.swoval.files.FileTreeDataViews.Converter
+import com.swoval.files.FileTreeDataViews.Entry
+import com.swoval.files.FileTreeRepositories
+import com.swoval.files.FileTreeRepository
+import com.swoval.files.TypedPath
+import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryChangeEvent.EventType
+import io.methvin.watcher.hashing.FileHasher
+import io.methvin.watcher.hashing.HashCode
 
 /**
  * Handles file watching of interesting files in this build.
@@ -38,28 +45,46 @@ final class FileWatcher(
     buildTargets: BuildTargets,
     didChangeWatchedFiles: DirectoryChangeEvent => Unit
 ) extends Cancelable {
-
-  private val directoryExecutor = Executors.newFixedThreadPool(1)
-
-  ThreadPools.discardRejectedRunnables(
-    "FileWatcher.executor",
-    directoryExecutor
-  )
-
-  private var activeDirectoryWatcher: Option[DirectoryWatcher] = None
-
-  private var directoryWatching: CompletableFuture[Void] =
-    new CompletableFuture()
+  private def newRepository: FileTreeRepository[HashCode] = {
+    val hasher = FileHasher.DEFAULT_FILE_HASHER
+    val converter: Converter[HashCode] = (path: TypedPath) =>
+      try hasher.hash(path.getPath)
+      catch { case _: IOException => HashCode.empty() }
+    val repo = FileTreeRepositories.get(converter, /*follow symlinks*/ true)
+    def entryToEvent(kind: EventType, entry: Entry[_]): DirectoryChangeEvent =
+      new DirectoryChangeEvent(kind, entry.getTypedPath.getPath, 1)
+    repo.addCacheObserver(new CacheObserver[HashCode] {
+      override def onCreate(entry: Entry[HashCode]): Unit = {
+        didChangeWatchedFiles(entryToEvent(EventType.CREATE, entry))
+      }
+      override def onDelete(entry: Entry[HashCode]): Unit = {
+        didChangeWatchedFiles(entryToEvent(EventType.DELETE, entry))
+      }
+      override def onUpdate(
+          previous: Entry[HashCode],
+          current: Entry[HashCode]
+      ): Unit = {
+        if (previous.getValue != current.getValue) {
+          didChangeWatchedFiles(entryToEvent(EventType.MODIFY, current))
+        }
+      }
+      override def onError(ex: IOException) = {}
+    })
+    repo
+  }
+  private val repository = new AtomicReference[FileTreeRepository[HashCode]]
 
   override def cancel(): Unit = {
-    stopWatching()
-    directoryExecutor.shutdown()
-    activeDirectoryWatcher.foreach(_.close())
+    repository.getAndSet(null) match {
+      case null =>
+      case r => r.close()
+    }
   }
 
   def restart(): Unit = {
-    val sourceDirectoriesToWatch = new util.LinkedHashSet[Path]()
-    val createdSourceDirectories = new util.ArrayList[AbsolutePath]()
+    val sourceDirectoriesToWatch = mutable.Set.empty[Path]
+    val sourceFilesToWatch = mutable.Set.empty[Path]
+    val createdSourceDirectories = new java.util.ArrayList[AbsolutePath]()
     def watch(path: AbsolutePath, isSource: Boolean): Unit = {
       if (!path.isDirectory && !path.isFile) {
         val pathToCreate = if (path.isScalaOrJava) {
@@ -78,7 +103,7 @@ final class FileWatcher(
       if (buildTargets.isInsideSourceRoot(path)) {
         () // Do nothing, already covered by a source root
       } else if (path.isScalaOrJava) {
-        sourceDirectoriesToWatch.add(path.toNIO.getParent())
+        sourceFilesToWatch.add(path.toNIO)
       } else {
         sourceDirectoriesToWatch.add(path.toNIO)
       }
@@ -87,16 +112,34 @@ final class FileWatcher(
     buildTargets.sourceRoots.foreach(watch(_, isSource = true))
     buildTargets.sourceItems.foreach(watch(_, isSource = true))
     buildTargets.scalacOptions.foreach { item =>
-      val targetroot = item.targetroot
-      if (!targetroot.isJar) {
-        // Watch META-INF/semanticdb directories for "find references" index.
-        watch(
-          targetroot.resolve(Directories.semanticdb),
-          isSource = false
-        )
+      for {
+        scalaInfo <- buildTargets.scalaInfo(item.getTarget)
+      } {
+        val targetroot = item.targetroot(scalaInfo.getScalaVersion)
+        if (!targetroot.isJar) {
+          // Watch META-INF/semanticdb directories for "find references" index.
+          watch(
+            targetroot.resolve(Directories.semanticdb),
+            isSource = false
+          )
+        }
       }
+
     }
-    startWatching(new ju.ArrayList(sourceDirectoriesToWatch))
+    val repo = repository.get match {
+      case null =>
+        val r = newRepository
+        repository.set(r)
+        r
+      case r => r
+    }
+    // The second parameter of repo.register is the recursive depth of the watch.
+    // A value of -1 means only watch this exact path. A value of 0 means only
+    // watch the immediate children of the path. A value of 1 means watch the
+    // children of the path and each child's children and so on.
+    sourceDirectoriesToWatch.foreach(repo.register(_, Int.MaxValue))
+    sourceFilesToWatch.foreach(repo.register(_, -1))
+
     // reverse sorting here is necessary to delete parent paths at the end
     createdSourceDirectories.asScala.sortBy(_.toNIO).reverse.foreach { dir =>
       if (dir.isEmptyDirectory) {
@@ -104,40 +147,4 @@ final class FileWatcher(
       }
     }
   }
-
-  private def startWatching(directories: util.List[Path]): Unit = {
-    stopWatching()
-    val directoryWatcher = DirectoryWatcher
-      .builder()
-      .paths(directories)
-      .listener(new DirectoryListener())
-      // File hashing is necessary for correctness, see:
-      // https://github.com/scalameta/metals/pull/1153
-      .fileHashing(true)
-      .build()
-    activeDirectoryWatcher = Some(directoryWatcher)
-    directoryWatching = directoryWatcher.watchAsync(directoryExecutor)
-  }
-
-  private def stopWatching(): Unit = {
-    try activeDirectoryWatcher.foreach(_.close())
-    catch {
-      // safe to ignore because we're closing the file watcher and
-      // this error won't affect correctness of Metals.
-      case _: ju.ConcurrentModificationException =>
-    }
-    directoryWatching.cancel(false)
-  }
-
-  class DirectoryListener extends DirectoryChangeListener {
-    override def onEvent(event: DirectoryChangeEvent): Unit = {
-      // in non-MacOS systems the path will be null
-      if (event.eventType() == EventType.OVERFLOW) {
-        didChangeWatchedFiles(event)
-      } else if (!Files.isDirectory(event.path())) {
-        didChangeWatchedFiles(event)
-      }
-    }
-  }
-
 }

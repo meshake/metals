@@ -1,13 +1,13 @@
 package scala.meta.internal.metals.codeactions
 
-import scala.meta.internal.metals._
-import scala.meta.internal.metals.MetalsEnrichments._
-import org.eclipse.{lsp4j => l}
-import scala.meta.pc.CancelToken
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
-import java.net.URI
-import java.nio.file.Paths
+
+import scala.meta.internal.metals.MetalsEnrichments._
+import scala.meta.internal.metals._
+import scala.meta.pc.CancelToken
+
+import org.eclipse.{lsp4j => l}
 
 class CreateNewSymbol() extends CodeAction {
   override def kind: String = l.CodeActionKind.QuickFix
@@ -25,22 +25,27 @@ class CreateNewSymbol() extends CodeAction {
       codeAction.setTitle(CreateNewSymbol.title(name))
       codeAction.setKind(l.CodeActionKind.QuickFix)
       codeAction.setDiagnostics(List(diagnostic).asJava)
-      val directory = Paths
-        .get(URI.create(params.getTextDocument().getUri()))
-        .getParent()
-        .toString()
       codeAction.setCommand(ServerCommands.NewScalaFile.toLSP(List(null, name)))
       codeAction
     }
 
-    val codeActions = params.getContext().getDiagnostics().asScala.collect {
-      case d @ ScalacDiagnostic.SymbolNotFound(name)
-          if params.getRange().overlapsWith(d.getRange()) =>
-        createNewSymbol(d, name)
-    }
+    val codeActions = params
+      .getContext()
+      .getDiagnostics()
+      .asScala
+      .groupBy {
+        case ScalacDiagnostic.SymbolNotFound(name) => Some(name)
+        case _ => None
+      }
+      .collect {
+        case (Some(name), diags)
+            if params.getRange().overlapsWith(diags.head.getRange()) =>
+          createNewSymbol(diags.head, name)
+      }
+      .toSeq
+      .sorted
 
     Future.successful(codeActions)
-
   }
 }
 

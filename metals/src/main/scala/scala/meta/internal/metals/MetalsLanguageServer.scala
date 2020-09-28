@@ -11,54 +11,65 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
-import ch.epfl.scala.{bsp4j => b}
-import com.google.gson.JsonElement
-import io.methvin.watcher.DirectoryChangeEvent
-import io.methvin.watcher.DirectoryChangeEvent.EventType
-import io.undertow.server.HttpServerExchange
-import org.eclipse.lsp4j._
-import org.eclipse.{lsp4j => l}
-import org.eclipse.lsp4j.jsonrpc.messages.{Either => JEither}
-import org.eclipse.lsp4j.jsonrpc.services.JsonNotification
-import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
-import scala.collection.mutable.ArrayBuffer
+import java.{util => ju}
+
 import scala.collection.mutable
+import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.Await
+import scala.concurrent.ExecutionContext
 import scala.concurrent.ExecutionContextExecutorService
 import scala.concurrent.Future
 import scala.concurrent.Promise
 import scala.concurrent.TimeoutException
 import scala.concurrent.duration.Duration
+import scala.concurrent.duration._
+import scala.util.Success
+import scala.util.control.NonFatal
+
+import scala.meta.internal.builds.BloopInstall
 import scala.meta.internal.builds.BuildTool
 import scala.meta.internal.builds.BuildTools
+import scala.meta.internal.builds.NewProjectProvider
+import scala.meta.internal.builds.ShellRunner
 import scala.meta.internal.implementation.ImplementationProvider
+import scala.meta.internal.implementation.Supermethods
 import scala.meta.internal.io.FileIO
+import scala.meta.internal.metals.Messages.AmmoniteJvmParametersChange
+import scala.meta.internal.metals.Messages.IncompatibleBloopVersion
 import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.debug.DebugProvider
+import scala.meta.internal.metals.ammonite.Ammonite
+import scala.meta.internal.metals.codelenses.RunTestCodeLens
+import scala.meta.internal.metals.codelenses.SuperMethodCodeLens
+import scala.meta.internal.metals.debug.BuildTargetClasses
 import scala.meta.internal.metals.debug.DebugParametersJsonParsers
+import scala.meta.internal.metals.debug.DebugProvider
+import scala.meta.internal.metals.newScalaFile.NewFileProvider
 import scala.meta.internal.mtags._
+import scala.meta.internal.remotels.RemoteLanguageServer
+import scala.meta.internal.rename.RenameProvider
 import scala.meta.internal.semanticdb.Scala._
 import scala.meta.internal.semver.SemVer
 import scala.meta.internal.tvp._
+import scala.meta.internal.worksheets.DecorationWorksheetPublisher
+import scala.meta.internal.worksheets.WorksheetProvider
+import scala.meta.internal.worksheets.WorkspaceEditWorksheetPublisher
 import scala.meta.io.AbsolutePath
 import scala.meta.parsers.ParseException
 import scala.meta.pc.CancelToken
 import scala.meta.tokenizers.TokenizeException
-import scala.util.control.NonFatal
-import scala.util.Success
-import com.google.gson.JsonPrimitive
-import scala.meta.internal.worksheets.WorksheetProvider
-import scala.meta.internal.worksheets.DecorationWorksheetPublisher
-import scala.meta.internal.worksheets.WorkspaceEditWorksheetPublisher
-import scala.meta.internal.rename.RenameProvider
+
 import ch.epfl.scala.bsp4j.CompileReport
-import java.{util => ju}
-import scala.meta.internal.metals.Messages.IncompatibleBloopVersion
-import scala.meta.internal.implementation.Supermethods
-import scala.meta.internal.metals.codelenses.RunTestCodeLens
-import scala.meta.internal.metals.codelenses.SuperMethodCodeLens
-import scala.meta.internal.remotels.RemoteLanguageServer
-import scala.concurrent.duration._
+import ch.epfl.scala.{bsp4j => b}
+import com.google.gson.JsonElement
+import com.google.gson.JsonPrimitive
+import io.methvin.watcher.DirectoryChangeEvent
+import io.methvin.watcher.DirectoryChangeEvent.EventType
+import io.undertow.server.HttpServerExchange
+import org.eclipse.lsp4j._
+import org.eclipse.lsp4j.jsonrpc.messages.{Either => JEither}
+import org.eclipse.lsp4j.jsonrpc.services.JsonNotification
+import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
+import org.eclipse.{lsp4j => l}
 
 class MetalsLanguageServer(
     ec: ExecutionContextExecutorService,
@@ -79,8 +90,8 @@ class MetalsLanguageServer(
   val isCancelled = new AtomicBoolean(false)
   override def cancel(): Unit = {
     if (isCancelled.compareAndSet(false, true)) {
-      val buildShutdown = buildServer match {
-        case Some(build) => build.shutdown()
+      val buildShutdown = bspSession match {
+        case Some(session) => session.shutdown()
         case None => Future.successful(())
       }
       try cancelables.cancel()
@@ -114,15 +125,18 @@ class MetalsLanguageServer(
     new AtomicReference[b.BuildTargetIdentifier]()
   private val definitionIndex = newSymbolIndex()
   private val symbolDocs = new Docstrings(definitionIndex)
-  var buildServer: Option[BuildServerConnection] =
-    Option.empty[BuildServerConnection]
+  var bspSession: Option[BspSession] =
+    Option.empty[BspSession]
   private val savedFiles = new ActiveFiles(time)
   private val openedFiles = new ActiveFiles(time)
   private val languageClient = new DelegatingLanguageClient(NoopLanguageClient)
   var userConfig: UserConfiguration = UserConfiguration()
-  val buildTargets: BuildTargets = new BuildTargets()
+  val excludedPackageHandler: ExcludedPackagesHandler =
+    new ExcludedPackagesHandler(userConfig.excludedPackages)
+  var ammonite: Ammonite = _
+  val buildTargets: BuildTargets = BuildTargets.withAmmonite(() => ammonite)
   private val buildTargetClasses =
-    new BuildTargetClasses(() => buildServer, buildTargets)
+    new BuildTargetClasses(buildTargets)
   private val remote = new RemoteLanguageServer(
     () => workspace,
     () => userConfig,
@@ -134,7 +148,6 @@ class MetalsLanguageServer(
     buildTargets,
     buildTargetClasses,
     () => workspace,
-    () => buildServer,
     languageClient,
     buildTarget => focusedDocumentBuildTarget.get() == buildTarget,
     worksheets => onWorksheetChanged(worksheets)
@@ -163,16 +176,19 @@ class MetalsLanguageServer(
   )
 
   // These can't be instantiated until we know the workspace root directory.
+  private var shellRunner: ShellRunner = _
   private var bloopInstall: BloopInstall = _
   private var diagnostics: Diagnostics = _
   private var warnings: Warnings = _
   private var fileSystemSemanticdbs: FileSystemSemanticdbs = _
   private var interactiveSemanticdbs: InteractiveSemanticdbs = _
   private var buildTools: BuildTools = _
+  private var newProjectProvider: NewProjectProvider = _
   private var semanticdbs: Semanticdbs = _
   private var buildClient: ForwardingMetalsBuildClient = _
   private var bloopServers: BloopServers = _
   private var bspServers: BspServers = _
+  private var bspConnector: BspConnector = _
   private var codeLensProvider: CodeLensProvider = _
   private var supermethods: Supermethods = _
   private var codeActionProvider: CodeActionProvider = _
@@ -187,10 +203,11 @@ class MetalsLanguageServer(
   private var workspaceSymbols: WorkspaceSymbolProvider = _
   private val packageProvider: PackageProvider =
     new PackageProvider(buildTargets)
-  private var newFilesProvider: NewFilesProvider = _
+  private var newFileProvider: NewFileProvider = _
   private var debugProvider: DebugProvider = _
   private var symbolSearch: MetalsSymbolSearch = _
   private var compilers: Compilers = _
+  private var scalafixProvider: ScalafixProvider = _
   def loadedPresentationCompilerCount(): Int =
     compilers.loadedPresentationCompilerCount()
   var tables: Tables = _
@@ -200,6 +217,8 @@ class MetalsLanguageServer(
   var httpServer: Option[MetalsHttpServer] = None
   var treeView: TreeViewProvider = NoopTreeViewProvider
   var worksheetProvider: WorksheetProvider = _
+  var popupChoiceReset: PopupChoiceReset = _
+  var stacktraceAnalyzer: StacktraceAnalyzer = _
 
   private val clientConfig: ClientConfiguration =
     new ClientConfiguration(
@@ -219,7 +238,7 @@ class MetalsLanguageServer(
     )
     embedded = register(
       new Embedded(
-        clientConfig.initialConfig.icons,
+        clientConfig.icons,
         statusBar,
         () => userConfig
       )
@@ -236,8 +255,12 @@ class MetalsLanguageServer(
   private def updateWorkspaceDirectory(params: InitializeParams): Unit = {
     workspace = AbsolutePath(Paths.get(URI.create(params.getRootUri))).dealias
     MetalsLogger.setupLspLogger(workspace, redirectSystemOut)
+    val clientInfo = MetalsServerConfig.metalsClientType match {
+      case Some(clientType) => s"for client ${clientType}"
+      case None => ""
+    }
     scribe.info(
-      s"started: Metals version ${BuildInfo.metalsVersion} in workspace '$workspace'"
+      s"started: Metals version ${BuildInfo.metalsVersion} in workspace '$workspace' $clientInfo."
     )
 
     clientConfig.experimentalCapabilities =
@@ -274,7 +297,7 @@ class MetalsLanguageServer(
       workspace,
       buildTargets,
       statusBar,
-      clientConfig.initialConfig.icons,
+      clientConfig.icons,
       buildTools,
       compilations.isCurrentlyCompiling
     )
@@ -298,20 +321,26 @@ class MetalsLanguageServer(
         compilers.didCompile(report)
       },
       () => treeView,
-      () => worksheetProvider
+      () => worksheetProvider,
+      () => ammonite
     )
-    bloopInstall = register(
-      new BloopInstall(
-        workspace,
-        languageClient,
-        sh,
-        buildTools,
-        time,
-        tables,
-        embedded,
-        statusBar,
-        () => userConfig
-      )
+    shellRunner = register(
+      new ShellRunner(languageClient, () => userConfig, time, statusBar)
+    )
+    bloopInstall = new BloopInstall(
+      workspace,
+      languageClient,
+      buildTools,
+      tables,
+      shellRunner
+    )
+    newProjectProvider = new NewProjectProvider(
+      languageClient,
+      statusBar,
+      clientConfig,
+      shellRunner,
+      clientConfig.icons,
+      workspace
     )
     bloopServers = new BloopServers(
       workspace,
@@ -328,6 +357,10 @@ class MetalsLanguageServer(
       tables,
       bspGlobalDirectories,
       clientConfig.initialConfig
+    )
+    bspConnector = new BspConnector(
+      bloopServers,
+      bspServers
     )
     semanticdbs = AggregateSemanticdbs(
       List(
@@ -352,7 +385,7 @@ class MetalsLanguageServer(
       languageClient,
       clientConfig,
       statusBar,
-      clientConfig.initialConfig.icons,
+      clientConfig.icons,
       Option(params.getWorkspaceFolders) match {
         case Some(folders) =>
           folders.asScala.map(_.getUri.toAbsolutePath).toList
@@ -361,21 +394,11 @@ class MetalsLanguageServer(
       },
       tables
     )
-    newFilesProvider = new NewFilesProvider(
+    newFileProvider = new NewFileProvider(
       workspace,
       languageClient,
       packageProvider,
       () => focusedDocument
-    )
-    debugProvider = new DebugProvider(
-      definitionProvider,
-      buildServer,
-      buildTargets,
-      buildTargetClasses,
-      compilations,
-      languageClient,
-      buildClient,
-      statusBar
     )
     referencesProvider = new ReferenceProvider(
       workspace,
@@ -413,9 +436,19 @@ class MetalsLanguageServer(
       () => userConfig,
       clientConfig
     )
+
+    stacktraceAnalyzer = new StacktraceAnalyzer(
+      workspace,
+      buffers,
+      definitionProvider,
+      clientConfig.icons,
+      clientConfig.isCommandInHtmlSupported
+    )
+
     codeLensProvider = new CodeLensProvider(
       List(runTestLensProvider, goSuperLensProvider),
-      semanticdbs
+      semanticdbs,
+      stacktraceAnalyzer
     )
     renameProvider = new RenameProvider(
       referencesProvider,
@@ -441,7 +474,8 @@ class MetalsLanguageServer(
       clientConfig.initialConfig.statistics,
       buildTargets,
       definitionIndex,
-      interactiveSemanticdbs.toFileOnDisk
+      interactiveSemanticdbs.toFileOnDisk,
+      excludedPackageHandler.isExcludedPackage
     )
     symbolSearch = new MetalsSymbolSearch(
       symbolDocs,
@@ -451,8 +485,9 @@ class MetalsLanguageServer(
     compilers = register(
       new Compilers(
         workspace,
-        clientConfig.initialConfig,
+        clientConfig,
         () => userConfig,
+        () => ammonite,
         buildTargets,
         buffers,
         symbolSearch,
@@ -460,18 +495,54 @@ class MetalsLanguageServer(
         statusBar,
         sh,
         Option(params),
-        diagnostics
+        diagnostics,
+        excludedPackageHandler.isExcludedPackage
       )
     )
-    codeActionProvider = new CodeActionProvider(compilers)
+    debugProvider = new DebugProvider(
+      definitionProvider,
+      () => bspSession.map(_.mainConnection),
+      buildTargets,
+      buildTargetClasses,
+      compilations,
+      languageClient,
+      buildClient,
+      statusBar,
+      compilers,
+      definitionIndex
+    )
+    scalafixProvider = ScalafixProvider(
+      buffers,
+      userConfig.scalafixConfigPath,
+      workspace,
+      embedded,
+      statusBar,
+      clientConfig.icons(),
+      languageClient
+    )
+    codeActionProvider = new CodeActionProvider(
+      compilers,
+      buffers,
+      buildTargets,
+      scalafixProvider
+    )
     doctor = new Doctor(
       workspace,
       buildTargets,
       languageClient,
+      () => bspSession.map(_.mainConnection.name),
+      () => bspConnector.resolve(buildTools),
       () => httpServer,
       tables,
       clientConfig
     )
+    popupChoiceReset = new PopupChoiceReset(
+      tables,
+      languageClient,
+      doctor,
+      () => slowConnectToBuildServer(forceImport = true).map(_ => ())
+    )
+
     val worksheetPublisher =
       if (clientConfig.isDecorationProvider)
         new DecorationWorksheetPublisher()
@@ -487,7 +558,28 @@ class MetalsLanguageServer(
         statusBar,
         diagnostics,
         embedded,
-        worksheetPublisher
+        worksheetPublisher,
+        compilers
+      )
+    )
+    ammonite = register(
+      new Ammonite(
+        buffers,
+        compilers,
+        compilations,
+        statusBar,
+        diagnostics,
+        doctor,
+        () => tables,
+        languageClient,
+        buildClient,
+        () => userConfig,
+        () => profiledIndexWorkspace(() => ()),
+        () => workspace,
+        () => focusedDocument,
+        buildTargets,
+        () => buildTools,
+        clientConfig.initialConfig
       )
     )
     if (clientConfig.isTreeViewProvider) {
@@ -498,7 +590,7 @@ class MetalsLanguageServer(
         () => buildClient.ongoingCompilations(),
         definitionIndex,
         clientConfig.initialConfig.statistics,
-        id => compilations.compileTargets(List(id)),
+        id => compilations.compileTarget(id),
         sh
       )
     }
@@ -539,11 +631,13 @@ class MetalsLanguageServer(
       capabilities.setRenameProvider(renameOptions)
       capabilities.setDocumentHighlightProvider(true)
       capabilities.setDocumentOnTypeFormattingProvider(
-        new DocumentOnTypeFormattingOptions("\n")
+        new DocumentOnTypeFormattingOptions("\n", List("\"").asJava)
       )
-      capabilities.setDocumentRangeFormattingProvider(true)
+      capabilities.setDocumentRangeFormattingProvider(
+        initialConfig.allowMultilineStringFormatting
+      )
       capabilities.setSignatureHelpProvider(
-        new SignatureHelpOptions(List("(", "[").asJava)
+        new SignatureHelpOptions(List("(", "[", ",").asJava)
       )
       capabilities.setCompletionProvider(
         new CompletionOptions(
@@ -557,15 +651,26 @@ class MetalsLanguageServer(
       if (initializeParams.supportsCodeActionLiterals) {
         capabilities.setCodeActionProvider(
           new CodeActionOptions(
-            List(CodeActionKind.QuickFix, CodeActionKind.Refactor).asJava
+            List(
+              CodeActionKind.QuickFix,
+              CodeActionKind.Refactor,
+              CodeActionKind.SourceOrganizeImports
+            ).asJava
           )
         )
       } else {
         capabilities.setCodeActionProvider(true)
       }
-      capabilities.setTextDocumentSync(TextDocumentSyncKind.Full)
-      capabilities.setExperimental(MetalsExperimental())
-      new InitializeResult(capabilities)
+
+      val textDocumentSyncOptions = new TextDocumentSyncOptions
+      textDocumentSyncOptions.setChange(TextDocumentSyncKind.Full)
+      textDocumentSyncOptions.setSave(new SaveOptions(true))
+      textDocumentSyncOptions.setOpenClose(true)
+
+      capabilities.setTextDocumentSync(textDocumentSyncOptions)
+
+      val serverInfo = new ServerInfo("Metals", BuildInfo.metalsVersion)
+      new InitializeResult(capabilities, serverInfo)
     }).asJava
   }
 
@@ -583,7 +688,7 @@ class MetalsLanguageServer(
             new Registration(
               "1",
               "workspace/didChangeWatchedFiles",
-              clientConfig.initialConfig.globSyntax.registrationOptions(
+              clientConfig.globSyntax.registrationOptions(
                 this.workspace
               )
             )
@@ -599,7 +704,7 @@ class MetalsLanguageServer(
       val port = 5031
       var url = s"http://$host:$port"
       var render: () => String = () => ""
-      var completeCommand: HttpServerExchange => Unit = e => ()
+      var completeCommand: HttpServerExchange => Unit = (_) => ()
       val server = register(
         MetalsHttpServer(
           host,
@@ -617,10 +722,10 @@ class MetalsLanguageServer(
         languageClient.underlying,
         () => server.reload(),
         charset,
-        clientConfig.initialConfig.icons,
+        clientConfig.icons,
         time,
         sh,
-        clientConfig.initialConfig
+        clientConfig
       )
       render = () => newClient.renderHtml
       completeCommand = e => newClient.completeCommand(e)
@@ -733,15 +838,18 @@ class MetalsLanguageServer(
         ()
       }
     } else {
+      if (path.isAmmoniteScript)
+        ammonite.maybeImport(path)
       val loadFuture = compilers.load(List(path))
       val compileFuture =
-        compilations.compileFiles(List(path))
+        compilations.compileFile(path)
       Future
         .sequence(List(didChangeFuture, loadFuture, compileFuture))
         .ignoreValue
         .asJava
     }
   }
+
   @JsonNotification("metals/didFocusTextDocument")
   def didFocus(uri: String): CompletableFuture[DidFocusResult.Value] = {
     val path = uri.toAbsolutePath
@@ -777,7 +885,7 @@ class MetalsLanguageServer(
             isAffectedByCurrentCompilation || isAffectedByLastCompilation
           if (needsCompile) {
             compilations
-              .compileFiles(List(path))
+              .compileFile(path)
               .map(_ => DidFocusResult.Compiled)
               .asJava
           } else {
@@ -846,7 +954,11 @@ class MetalsLanguageServer(
       // reliable way to await until those notifications appear.
       for {
         item <- buildTargets.scalacOptions(report.getTarget())
-        semanticdb = item.targetroot.resolve(Directories.semanticdb)
+        scalaInfo <- buildTargets.scalaInfo(report.getTarget)
+        semanticdb =
+          item
+            .targetroot(scalaInfo.getScalaVersion)
+            .resolve(Directories.semanticdb)
         generatedFile <- semanticdb.listRecursive
       } {
         val event =
@@ -869,14 +981,18 @@ class MetalsLanguageServer(
         case Right(value) =>
           val old = userConfig
           userConfig = value
+          if (userConfig.excludedPackages != old.excludedPackages) {
+            excludedPackageHandler.update(userConfig.excludedPackages)
+            workspaceSymbols.indexClasspath()
+          }
           if (userConfig.symbolPrefixes != old.symbolPrefixes) {
             compilers.restartAll()
           }
           val expectedBloopVersion = userConfig.currentBloopVersion
           val correctVersionRunning =
-            buildServer.map(_.version).contains(expectedBloopVersion)
+            bspSession.map(_.version).contains(expectedBloopVersion)
           val allVersionsDefined =
-            buildServer.nonEmpty && userConfig.bloopVersion.nonEmpty
+            bspSession.nonEmpty && userConfig.bloopVersion.nonEmpty
           val changedToNoVersion =
             old.bloopVersion.isDefined && userConfig.bloopVersion.isEmpty
           val versionChanged = allVersionsDefined && !correctVersionRunning
@@ -895,8 +1011,24 @@ class MetalsLanguageServer(
                 case _ =>
                   Future.successful(())
               }
-          } else if (userConfig.pantsTargets != old.pantsTargets) {
-            slowConnectToBuildServer(forceImport = false).ignoreValue
+          } else if (
+            userConfig.ammoniteJvmProperties != old.ammoniteJvmProperties && buildTargets.allBuildTargetIds
+              .exists(Ammonite.isAmmBuildTarget)
+          ) {
+            languageClient
+              .showMessageRequest(AmmoniteJvmParametersChange.params())
+              .asScala
+              .flatMap {
+                case item if item == AmmoniteJvmParametersChange.restart =>
+                  ammonite
+                    .stop()
+                    .asScala
+                    .flatMap { _ =>
+                      ammonite.start()
+                    }
+                case _ =>
+                  Future.successful(())
+              }
           } else {
             Future.successful(())
           }
@@ -929,7 +1061,10 @@ class MetalsLanguageServer(
         Future {
           diagnostics.didDelete(path)
         }.asJava
-      } else if (isScalaOrJava && !savedFiles.isRecentlyActive(path)) {
+      } else if (
+        isScalaOrJava && !savedFiles.isRecentlyActive(path) && !buffers
+          .contains(path)
+      ) {
         event.eventType() match {
           case EventType.CREATE =>
             buildTargets.onCreate(path)
@@ -963,7 +1098,7 @@ class MetalsLanguageServer(
       .sequence(
         List(
           Future(reindexWorkspaceSources(paths)),
-          compilations.compileFiles(paths).ignoreValue,
+          compilations.compileFiles(paths),
           onBuildChanged(paths).ignoreValue
         )
       )
@@ -1051,13 +1186,13 @@ class MetalsLanguageServer(
   def onTypeFormatting(
       params: DocumentOnTypeFormattingParams
   ): CompletableFuture[util.List[TextEdit]] =
-    CancelTokens.future { token => compilers.onTypeFormatting(params) }
+    CancelTokens.future { _ => compilers.onTypeFormatting(params) }
 
   @JsonRequest("textDocument/rangeFormatting")
   def rangeFormatting(
       params: DocumentRangeFormattingParams
   ): CompletableFuture[util.List[TextEdit]] =
-    CancelTokens.future { token => compilers.rangeFormatting(params) }
+    CancelTokens.future { _ => compilers.rangeFormatting(params) }
 
   @JsonRequest("textDocument/prepareRename")
   def prepareRename(
@@ -1122,7 +1257,7 @@ class MetalsLanguageServer(
               s"Found new symbol references for '$name', try running again."
             scribe.info(message)
             statusBar
-              .addMessage(clientConfig.initialConfig.icons.info + message)
+              .addMessage(clientConfig.icons.info + message)
           }
       }
     }
@@ -1263,7 +1398,19 @@ class MetalsLanguageServer(
         Future {
           compilers.restartAll()
         }.asJavaObject
-      case ServerCommands.GotoLocation() =>
+      case ServerCommands.GotoPosition() =>
+        Future {
+          // arguments are not checked but are of format:
+          // singletonList(location: Location, otherWindow: Boolean)
+          languageClient.metalsExecuteClientCommand(
+            new ExecuteCommandParams(
+              ClientCommands.GotoLocation.id,
+              params.getArguments()
+            )
+          )
+        }.asJavaObject
+
+      case ServerCommands.GotoSymbol() =>
         Future {
           for {
             args <- Option(params.getArguments())
@@ -1290,7 +1437,10 @@ class MetalsLanguageServer(
             new ExecuteCommandParams(
               ClientCommands.GotoLocation.id,
               List(
-                new Location(log.toURI.toString(), new l.Range(pos, pos)): Object
+                new Location(
+                  log.toURI.toString(),
+                  new l.Range(pos, pos)
+                ): Object
               ).asJava
             )
           )
@@ -1324,6 +1474,13 @@ class MetalsLanguageServer(
         }
         session.asJavaObject
 
+      case ServerCommands.AnalyzeStacktrace() =>
+        Future {
+          val command = stacktraceAnalyzer.analyzeCommand(params)
+          command.foreach(languageClient.metalsExecuteClientCommand)
+          scribe.debug(s"Executing AnalyzeStacktrace ${command}")
+        }.asJavaObject
+
       case ServerCommands.GotoSuperMethod() =>
         Future {
           val command = supermethods.getGoToSuperMethodCommand(params)
@@ -1335,6 +1492,22 @@ class MetalsLanguageServer(
         scribe.debug(s"Executing SuperMethodHierarchy ${command}")
         supermethods.jumpToSelectedSuperMethod(params).asJavaObject
 
+      case ServerCommands.ResetChoicePopup() =>
+        val argsMaybe = Option(params.getArguments())
+        (argsMaybe.flatMap(_.asScala.headOption) match {
+          case Some(arg: JsonPrimitive) =>
+            val value = arg.getAsString().replace("+", " ")
+            scribe.debug(
+              s"Executing ResetChoicePopup ${command} for choice ${value}"
+            )
+            popupChoiceReset.reset(value)
+          case _ =>
+            scribe.debug(
+              s"Executing ResetChoicePopup ${command} in interactive mode."
+            )
+            popupChoiceReset.interactiveReset()
+        }).asJavaObject
+
       case ServerCommands.NewScalaFile() =>
         val args = params.getArguments.asScala
         val directoryURI = args.lift(0).collect {
@@ -1345,7 +1518,20 @@ class MetalsLanguageServer(
           case name: JsonPrimitive if name.isString =>
             name.getAsString()
         }
-        newFilesProvider.createNewFileDialog(directoryURI, name).asJavaObject
+        val fileType = args.lift(2).collect {
+          case fileType: JsonPrimitive if fileType.isString =>
+            fileType.getAsString()
+        }
+        newFileProvider
+          .handleFileCreation(directoryURI, name, fileType)
+          .asJavaObject
+
+      case ServerCommands.StartAmmoniteBuildServer() =>
+        ammonite.start().asJavaObject
+      case ServerCommands.StopAmmoniteBuildServer() =>
+        ammonite.stop()
+      case ServerCommands.NewScalaProject() =>
+        newProjectProvider.createNewProjectFromTemplate().asJavaObject
 
       case cmd =>
         scribe.error(s"Unknown command '$cmd'")
@@ -1400,44 +1586,56 @@ class MetalsLanguageServer(
         .orNull
     }.asJava
 
-  private def supportedBuildTool(): Option[BuildTool] =
-    buildTools.loadSupported match {
-      case Some(buildTool) =>
-        val isCompatibleVersion = SemVer.isCompatibleVersion(
-          buildTool.minimumVersion,
-          buildTool.version
+  private def supportedBuildTool(): Future[Option[BuildTool]] = {
+    def isCompatibleVersion(buildTool: BuildTool) = {
+      val isCompatibleVersion = SemVer.isCompatibleVersion(
+        buildTool.minimumVersion,
+        buildTool.version
+      )
+      if (isCompatibleVersion) {
+        Some(buildTool)
+      } else {
+        scribe.warn(s"Unsupported $buildTool version ${buildTool.version}")
+        languageClient.showMessage(
+          Messages.IncompatibleBuildToolVersion.params(buildTool)
         )
-        if (isCompatibleVersion) {
-          Some(buildTool)
-        } else {
-          scribe.warn(s"Unsupported $buildTool version ${buildTool.version}")
-          languageClient.showMessage(
-            Messages.IncompatibleBuildToolVersion.params(buildTool)
-          )
-          None
-        }
-      case None =>
+        None
+      }
+    }
+
+    buildTools.loadSupported match {
+      case Nil => {
         if (!buildTools.isAutoConnectable) {
           warnings.noBuildTool()
         }
-        None
+        Future(None)
+      }
+      case buildTool :: Nil => Future(isCompatibleVersion(buildTool))
+      case buildTools =>
+        for {
+          Some(buildTool) <- bloopInstall.checkForChosenBuildTool(buildTools)
+        } yield isCompatibleVersion(buildTool)
     }
+  }
 
   private def slowConnectToBuildServer(
       forceImport: Boolean
   ): Future[BuildChange] = {
-    supportedBuildTool match {
-      case Some(buildTool) =>
-        buildTool.digest(workspace) match {
-          case None =>
-            scribe.warn(s"Skipping build import, no checksum.")
-            Future.successful(BuildChange.None)
-          case Some(digest) =>
-            slowConnectToBuildServer(forceImport, buildTool, digest)
-        }
-      case None =>
-        Future.successful(BuildChange.None)
-    }
+    for {
+      possibleBuildTool <- supportedBuildTool
+      buildChange <- possibleBuildTool match {
+        case Some(buildTool) =>
+          buildTool.digest(workspace) match {
+            case None =>
+              scribe.warn(s"Skipping build import, no checksum.")
+              Future.successful(BuildChange.None)
+            case Some(digest) =>
+              slowConnectToBuildServer(forceImport, buildTool, digest)
+          }
+        case None =>
+          Future.successful(BuildChange.None)
+      }
+    } yield buildChange
   }
 
   private def slowConnectToBuildServer(
@@ -1498,15 +1696,15 @@ class MetalsLanguageServer(
     {
       for {
         _ <- disconnectOldBuildServer()
-        maybeBuild <- timed("connected to build server") {
-          if (buildTools.isBloop) bloopServers.newServer(userConfig)
-          else bspServers.newServer()
+        maybeSession <- timed("connected to build server") {
+          bspConnector.connect(workspace, userConfig, buildTools)
         }
-        result <- maybeBuild match {
-          case Some(build) =>
-            val result = connectToNewBuildServer(build)
-            build.onReconnection { reconnected =>
-              connectToNewBuildServer(reconnected)
+        result <- maybeSession match {
+          case Some(session) =>
+            val result = connectToNewBuildServer(session)
+            session.mainConnection.onReconnection { newMainConn =>
+              val updSession = session.copy(main = newMainConn)
+              connectToNewBuildServer(updSession)
                 .flatMap(compileAllOpenFiles)
                 .ignoreValue
             }
@@ -1519,67 +1717,59 @@ class MetalsLanguageServer(
         }
       } yield result
     }.recover {
-        case NonFatal(e) =>
-          disconnectOldBuildServer()
-          val message =
-            "Failed to connect with build server, no functionality will work."
-          val details = " See logs for more details."
-          languageClient.showMessage(
-            new MessageParams(MessageType.Error, message + details)
-          )
-          scribe.error(message, e)
-          BuildChange.Failed
-      }
-      .flatMap(compileAllOpenFiles)
+      case NonFatal(e) =>
+        disconnectOldBuildServer()
+        val message =
+          "Failed to connect with build server, no functionality will work."
+        val details = " See logs for more details."
+        languageClient.showMessage(
+          new MessageParams(MessageType.Error, message + details)
+        )
+        scribe.error(message, e)
+        BuildChange.Failed
+    }.flatMap(compileAllOpenFiles)
   }
 
   private def disconnectOldBuildServer(): Future[Unit] = {
-    if (buildServer.isDefined) {
+    if (bspSession.isDefined) {
       scribe.info("disconnected: build server")
     }
-    buildServer match {
+    bspSession match {
       case None => Future.successful(())
       case Some(value) =>
-        buildServer = None
+        bspSession = None
         diagnostics.reset()
+        buildTargets.resetConnections(List.empty)
         value.shutdown()
     }
   }
+
   private def connectToNewBuildServer(
-      build: BuildServerConnection
+      session: BspSession
   ): Future[BuildChange] = {
-    scribe.info(s"Connected to Build server v${build.version}")
-    cancelables.add(build)
+    scribe.info(s"Connected to Build server v${session.version}")
+    cancelables.add(session)
     compilers.cancel()
-    buildServer = Some(build)
-    val importedBuild = timed("imported build") {
-      for {
-        workspaceBuildTargets <- build.workspaceBuildTargets()
-        ids = workspaceBuildTargets.getTargets.map(_.getId)
-        scalacOptions <- build
-          .buildTargetScalacOptions(new b.ScalacOptionsParams(ids))
-        sources <- build
-          .buildTargetSources(new b.SourcesParams(ids))
-        dependencySources <- build
-          .buildTargetDependencySources(new b.DependencySourcesParams(ids))
-      } yield {
-        ImportedBuild(
-          workspaceBuildTargets,
-          scalacOptions,
-          sources,
-          dependencySources,
-          build.version,
-          build.name
-        )
-      }
+    bspSession = Some(session)
+    val importedBuilds0 = timed("imported build") {
+      session.importBuilds()
     }
     for {
-      i <- statusBar.trackFuture("Importing build", importedBuild)
-      _ <- profiledIndexWorkspace(
-        () => indexWorkspace(i),
-        () => indexingPromise.trySuccess(())
-      )
-      _ = checkRunningBloopVersion(i.bspServerVersion)
+      i <- statusBar.trackFuture("Importing build", importedBuilds0)
+      _ = {
+        val idToConnection = i.flatMap { bspBuild =>
+          val targets =
+            bspBuild.build.workspaceBuildTargets.getTargets().asScala
+          targets.map(t => (t.getId(), bspBuild.connection))
+        }
+        buildTargets.resetConnections(idToConnection)
+        lastImportedBuilds = i.map(_.build)
+      }
+      _ <- profiledIndexWorkspace(() => {
+        val main = session.mainConnection
+        doctor.check(main.name, main.version)
+      })
+      _ = checkRunningBloopVersion(session.version)
     } yield {
       BuildChange.Reconnected
     }
@@ -1594,7 +1784,7 @@ class MetalsLanguageServer(
       targets.asScala.foreach { target =>
         buildTargets.linkSourceFile(target, source)
       }
-      indexSourceFile(source, Some(sourceItem))
+      indexSourceFile(source, Some(sourceItem), targets.asScala.headOption)
     }
   }
 
@@ -1605,40 +1795,55 @@ class MetalsLanguageServer(
       path <- paths.iterator
       if path.isScalaOrJava
     } {
-      indexSourceFile(path, buildTargets.inverseSourceItem(path))
+      indexSourceFile(path, buildTargets.inverseSourceItem(path), None)
     }
   }
 
+  private def sourceToIndex(
+      source: AbsolutePath,
+      targetOpt: Option[b.BuildTargetIdentifier]
+  ): AbsolutePath =
+    targetOpt
+      .flatMap(ammonite.generatedScalaPath(_, source))
+      .getOrElse(source)
+
   private def indexSourceFile(
       source: AbsolutePath,
-      sourceItem: Option[AbsolutePath]
+      sourceItem: Option[AbsolutePath],
+      targetOpt: Option[b.BuildTargetIdentifier]
   ): Unit = {
-    try {
-      val reluri = source.toIdeallyRelativeURI(sourceItem)
-      val input = source.toInput
-      val symbols = ArrayBuffer.empty[WorkspaceSymbolInformation]
-      SemanticdbDefinition.foreach(input) {
-        case SemanticdbDefinition(info, occ, owner) =>
-          if (WorkspaceSymbolProvider.isRelevantKind(info.kind)) {
-            occ.range.foreach { range =>
-              symbols += WorkspaceSymbolInformation(
-                info.symbol,
-                info.kind,
-                range.toLSP
-              )
-            }
-          }
-          if (sourceItem.isDefined &&
-            !info.symbol.isPackage &&
-            owner.isPackage) {
-            definitionIndex.addToplevelSymbol(reluri, source, info.symbol)
-          }
-      }
-      workspaceSymbols.didChange(source, symbols)
 
-      // Since the `symbols` here are toplevel symbols,
-      // we cannot use `symbols` for expiring the cache for all symbols in the source.
-      symbolDocs.expireSymbolDefinition(source)
+    try {
+      val sourceToIndex0 = sourceToIndex(source, targetOpt)
+      if (sourceToIndex0.exists) {
+        val reluri = source.toIdeallyRelativeURI(sourceItem)
+        val input = sourceToIndex0.toInput
+        val symbols = ArrayBuffer.empty[WorkspaceSymbolInformation]
+        SemanticdbDefinition.foreach(input) {
+          case SemanticdbDefinition(info, occ, owner) =>
+            if (WorkspaceSymbolProvider.isRelevantKind(info.kind)) {
+              occ.range.foreach { range =>
+                symbols += WorkspaceSymbolInformation(
+                  info.symbol,
+                  info.kind,
+                  range.toLSP
+                )
+              }
+            }
+            if (
+              sourceItem.isDefined &&
+              !info.symbol.isPackage &&
+              (owner.isPackage || source.isAmmoniteScript)
+            ) {
+              definitionIndex.addToplevelSymbol(reluri, source, info.symbol)
+            }
+        }
+        workspaceSymbols.didChange(source, symbols)
+
+        // Since the `symbols` here are toplevel symbols,
+        // we cannot use `symbols` for expiring the cache for all symbols in the source.
+        symbolDocs.expireSymbolDefinition(sourceToIndex0)
+      }
     } catch {
       case NonFatal(e) =>
         scribe.error(source.toString(), e)
@@ -1661,13 +1866,15 @@ class MetalsLanguageServer(
   )(thunk: => T): T = {
     val elapsed = new Timer(time)
     val result = thunk
-    if (onlyIf && (thresholdMillis == 0 || elapsed.elapsedMillis > thresholdMillis)) {
+    if (
+      onlyIf && (thresholdMillis == 0 || elapsed.elapsedMillis > thresholdMillis)
+    ) {
       scribe.info(s"time: $didWhat in $elapsed")
     }
     result
   }
 
-  private def withTimer[T](didWhat: String, reportStatus: Boolean = false)(
+  private def withTimer[T](didWhat: String, reportStatus: Boolean)(
       thunk: => Future[T]
   ): Future[(Timer, T)] = {
     val elapsed = new Timer(time)
@@ -1680,24 +1887,21 @@ class MetalsLanguageServer(
     }
   }
 
-  def profiledIndexWorkspace(
-      thunk: () => Unit,
-      onFinally: () => Unit
-  ): Future[Unit] = {
+  private def profiledIndexWorkspace(check: () => Unit): Future[Unit] = {
     val tracked = statusBar.trackFuture(
       s"Indexing",
       Future {
         timedThunk("indexed workspace", onlyIf = true) {
-          try thunk()
+          try indexWorkspace(check)
           finally {
-            onFinally()
+            indexingPromise.trySuccess(())
           }
         }
       }
     )
     tracked.foreach { _ =>
       statusBar.addMessage(
-        s"${clientConfig.initialConfig.icons.rocket}Indexing complete!"
+        s"${clientConfig.icons.rocket}Indexing complete!"
       )
       if (clientConfig.initialConfig.statistics.isMemory) {
         logMemory(
@@ -1730,7 +1934,10 @@ class MetalsLanguageServer(
     scribe.info(s"memory: $footprint")
   }
 
-  private def indexWorkspace(i: ImportedBuild): Unit = {
+  private var lastImportedBuilds = List.empty[ImportedBuild]
+
+  private def indexWorkspace(check: () => Unit): Unit = {
+    val i = (ammonite.lastImportedBuild :: lastImportedBuilds).reduce(_ ++ _)
     timedThunk(
       "updated build targets",
       clientConfig.initialConfig.statistics.isIndex
@@ -1748,19 +1955,25 @@ class MetalsLanguageServer(
         item <- i.sources.getItems.asScala
         source <- item.getSources.asScala
       } {
-        val sourceItemPath = source.getUri.toAbsolutePath
+        val sourceItemPath = source.getUri.toAbsolutePath(followSymlink = false)
         buildTargets.addSourceItem(sourceItemPath, item.getTarget)
       }
-      doctor.check(i.bspServerName, i.bspServerVersion)
+      check()
       buildTools
         .loadSupported()
-        .foreach(_.onBuildTargets(workspace, buildTargets))
     }
     timedThunk(
       "started file watcher",
       clientConfig.initialConfig.statistics.isIndex
     ) {
-      fileWatcher.restart()
+      try {
+        fileWatcher.restart()
+      } catch {
+        // note(@tgodzik) This is needed in case of ammonite
+        // where it can rarely deletes directories while we are trying to watch them
+        case NonFatal(e) =>
+          scribe.warn("File watching failed, indexes will not be updated.", e)
+      }
     }
     timedThunk(
       "indexed library classpath",
@@ -2033,12 +2246,50 @@ class MetalsLanguageServer(
   }
 
   private def newSymbolIndex(): OnDemandSymbolIndex = {
-    OnDemandSymbolIndex(onError = {
-      case e @ (_: ParseException | _: TokenizeException) =>
-        scribe.error(e.toString)
-      case NonFatal(e) =>
-        scribe.error("unexpected error during source scanning", e)
-    })
+    OnDemandSymbolIndex(
+      onError = {
+        case e @ (_: ParseException | _: TokenizeException) =>
+          scribe.error(e.toString)
+        case NonFatal(e) =>
+          scribe.error("unexpected error during source scanning", e)
+      },
+      toIndexSource = path => {
+        if (path.isAmmoniteScript)
+          for {
+            target <- buildTargets.sourceBuildTargets(path).headOption
+            toIndex <- ammonite.generatedScalaPath(target, path)
+          } yield toIndex
+        else
+          None
+      }
+    )
   }
 
+}
+
+object MetalsLanguageServer {
+
+  def importedBuild(
+      build: BuildServerConnection
+  )(implicit ec: ExecutionContext): Future[ImportedBuild] =
+    for {
+      workspaceBuildTargets <- build.workspaceBuildTargets()
+      ids = workspaceBuildTargets.getTargets.map(_.getId)
+      scalacOptions <-
+        build
+          .buildTargetScalacOptions(new b.ScalacOptionsParams(ids))
+      sources <-
+        build
+          .buildTargetSources(new b.SourcesParams(ids))
+      dependencySources <-
+        build
+          .buildTargetDependencySources(new b.DependencySourcesParams(ids))
+    } yield {
+      ImportedBuild(
+        workspaceBuildTargets,
+        scalacOptions,
+        sources,
+        dependencySources
+      )
+    }
 }

@@ -1,10 +1,11 @@
 package scala.meta.internal.metals
 
-import java.{util => ju}
 import java.util.Collections
-import org.eclipse.lsp4j.TextDocumentPositionParams
-import org.eclipse.lsp4j.Location
-import scala.meta.pc.CancelToken
+import java.{util => ju}
+
+import scala.concurrent.ExecutionContext
+import scala.concurrent.Future
+
 import scala.meta.inputs.Input
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.mtags.GlobalSymbolIndex
@@ -12,14 +13,16 @@ import scala.meta.internal.mtags.Mtags
 import scala.meta.internal.mtags.Semanticdbs
 import scala.meta.internal.mtags.Symbol
 import scala.meta.internal.mtags.SymbolDefinition
+import scala.meta.internal.remotels.RemoteLanguageServer
 import scala.meta.internal.semanticdb.Scala._
+import scala.meta.internal.semanticdb.SymbolOccurrence
 import scala.meta.internal.semanticdb.TextDocument
 import scala.meta.io.AbsolutePath
-import scala.concurrent.Future
-import scala.concurrent.ExecutionContext
-import scala.meta.internal.semanticdb.SymbolOccurrence
+import scala.meta.pc.CancelToken
+
+import org.eclipse.lsp4j.Location
 import org.eclipse.lsp4j.Position
-import scala.meta.internal.remotels.RemoteLanguageServer
+import org.eclipse.lsp4j.TextDocumentPositionParams
 
 /**
  * Implements goto definition that works even in code that doesn't parse.
@@ -108,9 +111,10 @@ final class DefinitionProvider(
       dirtyPosition: Position
   ): Option[(SymbolOccurrence, TextDocument)] = {
     for {
-      currentDocument <- semanticdbs
-        .textDocument(source)
-        .documentIncludingStale
+      currentDocument <-
+        semanticdbs
+          .textDocument(source)
+          .documentIncludingStale
       posOcc = positionOccurrence(
         source,
         dirtyPosition,
@@ -139,10 +143,11 @@ final class DefinitionProvider(
     // Find matching symbol occurrence in SemanticDB snapshot
     val occurrence = for {
       queryPosition <- snapshotPosition.toPosition(dirtyPosition)
-      occurrence <- snapshot.occurrences
-        .find(_.encloses(queryPosition, true))
-        // In case of macros we might need to get the postion from the presentation compiler
-        .orElse(fromMtags(source, queryPosition))
+      occurrence <-
+        snapshot.occurrences
+          .find(_.encloses(queryPosition, true))
+          // In case of macros we might need to get the postion from the presentation compiler
+          .orElse(fromMtags(source, queryPosition))
     } yield occurrence
 
     ResolvedSymbolOccurrence(sourceDistance, occurrence)
@@ -193,7 +198,9 @@ case class DefinitionDestination(
     uri: String
 ) {
 
-  /** Converts snapshot position to dirty buffer position in the destination file */
+  /**
+   * Converts snapshot position to dirty buffer position in the destination file
+   */
   def toResult: Option[DefinitionResult] =
     for {
       location <- snapshot.definition(uri, symbol)
@@ -226,9 +233,10 @@ class DestinationProvider(
     val defnRevisedInput = symbolDefinition.path.toInput
     // Read text file from disk instead of editor buffers because the file
     // on disk is more likely to parse.
-    val parsed =
+    lazy val parsed =
       mtags.index(symbolDefinition.path.toLanguage, defnRevisedInput)
-    if (parsed.occurrences.isEmpty) {
+
+    if (symbolDefinition.path.isAmmoniteScript || parsed.occurrences.isEmpty) {
       // Fall back to SemanticDB on disk, if any
       semanticdbsFallback
         .flatMap {
@@ -243,17 +251,11 @@ class DestinationProvider(
   def fromSymbol(symbol: String): Option[DefinitionDestination] = {
     for {
       symbolDefinition <- index.definition(Symbol(symbol))
+      if symbolDefinition.path.exists
       destinationDoc = bestTextDocument(symbolDefinition)
-      defnPathInput = symbolDefinition.path.toInputFromBuffers(buffers)
-      defnOriginalInput = Input.VirtualFile(
-        defnPathInput.path,
-        destinationDoc.text
-      )
       destinationPath = symbolDefinition.path.toFileOnDisk(workspace)
-      destinationDistance = TokenEditDistance(
-        defnOriginalInput,
-        defnPathInput
-      )
+      destinationDistance =
+        buffers.tokenEditDistance(destinationPath, destinationDoc.text)
     } yield {
       DefinitionDestination(
         destinationDoc,

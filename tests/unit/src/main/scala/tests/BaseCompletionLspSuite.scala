@@ -1,15 +1,17 @@
 package tests
 
-import org.eclipse.lsp4j.CompletionList
 import scala.concurrent.Future
+
 import scala.meta.internal.metals.TextEdits
+
 import munit.Location
+import org.eclipse.lsp4j.CompletionList
 
 abstract class BaseCompletionLspSuite(name: String) extends BaseLspSuite(name) {
 
   def withCompletion(query: String, project: Char = 'a')(
       fn: CompletionList => Unit
-  )(implicit loc: Location): Future[Unit] = {
+  ): Future[Unit] = {
     val filename = s"$project/src/main/scala/$project/${project.toUpper}.scala"
     val text = server
       .textContentsOnDisk(filename)
@@ -95,35 +97,35 @@ abstract class BaseCompletionLspSuite(name: String) extends BaseLspSuite(name) {
       _ <- assertCompletion(
         "Stream@@",
         getExpected(
-          """|Stream scala.collection.immutable
-             |Stream - java.util.stream
+          """|BaseStream - java.util.stream
+             |InputStream - java.io
              |IntStream - java.util.stream
              |LogStream - java.rmi.server
-             |StreamView - scala.collection.immutable
-             |Streamable - scala.reflect.io
-             |BaseStream - java.util.stream
              |LongStream - java.util.stream
-             |InputStream - java.io
              |PrintStream - java.io
-             |DoubleStream - java.util.stream
-             |OutputStream - java.io
+             |Stream - java.util.stream
+             |Stream scala.collection.immutable
              |StreamBuilder - scala.collection.immutable.Stream
              |StreamCanBuildFrom - scala.collection.immutable.Stream
+             |StreamFilter - javax.xml.stream
+             |StreamResult - javax.xml.transform.stream
+             |StreamView - scala.collection.immutable
+             |Streamable - scala.reflect.io
              |""".stripMargin,
           Map(
             "2.13" ->
-              """|Stream scala.collection.immutable
-                 |Stream - java.util.stream
+              """|BaseStream - java.util.stream
+                 |InputStream - java.io
                  |IntStream - java.util.stream
                  |LogStream - java.rmi.server
-                 |Streamable - scala.reflect.io
-                 |BaseStream - java.util.stream
                  |LongStream - java.util.stream
-                 |StreamShape - scala.collection.convert.StreamExtensions
-                 |InputStream - java.io
                  |PrintStream - java.io
-                 |DoubleStream - java.util.stream
-                 |OutputStream - java.io
+                 |Stream - java.util.stream
+                 |Stream scala.collection.immutable
+                 |StreamFilter - javax.xml.stream
+                 |StreamResult - javax.xml.transform.stream
+                 |StreamShape - scala.collection.convert.StreamExtensions
+                 |Streamable - scala.reflect.io
                  |""".stripMargin
           ),
           scalaVersion
@@ -132,11 +134,11 @@ abstract class BaseCompletionLspSuite(name: String) extends BaseLspSuite(name) {
       _ <- assertCompletion(
         "TrieMap@@",
         getExpected(
-          """|TrieMap - scala.collection.concurrent
+          """|HashTrieMap - scala.collection.immutable.HashMap
              |ParTrieMap - scala.collection.parallel.mutable
-             |HashTrieMap - scala.collection.immutable.HashMap
              |ParTrieMapCombiner - scala.collection.parallel.mutable
              |ParTrieMapSplitter - scala.collection.parallel.mutable
+             |TrieMap - scala.collection.concurrent
              |TrieMapSerializationEnd - scala.collection.concurrent
              |""".stripMargin,
           Map(

@@ -2,15 +2,17 @@ package scala.meta.internal.metals
 
 import java.util.concurrent.CompletableFuture
 import javax.annotation.Nullable
+
+import scala.meta.internal.decorations.DecorationClient
+import scala.meta.internal.metals.MetalsEnrichments._
+import scala.meta.internal.tvp._
+
 import org.eclipse.lsp4j.ExecuteCommandParams
 import org.eclipse.lsp4j.MessageParams
 import org.eclipse.lsp4j.MessageType
 import org.eclipse.lsp4j.jsonrpc.services.JsonNotification
 import org.eclipse.lsp4j.jsonrpc.services.JsonRequest
 import org.eclipse.lsp4j.services.LanguageClient
-import scala.meta.internal.tvp._
-import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.decorations.DecorationClient
 
 trait MetalsLanguageClient
     extends LanguageClient
@@ -140,6 +142,11 @@ case class MetalsQuickPickResult(
     // value=null when cancelled=true
     @Nullable itemId: String = null,
     @Nullable cancelled: java.lang.Boolean = null
+)
+
+case class MetalsOpenWindowParams(
+    uri: String,
+    openNewWindow: java.lang.Boolean
 )
 
 case class MetalsQuickPickItem(

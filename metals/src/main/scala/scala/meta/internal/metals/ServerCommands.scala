@@ -1,8 +1,10 @@
 package scala.meta.internal.metals
 
-import scala.util.matching.Regex
-import ch.epfl.scala.{bsp4j => b}
 import javax.annotation.Nullable
+
+import scala.util.matching.Regex
+
+import ch.epfl.scala.{bsp4j => b}
 
 /**
  * LSP commands supported by the Metals language server.
@@ -152,13 +154,38 @@ object ServerCommands {
        |""".stripMargin
   )
 
-  val GotoLocation = new Command(
+  val AnalyzeStacktrace = new Command(
+    "analyze-stacktrace",
+    "Analyze stacktrace",
+    """|Converts provided stacktrace in the parameter to a format that contains links
+       |to locations of places where the exception was raised.
+       |
+       |If the configuration parameter of the client (support-commands-in-html) is true
+       |then client is requested to display html with links
+       |already pointing to proper locations in user codebase.
+       |Otherwise client will display simple scala file
+       |but with code lenses that direct user to proper location in codebase.
+       |""".stripMargin,
+    "[string], where the string is a stacktrace."
+  )
+
+  val GotoSymbol = new Command(
     "goto",
-    "Goto location",
+    "Goto location for symbol",
     """|Move the cursor to the definition of the argument symbol.
        |
        |""".stripMargin,
     "[string], where the string is a SemanticDB symbol."
+  )
+
+  val GotoPosition = new Command(
+    "goto-position",
+    "Goto location for position",
+    """|Move the cursor to the location provided in arguments.
+       |It simply forwards request to client.
+       |
+       |""".stripMargin,
+    "[location], where the location is a lsp location object."
   )
 
   val GotoSuperMethod = new Command(
@@ -208,6 +235,19 @@ object ServerCommands {
        |""".stripMargin
   )
 
+  val ResetChoicePopup = new Command(
+    "reset-choice",
+    "Reset Choice Popup",
+    """|ResetChoicePopup command allows you to reset a decision you made about different settings.
+       |E.g. If you choose to import workspace with sbt you can decide to reset and change it again.
+       |
+       |Provided string is optional but if present it must be one of defined in `PopupChoiceReset.scala`
+       |If a choice is not provided it will execute interactive mode where user is prompt to select
+       |which choice to reset.
+       |""".stripMargin,
+    "[string?], where string is a choice value."
+  )
+
   val NewScalaFile = new Command(
     "new-scala-file",
     "Create new scala file",
@@ -215,7 +255,21 @@ object ServerCommands {
        |
        |Note: requires 'metals/inputBox' capability from language client.
        |""".stripMargin,
-    "[string], where the string is a directory location for the new file."
+    """|[string[]], where the first is a directory location for the new file.
+       |The second and third positions correspond to the file name and file type to allow for quick
+       |creation of a file if all are present.
+       |""".stripMargin
+  )
+
+  val NewScalaProject = new Command(
+    "new-scala-project",
+    "New Scala Project",
+    """|Create a new Scala project using one of the available g8 templates. 
+       |This includes simple projects as well as samples for most of the popular Scala frameworks.
+       |The command reuses the Metals quick pick extension to work and can function with `window/showMessageRequest`, 
+       |however the experience will not be optimal in that case. Some editors might also offer to open the newly created
+       |project via `openNewWindowProvider`, but it is not necessary for the main functionality to work. 
+       |""".stripMargin
   )
 
   /**
@@ -278,21 +332,41 @@ object ServerCommands {
     "Stay up to date with the latest release announcements and learn new Scala code editing tricks."
   )
 
-  def all: List[Command] = List(
-    ImportBuild,
-    RestartBuildServer,
-    ConnectBuildServer,
-    ScanWorkspaceSources,
-    RunDoctor,
-    CascadeCompile,
-    CancelCompile,
-    BspSwitch,
-    StartDebugAdapter,
-    GotoLocation,
-    NewScalaFile,
-    GotoSuperMethod,
-    SuperMethodHierarchy
+  val StartAmmoniteBuildServer = new Command(
+    "ammonite-start",
+    "Start Ammonite build server",
+    "Start Ammonite build server"
   )
+
+  val StopAmmoniteBuildServer = new Command(
+    "ammonite-stop",
+    "Stop Ammonite build server",
+    "Stop Ammonite build server"
+  )
+
+  def all: List[Command] =
+    List(
+      ImportBuild,
+      RestartBuildServer,
+      ConnectBuildServer,
+      ScanWorkspaceSources,
+      RunDoctor,
+      CascadeCompile,
+      CancelCompile,
+      CleanCompile,
+      BspSwitch,
+      StartDebugAdapter,
+      GotoSymbol,
+      GotoPosition,
+      NewScalaFile,
+      NewScalaProject,
+      GotoSuperMethod,
+      AnalyzeStacktrace,
+      SuperMethodHierarchy,
+      ResetChoicePopup,
+      StartAmmoniteBuildServer,
+      StopAmmoniteBuildServer
+    )
 }
 
 case class DebugUnresolvedMainClassParams(

@@ -1,38 +1,50 @@
 package tests.codeactions
 
-import tests.BaseLspSuite
 import scala.meta.internal.metals.MetalsEnrichments._
+
 import munit.Location
+import munit.TestOptions
+import tests.BaseLspSuite
 
 abstract class BaseCodeActionLspSuite(suiteName: String)
     extends BaseLspSuite(suiteName) {
 
   def check(
-      name: String,
+      name: TestOptions,
       input: String,
       expectedActions: String,
       expectedCode: String,
       selectedActionIndex: Int = 0,
-      expectNoDiagnostics: Boolean = true
+      expectNoDiagnostics: Boolean = true,
+      kind: List[String] = Nil,
+      scalafixConf: String = "",
+      scalacOptions: List[String] = Nil
   )(implicit loc: Location): Unit = {
-    val path = "a/src/main/scala/a/A.scala"
+    val fileName: String = "A.scala"
+    val scalacOptionsJson =
+      s""""scalacOptions": ["${scalacOptions.mkString("\",\"")}"]"""
+    val path = s"a/src/main/scala/a/$fileName"
+    val fileContent = input.replace("<<", "").replace(">>", "")
     test(name) {
       cleanWorkspace()
       for {
         _ <- server.initialize(s"""/metals.json
-                                  |{"a":{}}
+                                  |{"a":{$scalacOptionsJson}}
+                                  |$scalafixConf
                                   |/$path
-                                  |${input
-                                    .replace("<<", "")
-                                    .replace(">>", "")}
-                                  |""".stripMargin)
+                                  |$fileContent""".stripMargin)
         _ <- server.didOpen(path)
-        codeActions <- server.assertCodeAction(path, input, expectedActions)
+        codeActions <-
+          server.assertCodeAction(path, input, expectedActions, kind)
         _ <- server.didSave(path) { _ =>
-          if (selectedActionIndex >= codeActions.length) {
-            fail(s"selectedActionIndex ($selectedActionIndex) is out of bounds")
+          if (codeActions.nonEmpty) {
+            if (selectedActionIndex >= codeActions.length) {
+              fail(
+                s"selectedActionIndex ($selectedActionIndex) is out of bounds"
+              )
+            }
+            client.applyCodeAction(codeActions(selectedActionIndex), server)
           }
-          client.applyCodeAction(codeActions(selectedActionIndex), server)
           server.toPath(path).readText
         }
         _ = assertNoDiff(server.bufferContents(path), expectedCode)

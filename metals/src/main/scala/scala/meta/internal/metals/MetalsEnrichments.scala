@@ -1,7 +1,5 @@
 package scala.meta.internal.metals
 
-import ch.epfl.scala.{bsp4j => b}
-import io.undertow.server.HttpServerExchange
 import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.nio.file.FileAlreadyExistsException
@@ -9,33 +7,39 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.util
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
-import org.eclipse.lsp4j.TextDocumentIdentifier
-import org.eclipse.{lsp4j => l}
+
+import scala.collection.convert.DecorateAsJava
+import scala.collection.convert.DecorateAsScala
+import scala.collection.mutable
 import scala.compat.java8.FutureConverters
+import scala.concurrent.Await
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
-import scala.concurrent.Await
-import scala.concurrent.duration.FiniteDuration
 import scala.concurrent.Promise
+import scala.concurrent.duration.FiniteDuration
+import scala.util.Properties
+import scala.util.Try
+import scala.util.control.NonFatal
+import scala.{meta => m}
+
 import scala.meta.inputs.Input
 import scala.meta.internal.mtags.MtagsEnrichments
 import scala.meta.internal.semanticdb.Scala.Descriptor
 import scala.meta.internal.semanticdb.Scala.Symbols
 import scala.meta.internal.{semanticdb => s}
 import scala.meta.io.AbsolutePath
-import scala.util.Properties
-import scala.{meta => m}
-import java.nio.file.StandardOpenOption
-import scala.util.control.NonFatal
-import scala.util.Try
-import scala.collection.convert.DecorateAsJava
-import scala.collection.convert.DecorateAsScala
+
+import ch.epfl.scala.{bsp4j => b}
+import io.undertow.server.HttpServerExchange
+import org.eclipse.lsp4j.TextDocumentIdentifier
+import org.eclipse.{lsp4j => l}
 
 /**
  * One stop shop for all extension methods that are used in the metals build.
@@ -62,8 +66,24 @@ object MetalsEnrichments
     with MtagsEnrichments {
 
   implicit class XtensionBuildTarget(buildTarget: b.BuildTarget) {
+
+    def isSbtBuild: Boolean =
+      buildTarget.getDataKind == "sbt"
+
     def asScalaBuildTarget: Option[b.ScalaBuildTarget] = {
-      decodeJson(buildTarget.getData, classOf[b.ScalaBuildTarget])
+      if (isSbtBuild) {
+        decodeJson(buildTarget.getData, classOf[b.SbtBuildTarget])
+          .map(_.getScalaBuildTarget)
+      } else {
+        decodeJson(buildTarget.getData, classOf[b.ScalaBuildTarget])
+      }
+    }
+
+    def asSbtBuildTarget: Option[b.SbtBuildTarget] = {
+      buildTarget.getDataKind match {
+        case "sbt" => decodeJson(buildTarget.getData, classOf[b.SbtBuildTarget])
+        case _ => None
+      }
     }
   }
 
@@ -112,11 +132,12 @@ object MetalsEnrichments
         onPosition: m.Position => B,
         onUnchanged: () => B,
         onNoMatch: () => B
-    ): B = result match {
-      case Right(pos) => onPosition(pos)
-      case Left(EmptyResult.Unchanged) => onUnchanged()
-      case Left(EmptyResult.NoMatch) => onNoMatch()
-    }
+    ): B =
+      result match {
+        case Right(pos) => onPosition(pos)
+        case Left(EmptyResult.Unchanged) => onUnchanged()
+        case Left(EmptyResult.NoMatch) => onNoMatch()
+      }
   }
 
   implicit class XtensionJavaFuture[T](future: CompletionStage[T]) {
@@ -153,8 +174,8 @@ object MetalsEnrichments
       }
     }
 
-    def withTimeout(length: Int, unit: TimeUnit)(
-        implicit ec: ExecutionContext
+    def withTimeout(length: Int, unit: TimeUnit)(implicit
+        ec: ExecutionContext
     ): Future[A] = {
       Future(Await.result(future, FiniteDuration(length, unit)))
     }
@@ -170,8 +191,8 @@ object MetalsEnrichments
       }
     }
 
-    def liftOption(
-        implicit ec: ExecutionContext
+    def liftOption(implicit
+        ec: ExecutionContext
     ): Future[Option[A]] = future.map(Some(_))
   }
 
@@ -366,7 +387,8 @@ object MetalsEnrichments
 
   implicit class XtensionString(value: String) {
 
-    /** Returns true if this is a Scala.js or Scala Native target
+    /**
+     * Returns true if this is a Scala.js or Scala Native target
      *
      * FIXME: https://github.com/scalacenter/bloop/issues/700
      */
@@ -395,26 +417,90 @@ object MetalsEnrichments
       if (index < safeLowerBound) -1 else index
     }
 
+    private def indicesOf(str: String): List[Int] = {
+      val b = new mutable.ListBuffer[Int]
+      var idx = 0
+      while (idx < value.length && idx >= 0) {
+        idx = value.indexOf(str, idx)
+        if (idx >= 0) {
+          b += idx
+          idx = idx + 1
+        }
+      }
+      b.result()
+    }
+
+    def onlyIndexOf(str: String): Option[Int] =
+      indicesOf(str) match {
+        case Nil => Some(-1)
+        case List(idx) => Some(idx)
+        case _ => None
+      }
+
     def toAbsolutePathSafe: Option[AbsolutePath] = Try(toAbsolutePath).toOption
 
-    def toAbsolutePath: AbsolutePath =
-      AbsolutePath(
+    def toAbsolutePath: AbsolutePath = toAbsolutePath(followSymlink = true)
+    def toAbsolutePath(followSymlink: Boolean): AbsolutePath = {
+      val path = AbsolutePath(
         Paths.get(URI.create(value.stripPrefix("metals:")))
-      ).dealias
+      )
+      if (followSymlink)
+        path.dealias
+      else
+        path
+    }
+
+    def indexToLspPosition(index: Int): l.Position = {
+      var i = 0
+      var lineCount = 0
+      var lineStartIdx = 0
+      while (i < index && i < value.length) {
+        if (value.charAt(i) == '\n') {
+          lineStartIdx = i + 1
+          lineCount += 1
+        }
+        i += 1
+      }
+      new l.Position(lineCount, index - lineStartIdx)
+    }
+
+    def replaceAllBetween(start: String, end: String)(
+        replacement: String
+    ): String =
+      if (start.isEmpty || end.isEmpty)
+        value
+      else {
+        val startIdx = value.indexOf(start)
+        if (startIdx < 0)
+          value
+        else {
+          val endIdx = value.indexOf(end, startIdx + start.length)
+          if (endIdx < 0)
+            value
+          else {
+            val b = new java.lang.StringBuilder
+            b.append(value, 0, startIdx)
+            b.append(replacement)
+            b.append(value, endIdx + end.length, value.length)
+            b.toString
+          }
+        }
+      }
+
+    def lineAtIndex(index: Int): Int =
+      indexToLspPosition(index).getLine
   }
 
   implicit class XtensionTextDocumentSemanticdb(textDocument: s.TextDocument) {
 
-    /** Returns true if the symbol is defined in this document */
+    /**
+     * Returns true if the symbol is defined in this document
+     */
     def definesSymbol(symbol: String): Boolean = {
       textDocument.occurrences.exists { localOccurrence =>
         localOccurrence.role.isDefinition &&
         localOccurrence.symbol == symbol
       }
-    }
-
-    def toInput: Input = {
-      Input.VirtualFile(textDocument.uri, textDocument.text)
     }
     def definition(uri: String, symbol: String): Option[l.Location] = {
       textDocument.occurrences
@@ -486,10 +572,20 @@ object MetalsEnrichments
         .map(uri => AbsolutePath(Paths.get(URI.create(uri))))
         .filter(p => Files.exists(p.toNIO))
     }
-    def targetroot: AbsolutePath = {
-      semanticdbFlag("targetroot")
-        .map(AbsolutePath(_))
-        .getOrElse(item.getClassDirectory.toAbsolutePath)
+    def targetroot(scalaVersion: String): AbsolutePath = {
+      if (ScalaVersions.isScala3Version(scalaVersion)) {
+        val options = item.getOptions.asScala
+        val targetOption = if (options.contains("-semanticdb-target")) {
+          val index = options.indexOf("-semanticdb-target") + 1
+          if (options.size > index) Some(AbsolutePath(options(index)))
+          else None
+        } else None
+        targetOption.getOrElse(item.getClassDirectory.toAbsolutePath)
+      } else {
+        semanticdbFlag("targetroot")
+          .map(AbsolutePath(_))
+          .getOrElse(item.getClassDirectory.toAbsolutePath)
+      }
     }
 
     def isSemanticdbEnabled(scalaVersion: String): Boolean = {
@@ -518,7 +614,9 @@ object MetalsEnrichments
       !item.getOptions.asScala.exists(_.isNonJVMPlatformOption)
     }
 
-    /** Returns the value of a -P:semanticdb:$option:$value compiler flag. */
+    /**
+     * Returns the value of a -P:semanticdb:$option:$value compiler flag.
+     */
     def semanticdbFlag(name: String): Option[String] = {
       val flag = s"-P:semanticdb:$name:"
       item.getOptions.asScala
@@ -589,6 +687,13 @@ object MetalsEnrichments
     )(implicit ec: ExecutionContext): Future[Option[B]] =
       state.flatMap(
         _.fold(Future.successful(Option.empty[B]))(f(_).liftOption)
+      )
+
+    def mapOptionInside[B](
+        f: A => B
+    )(implicit ec: ExecutionContext): Future[Option[B]] =
+      state.map(
+        _.map(f)
       )
   }
 

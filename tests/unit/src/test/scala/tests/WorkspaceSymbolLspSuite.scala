@@ -1,12 +1,15 @@
 package tests
 
 import java.nio.file.Files
+
+import scala.concurrent.Future
+
+import scala.meta.internal.metals.Messages
+import scala.meta.internal.metals.MetalsEnrichments._
+
 import org.eclipse.lsp4j.SymbolInformation
 import org.eclipse.lsp4j.WorkspaceSymbolParams
-import scala.concurrent.Future
-import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.Messages
-import MetalsTestEnrichments._
+import tests.MetalsTestEnrichments._
 
 class WorkspaceSymbolLspSuite extends BaseLspSuite("workspace-symbol") {
 
@@ -228,6 +231,56 @@ class WorkspaceSymbolLspSuite extends BaseLspSuite("workspace-symbol") {
         server.workspaceSymbol("MyObjectSymbol", includeFilename = true),
         // Assert "Before.scala" is removed from the results
         """a.MyObjectSymbol After.scala"""
+      )
+    } yield ()
+  }
+
+  test("excluded") {
+    cleanWorkspace()
+    for {
+      _ <- server.initialize(
+        """
+          |/metals.json
+          |{"a": {}}
+          |/a/src/main/scala/a/Before.scala
+          |package a
+          |object MyObjectSymbol
+          |""".stripMargin
+      )
+      _ <- server.didOpen("a/src/main/scala/a/Before.scala")
+      _ = assertNoDiff(
+        server.workspaceSymbol("Future"),
+        """|scala.concurrent.Future
+           |scala.concurrent.Future
+           |java.util.concurrent.Future
+           |scala.sys.process.ProcessImpl#Future
+           |java.util.concurrent.FutureTask
+           |scala.collection.parallel.FutureTasks
+           |java.io.ObjectStreamClass#EntryFuture
+           |java.util.concurrent.RunnableFuture
+           |java.util.concurrent.ExecutorCompletionService#QueueingFuture
+           |java.util.concurrent.ScheduledFuture
+           |java.util.concurrent.CompletableFuture
+           |java.util.concurrent.ScheduledThreadPoolExecutor#ScheduledFutureTask
+           |scala.collection.parallel.FutureThreadPoolTasks
+           |java.util.concurrent.RunnableScheduledFuture""".stripMargin
+      )
+      _ <- server.didChangeConfiguration(
+        """|{
+           |  "excluded-packages": [
+           |     "java.util"
+           |  ]
+           |}
+           |""".stripMargin
+      )
+      _ = assertNoDiff(
+        server.workspaceSymbol("Future"),
+        """|scala.concurrent.Future
+           |scala.concurrent.Future
+           |scala.sys.process.ProcessImpl#Future
+           |scala.collection.parallel.FutureTasks
+           |java.io.ObjectStreamClass#EntryFuture
+           |scala.collection.parallel.FutureThreadPoolTasks""".stripMargin
       )
     } yield ()
   }

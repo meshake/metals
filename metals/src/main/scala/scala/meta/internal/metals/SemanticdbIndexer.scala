@@ -1,11 +1,15 @@
 package scala.meta.internal.metals
 
-import java.nio.file.Path
-import MetalsEnrichments._
 import java.nio.file.Files
-import ch.epfl.scala.bsp4j.ScalacOptionsResult
-import scala.meta.internal.semanticdb.TextDocuments
+import java.nio.file.Path
+
+import scala.util.control.NonFatal
+
 import scala.meta.internal.implementation.ImplementationProvider
+import scala.meta.internal.metals.MetalsEnrichments._
+import scala.meta.internal.semanticdb.TextDocuments
+
+import ch.epfl.scala.bsp4j.ScalacOptionsResult
 
 class SemanticdbIndexer(
     referenceProvider: ReferenceProvider,
@@ -14,8 +18,11 @@ class SemanticdbIndexer(
 ) {
 
   def onScalacOptions(scalacOptions: ScalacOptionsResult): Unit = {
-    for (item <- scalacOptions.getItems.asScala) {
-      val targetroot = item.targetroot
+    for {
+      item <- scalacOptions.getItems.asScala
+      scalaInfo <- buildTargets.scalaInfo(item.getTarget)
+    } {
+      val targetroot = item.targetroot(scalaInfo.getScalaVersion)
       onChangeDirectory(targetroot.resolve(Directories.semanticdb).toNIO)
     }
   }
@@ -46,8 +53,11 @@ class SemanticdbIndexer(
    * and re-index all of its `*.semanticdb` children.
    */
   def onOverflow(): Unit = {
-    buildTargets.scalacOptions.foreach { item =>
-      val targetroot = item.targetroot
+    for {
+      item <- buildTargets.scalacOptions
+      scalaInfo <- buildTargets.scalaInfo(item.getTarget)
+    } {
+      val targetroot = item.targetroot(scalaInfo.getScalaVersion)
       if (!targetroot.isJar) {
         onChangeDirectory(targetroot.resolve(Directories.semanticdb).toNIO)
       }
@@ -68,9 +78,14 @@ class SemanticdbIndexer(
   def onChange(file: Path): Unit = {
     if (!Files.isDirectory(file)) {
       if (file.isSemanticdb) {
-        val doc = TextDocuments.parseFrom(Files.readAllBytes(file))
-        referenceProvider.onChange(doc, file)
-        implementationProvider.onChange(doc, file)
+        try {
+          val doc = TextDocuments.parseFrom(Files.readAllBytes(file))
+          referenceProvider.onChange(doc, file)
+          implementationProvider.onChange(doc, file)
+        } catch {
+          case NonFatal(e) =>
+            scribe.warn(s"unexpected error processing the file $file", e)
+        }
       } else {
         scribe.warn(s"not a semanticdb file: $file")
       }

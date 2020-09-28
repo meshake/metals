@@ -1,9 +1,10 @@
 package docs
 
-import mdoc.Reporter
-import mdoc.StringModifier
 import scala.meta.inputs.Input
 import scala.meta.internal.metals.UserConfiguration
+
+import mdoc.Reporter
+import mdoc.StringModifier
 
 class UserConfigurationModifier extends StringModifier {
   val name = "user-config"
@@ -42,7 +43,7 @@ class UserConfigurationModifier extends StringModifier {
                |```json
                |{
                |  "metals": {
-               |    "${option.key}": "${option.example}"
+               |    "${option.key}": ${option.example}
                |  }
                |}
                |```
@@ -62,7 +63,7 @@ class UserConfigurationModifier extends StringModifier {
                |**Example**:
                |```json
                |{
-               |  "metals.${option.camelCaseKey}": "${option.example}"
+               |  "metals.${option.camelCaseKey}": ${option.example}
                |}
                |```
                |""".stripMargin

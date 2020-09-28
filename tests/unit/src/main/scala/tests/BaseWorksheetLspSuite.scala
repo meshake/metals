@@ -1,15 +1,17 @@
 package tests
 
-import scala.meta.internal.metals.UserConfiguration
 import scala.concurrent.Promise
+
+import scala.meta.internal.metals.InitializationOptions
 import scala.meta.internal.metals.MetalsSlowTaskResult
-import scala.meta.internal.metals.ClientExperimentalCapabilities
+import scala.meta.internal.metals.UserConfiguration
+import scala.meta.internal.metals.{BuildInfo => V}
 
 abstract class BaseWorksheetLspSuite(scalaVersion: String)
     extends BaseLspSuite("worksheet") {
-  override def experimentalCapabilities
-      : Option[ClientExperimentalCapabilities] =
-    Some(ClientExperimentalCapabilities.Default.copy(decorationProvider = true))
+  override def initializationOptions: Option[InitializationOptions] =
+    Some(InitializationOptions.Default.copy(decorationProvider = Some(true)))
+
   override def userConfig: UserConfiguration =
     super.userConfig.copy(worksheetScreenWidth = 40, worksheetCancelTimeout = 1)
 
@@ -24,7 +26,7 @@ abstract class BaseWorksheetLspSuite(scalaVersion: String)
            |{
            |  "a": {
            |    "scalaVersion": "$scalaVersion",
-           |    "libraryDependencies": ["com.lihaoyi::sourcecode:0.1.8"]
+           |    "libraryDependencies": ["com.lihaoyi::sourcecode:0.2.1"]
            |  }
            |}
            |/a/src/main/scala/foo/Main.worksheet.sc
@@ -43,13 +45,29 @@ abstract class BaseWorksheetLspSuite(scalaVersion: String)
         "a/src/main/scala/foo/Main.worksheet.sc",
         "generate@@"
       )
-      _ = assertNoDiff(generate, "generate: Name")
+      _ = assertNoDiff(
+        generate,
+        getExpected(
+          "generate: Name",
+          Map(V.scala3 -> "generate=> sourcecode.Name"),
+          scalaVersion
+        )
+      )
       _ = assertNoDiagnostics()
       _ = assertNoDiff(
         client.workspaceDecorations,
-        """|identity(42) // 42
-           |val name = sourcecode.Name.generate.value // "name"
-           |""".stripMargin
+        getExpected(
+          """|identity(42) // : Int = 42
+             |val name = sourcecode.Name.generate.value // : String = "name"
+             |""".stripMargin,
+          Map(
+            V.scala3 ->
+              """|identity(42) // : Int = 42
+                 |val name = sourcecode.Name.generate.value // : String = name
+                 |""".stripMargin
+          ),
+          scalaVersion
+        )
       )
     } yield ()
   }
@@ -73,13 +91,12 @@ abstract class BaseWorksheetLspSuite(scalaVersion: String)
       _ = assertNoDiagnostics()
       _ = assertNoDiff(
         client.workspaceDecorations,
-        """|
-           |import java.nio.file.Files
-           |val name = "Susan" // "Susan"
-           |val greeting = s"Hello $name" // "Hello Susan"
+        """|import java.nio.file.Files
+           |val name = "Susan" // : String = "Susan"
+           |val greeting = s"Hello $name" // : String = "Hello Susan"
            |println(greeting + "\nHow are you?") // Hello Susan…
-           |1.to(10).toVector // Vector(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
-           |val List(a, b) = List(42, 10) // a=42, b=10
+           |1.to(10).toVector // : Vector[Int] = Vector(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+           |val List(a, b) = List(42, 10) // a: Int = 42, b: Int = 10
            |""".stripMargin
       )
     } yield ()
@@ -104,48 +121,90 @@ abstract class BaseWorksheetLspSuite(scalaVersion: String)
       _ = assertNoDiagnostics()
       _ = assertNoDiff(
         client.workspaceDecorations,
-        """|
-           |import java.nio.file.Files
-           |val name = "Susan" // "Susan"
-           |val greeting = s"Hello $name" // "Hello Susan"
-           |println(greeting + "\nHow are you?") // Hello Susan…
-           |1.to(10).toVector // Vector(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
-           |val List(a, b) = List(42, 10) // a=42, b=10
-           |""".stripMargin
+        getExpected(
+          """|import java.nio.file.Files
+             |val name = "Susan" // : String = "Susan"
+             |val greeting = s"Hello $name" // : String = "Hello Susan"
+             |println(greeting + "\nHow are you?") // Hello Susan…
+             |1.to(10).toVector // : Vector[Int] = Vector(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+             |val List(a, b) = List(42, 10) // a: Int = 42, b: Int = 10
+             |""".stripMargin,
+          Map(
+            V.scala3 ->
+              """|import java.nio.file.Files
+                 |val name = "Susan" // : String = Susan
+                 |val greeting = s"Hello $name" // : String = Hello Susan
+                 |println(greeting + "\nHow are you?") // Hello Susan…
+                 |1.to(10).toVector // : Vector[Int] = Vector(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+                 |val List(a, b) = List(42, 10) // a: Int = 42, b: Int = 10
+                 |""".stripMargin
+          ),
+          scalaVersion
+        )
       )
       _ = assertNoDiff(
         client.workspaceDecorationHoverMessage,
-        """|import java.nio.file.Files
-           |val name = "Susan"
-           |```scala
-           |name: String = "Susan"
-           |```
-           |val greeting = s"Hello $name"
-           |```scala
-           |greeting: String = "Hello Susan"
-           |```
-           |println(greeting + "\nHow are you?")
-           |```scala
-           |// Hello Susan
-           |// How are you?
-           |```
-           |1.to(10).toVector
-           |```scala
-           |res1: Vector[Int] = Vector(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
-           |```
-           |val List(a, b) = List(42, 10)
-           |```scala
-           |a: Int = 42
-           |b: Int = 10
-           |```
-           |""".stripMargin
+        getExpected(
+          """|import java.nio.file.Files
+             |val name = "Susan"
+             |```scala
+             |name: String = "Susan"
+             |```
+             |val greeting = s"Hello $name"
+             |```scala
+             |greeting: String = "Hello Susan"
+             |```
+             |println(greeting + "\nHow are you?")
+             |```scala
+             |// Hello Susan
+             |// How are you?
+             |```
+             |1.to(10).toVector
+             |```scala
+             |res1: Vector[Int] = Vector(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+             |```
+             |val List(a, b) = List(42, 10)
+             |```scala
+             |a: Int = 42
+             |b: Int = 10
+             |```
+             |""".stripMargin,
+          Map(
+            V.scala3 ->
+              """|import java.nio.file.Files
+                 |val name = "Susan"
+                 |```scala
+                 |name: String = Susan
+                 |```
+                 |val greeting = s"Hello $name"
+                 |```scala
+                 |greeting: String = Hello Susan
+                 |```
+                 |println(greeting + "\nHow are you?")
+                 |```scala
+                 |// Hello Susan
+                 |// How are you?
+                 |```
+                 |1.to(10).toVector
+                 |```scala
+                 |res1: Vector[Int] = Vector(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+                 |```
+                 |val List(a, b) = List(42, 10)
+                 |```scala
+                 |a: Int = 42
+                 |b: Int = 10
+                 |```
+                 |""".stripMargin
+          ),
+          scalaVersion
+        )
       )
     } yield ()
   }
 
   test("cancel") {
     val cancelled = Promise[Unit]()
-    client.slowTaskHandler = { params =>
+    client.slowTaskHandler = { _ =>
       cancelled.trySuccess(())
       Some(MetalsSlowTaskResult(cancel = true))
     }
@@ -193,19 +252,32 @@ abstract class BaseWorksheetLspSuite(scalaVersion: String)
       _ = assertNoDiff(
         client.workspaceDecorations,
         """|
-           |val x = 42 // 42
+           |val x = 42 // : Int = 42
            |throw new RuntimeException("boom")
            |""".stripMargin
       )
       _ = assertNoDiff(
         client.workspaceDiagnostics,
-        """|a/src/main/scala/Main.worksheet.sc:2:1: error: java.lang.RuntimeException: boom
-           |	at repl.Session$App.<init>(Main.worksheet.sc:11)
-           |	at repl.Session$.app(Main.worksheet.sc:3)
-           |
-           |throw new RuntimeException("boom")
-           |^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-           |""".stripMargin
+        getExpected(
+          """|a/src/main/scala/Main.worksheet.sc:2:1: error: java.lang.RuntimeException: boom
+             |	at repl.MdocSession$App.<init>(Main.worksheet.sc:11)
+             |	at repl.MdocSession$.app(Main.worksheet.sc:3)
+             |
+             |throw new RuntimeException("boom")
+             |^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+             |""".stripMargin,
+          Map(
+            V.scala3 ->
+              """|a/src/main/scala/Main.worksheet.sc:2:1: error: java.lang.RuntimeException: boom
+                 |	at repl.MdocSession$App.<init>(Main.worksheet.sc:13)
+                 |	at repl.MdocSession$.app(Main.worksheet.sc:3)
+                 |
+                 |throw new RuntimeException("boom")
+                 |^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                 |""".stripMargin
+          ),
+          scalaVersion
+        )
       )
     } yield ()
   }
@@ -288,7 +360,7 @@ abstract class BaseWorksheetLspSuite(scalaVersion: String)
       _ = assertNoDiff(
         client.workspaceDecorations,
         """
-          |a.Util.increase(1) // 2
+          |a.Util.increase(1) // : Int = 2
           |""".stripMargin
       )
       _ <- server.didSave("a/src/main/scala/a/Util.scala")(
@@ -298,7 +370,7 @@ abstract class BaseWorksheetLspSuite(scalaVersion: String)
       _ = assertNoDiff(
         client.workspaceDecorations,
         """
-          |a.Util.increase(1) // 3
+          |a.Util.increase(1) // : Int = 3
           |""".stripMargin
       )
     } yield ()
@@ -316,27 +388,52 @@ abstract class BaseWorksheetLspSuite(scalaVersion: String)
       _ <- server.didOpen("a/src/main/scala/a/Main.worksheet.sc")
       _ = assertNoDiff(
         client.workspaceDiagnostics,
-        """|a/src/main/scala/a/Main.worksheet.sc:1:14: error: type mismatch;
-           | found   : String("")
-           | required: Int
-           |val x: Int = ""
-           |             ^^
-           |""".stripMargin
+        getExpected(
+          """|a/src/main/scala/a/Main.worksheet.sc:1:14: error: type mismatch;
+             | found   : String("")
+             | required: Int
+             |val x: Int = ""
+             |             ^^
+             |""".stripMargin,
+          Map(
+            V.scala3 ->
+              """|a/src/main/scala/a/Main.worksheet.sc:1:14: error: Found:    ("" : String)
+                 |Required: Int
+                 |val x: Int = ""
+                 |             ^^
+                 |""".stripMargin
+          ),
+          scalaVersion
+        )
       )
       _ <- server.didChange("a/src/main/scala/a/Main.worksheet.sc")(
         _.replace("val x", "def y = \nval x")
       )
       _ = assertNoDiff(
         client.workspaceDiagnostics,
-        """|a/src/main/scala/a/Main.worksheet.sc:2:1: error: illegal start of simple expression
-           |val x: Int = ""
-           |^^^
-           |a/src/main/scala/a/Main.worksheet.sc:2:14: error: type mismatch;
-           | found   : String("")
-           | required: Int
-           |val x: Int = ""
-           |             ^^
-           |""".stripMargin
+        getExpected(
+          """|a/src/main/scala/a/Main.worksheet.sc:2:1: error: illegal start of simple expression
+             |val x: Int = ""
+             |^^^
+             |a/src/main/scala/a/Main.worksheet.sc:2:14: error: type mismatch;
+             | found   : String("")
+             | required: Int
+             |val x: Int = ""
+             |             ^^
+             |""".stripMargin,
+          Map(
+            V.scala3 ->
+              """|a/src/main/scala/a/Main.worksheet.sc:2:5: error: ';' expected, but identifier found
+                 |val x: Int = ""
+                 |    ^
+                 |a/src/main/scala/a/Main.worksheet.sc:2:14: error: Found:    ("" : String)
+                 |Required: Int
+                 |val x: Int = ""
+                 |             ^^
+                 |""".stripMargin
+          ),
+          scalaVersion
+        )
       )
     } yield ()
   }
@@ -360,10 +457,20 @@ abstract class BaseWorksheetLspSuite(scalaVersion: String)
       _ <- server.didOpen("a/src/main/scala/Main.worksheet.sc")
       _ = assertNoDiff(
         server.workspaceDefinitions,
-        """|/a/src/main/scala/Main.worksheet.sc
-           |val message/*L0*/ = "Hello World!"
-           |println/*Predef.scala*/(message/*L0*/)
-           |""".stripMargin
+        getExpected(
+          """|/a/src/main/scala/Main.worksheet.sc
+             |val message/*L0*/ = "Hello World!"
+             |println/*Predef.scala*/(message/*L0*/)
+             |""".stripMargin,
+          Map(
+            V.scala3 ->
+              """|/a/src/main/scala/Main.worksheet.sc
+                 |val message/*L0*/ = "Hello World!"
+                 |println/*<no symbol>*/(message/*L0*/)
+                 |""".stripMargin
+          ),
+          scalaVersion
+        )
       )
     } yield ()
   }
@@ -391,10 +498,16 @@ abstract class BaseWorksheetLspSuite(scalaVersion: String)
              |^
              |""".stripMargin,
           compat = Map(
-            "2.13.2" ->
+            V.scala213 ->
               """|a/src/main/scala/Main.worksheet.sc:1:1: warning: 1 feature warning; re-run with -feature for details
                  |type Structural = {
                  |^
+                 |""".stripMargin,
+            V.scala3 ->
+              """|a/src/main/scala/Main.worksheet.sc:5:1: error: Found:    App.this.Structural
+                 |Required: Selectable
+                 |new Foo().asInstanceOf[Structural].foo()
+                 |^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                  |""".stripMargin
           ),
           scalaVersion
@@ -425,20 +538,20 @@ abstract class BaseWorksheetLspSuite(scalaVersion: String)
       _ = assertNoDiff(
         client.workspaceDiagnostics,
         """|a/src/main/scala/IncompatibleClassChangeError.worksheet.sc:1:1: error: java.lang.IncompatibleClassChangeError
-           |	at repl.Session$App.<init>(IncompatibleClassChangeError.worksheet.sc:8)
-           |	at repl.Session$.app(IncompatibleClassChangeError.worksheet.sc:3)
+           |	at repl.MdocSession$App.<init>(IncompatibleClassChangeError.worksheet.sc:8)
+           |	at repl.MdocSession$.app(IncompatibleClassChangeError.worksheet.sc:3)
            |
            |throw new IncompatibleClassChangeError()
            |^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
            |a/src/main/scala/NoSuchMethodError.worksheet.sc:1:1: error: java.lang.NoSuchMethodError
-           |	at repl.Session$App.<init>(NoSuchMethodError.worksheet.sc:8)
-           |	at repl.Session$.app(NoSuchMethodError.worksheet.sc:3)
+           |	at repl.MdocSession$App.<init>(NoSuchMethodError.worksheet.sc:8)
+           |	at repl.MdocSession$.app(NoSuchMethodError.worksheet.sc:3)
            |
            |throw new NoSuchMethodError()
            |^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
            |a/src/main/scala/StackOverflowError.worksheet.sc:1:1: error: java.lang.StackOverflowError
-           |	at repl.Session$App.<init>(StackOverflowError.worksheet.sc:8)
-           |	at repl.Session$.app(StackOverflowError.worksheet.sc:3)
+           |	at repl.MdocSession$App.<init>(StackOverflowError.worksheet.sc:8)
+           |	at repl.MdocSession$.app(StackOverflowError.worksheet.sc:3)
            |
            |throw new StackOverflowError()
            |^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,9 +1,12 @@
 package scala.meta.internal.builds
-import scala.meta.internal.metals.UserConfiguration
-import scala.meta.io.AbsolutePath
-import scala.util.Properties
 import java.nio.file.Files
 import java.nio.file.Path
+
+import scala.util.Properties
+
+import scala.meta.internal.metals.BuildInfo
+import scala.meta.internal.metals.UserConfiguration
+import scala.meta.io.AbsolutePath
 
 case class MillBuildTool(userConfig: () => UserConfiguration)
     extends BloopPluginBuildTool {
@@ -34,11 +37,12 @@ case class MillBuildTool(userConfig: () => UserConfiguration)
     } else {
       version
     }
-    val cmd = List(
-      "--predef",
-      predefScriptPath(millVersion).toString,
-      "mill.contrib.Bloop/install"
-    )
+
+    // In some environments (such as WSL or cygwin), mill must be run using interactive mode (-i)
+    val iOption = if (Properties.isWin) List("-i") else Nil
+    val cmd =
+      iOption ::: "--predef" :: predefScriptPath.toString :: "mill.contrib.Bloop/install" :: Nil
+
     userConfig().millScript match {
       case Some(script) =>
         script :: cmd
@@ -54,17 +58,17 @@ case class MillBuildTool(userConfig: () => UserConfiguration)
 
   override def recommendedVersion: String = version
 
-  override def version: String = "0.6.2"
+  override def version: String = BuildInfo.millVersion
 
   override def toString(): String = "Mill"
 
   def executableName = "mill"
 
-  private def predefScript(millVersion: String) =
+  private def predefScript =
     "import $ivy.`com.lihaoyi::mill-contrib-bloop:$MILL_VERSION`".getBytes()
 
-  private def predefScriptPath(millVersion: String): Path = {
-    Files.write(tempDir.resolve(predefScriptName), predefScript(millVersion))
+  private def predefScriptPath: Path = {
+    Files.write(tempDir.resolve(predefScriptName), predefScript)
   }
 
 }
