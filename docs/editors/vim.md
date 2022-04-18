@@ -1,14 +1,25 @@
 ---
 id: vim
+sidebar_label: Vim
 title: Vim
 ---
 
 ![Vim demo](https://i.imgur.com/4BYHCCL.gif)
 
-Metals works with most LSP clients for Vim, but we recommend using the
-[coc-metals extension](https://github.com/scalameta/coc-metals) for
-[`coc.nvim`](https://github.com/neoclide/coc.nvim) which will provide the most
-complete implementation of LSP and Metals-specific helpers.
+Metals works with most LSP clients for Vim, but we recommend using one of the
+Metals-specific extensions to get the best experience since they offer
+Metals-specific commands and implement the Metals LSP extensions. 
+
+- [coc-metals](https://github.com/scalameta/coc-metals) An extension for
+    [`coc.nvim`](https://github.com/neoclide/coc.nvim) If you're already using
+    other coc.nvim plugins or you are using Vim instead of Neovim, then this is
+    probably the best option for you. Most of the documentation below refers to
+    coc-metals.
+- [nvim-metals](https://github.com/scalameta/nvim-metals) A Lua extension for
+    the [built-in LSP support](https://neovim.io/doc/user/lsp.html) in Neovim.
+    Note that this requires at least the 0.5.0 release of Neovim. You can find
+    the full documentation for nvim-metals
+    [here](https://github.com/scalameta/nvim-metals/blob/master/doc/metals.txt).
 
 ```scala mdoc:requirements
 
@@ -47,12 +58,12 @@ curl --compressed -o- -L https://yarnpkg.com/install.sh | bash
 ## Installing coc.nvim
 
 Once the requirements are satisfied, we can now proceed to install
-[`neoclide/coc.nvim`] (https://github.com/neoclide/coc.nvim/), which provides
+[`neoclide/coc.nvim`](https://github.com/neoclide/coc.nvim/), which provides
 Language Server Protocol support to Vim/Nvim  to communicate with the Metals
 language server.
 
 Assuming [`vim-plug`](https://github.com/junegunn/vim-plug) is used (another
-plugin manager like vundle works too), update your `~/.vimrc` to include the
+plugin manager like vundle works too, but requires slightly different configuration), update your `~/.vimrc` (or, in case of Neovim, `~/.config/nvim/init.vim`) to include the
 following settings.
 
 ```vim
@@ -73,134 +84,17 @@ autocmd FileType json syntax match Comment +\/\/.\+$+
 ### Recommended coc.nvim mappings
 
 `coc.nvim` doesn't come with a default key mapping for LSP commands, so you need
-to configure it yourself.
-
-Here's a recommended configuration:
+to configure it yourself. You can see an example of default mappings
+[here](https://github.com/neoclide/coc.nvim#example-vim-configuration). Below
+you'll find examples of additional `coc-metals` specific mappings that you'll
+also want to ensure you have:
 
 ```vim
-" ~/.vimrc
-" Configuration for coc.nvim
-
-" If hidden is not set, TextEdit might fail.
-set hidden
-
-" Some servers have issues with backup files
-set nobackup
-set nowritebackup
-
-" You will have a bad experience with diagnostic messages with the default 4000.
-set updatetime=300
-
-" Don't give |ins-completion-menu| messages.
-set shortmess+=c
-
-" Always show signcolumns
-set signcolumn=yes
-
 " Help Vim recognize *.sbt and *.sc as Scala files
 au BufRead,BufNewFile *.sbt,*.sc set filetype=scala
 
-" Use tab for trigger completion with characters ahead and navigate.
-" Use command ':verbose imap <tab>' to make sure tab is not mapped by other plugin.
-inoremap <silent><expr> <TAB>
-      \ pumvisible() ? "\<C-n>" :
-      \ <SID>check_back_space() ? "\<TAB>" :
-      \ coc#refresh()
-inoremap <expr><S-TAB> pumvisible() ? "\<C-p>" : "\<C-h>"
-
-" Used in the tab autocompletion for coc
-function! s:check_back_space() abort
-  let col = col('.') - 1
-  return !col || getline('.')[col - 1]  =~# '\s'
-endfunction
-
-" Use <c-space> to trigger completion.
-inoremap <silent><expr> <c-space> coc#refresh()
-
-" Use <cr> to confirm completion, `<C-g>u` means break undo chain at current position.
-" Coc only does snippet and additional edit on confirm.
-inoremap <expr> <cr> pumvisible() ? "\<C-y>" : "\<C-g>u\<CR>"
-
-" Use `[g` and `]g` to navigate diagnostics
-nmap <silent> [g <Plug>(coc-diagnostic-prev)
-nmap <silent> ]g <Plug>(coc-diagnostic-next)
-
-" Remap keys for gotos
-nmap <silent> gd <Plug>(coc-definition)
-nmap <silent> gy <Plug>(coc-type-definition)
-nmap <silent> gi <Plug>(coc-implementation)
-nmap <silent> gr <Plug>(coc-references)
-
 " Used to expand decorations in worksheets
 nmap <Leader>ws <Plug>(coc-metals-expand-decoration)
-
-" Use K to either doHover or show documentation in preview window
-nnoremap <silent> K :call <SID>show_documentation()<CR>
-
-function! s:show_documentation()
-  if (index(['vim','help'], &filetype) >= 0)
-    execute 'h '.expand('<cword>')
-  else
-    call CocAction('doHover')
-  endif
-endfunction
-
-" Highlight symbol under cursor on CursorHold
-autocmd CursorHold * silent call CocActionAsync('highlight')
-
-" Remap for rename current word
-nmap <leader>rn <Plug>(coc-rename)
-
-" Remap for format selected region
-xmap <leader>f  <Plug>(coc-format-selected)
-nmap <leader>f  <Plug>(coc-format-selected)
-
-augroup mygroup
-  autocmd!
-  " Setup formatexpr specified filetype(s).
-  autocmd FileType scala setl formatexpr=CocAction('formatSelected')
-  " Update signature help on jump placeholder
-  autocmd User CocJumpPlaceholder call CocActionAsync('showSignatureHelp')
-augroup end
-
-" Remap for do codeAction of current line
-xmap <leader>a  <Plug>(coc-codeaction-line)
-nmap <leader>a  <Plug>(coc-codeaction-line)
-
-" Fix autofix problem of current line
-nmap <leader>qf  <Plug>(coc-fix-current)
-
-" Use `:Format` to format current buffer
-command! -nargs=0 Format :call CocAction('format')
-
-" Use `:Fold` to fold current buffer
-command! -nargs=? Fold :call     CocAction('fold', <f-args>)
-
-" Trigger for code actions
-" Make sure `"codeLens.enable": true` is set in your coc config
-nnoremap <leader>cl :<C-u>call CocActionAsync('codeLensAction')<CR>
-
-" Show all diagnostics
-nnoremap <silent> <space>a  :<C-u>CocList diagnostics<cr>
-" Manage extensions
-nnoremap <silent> <space>e  :<C-u>CocList extensions<cr>
-" Show commands
-nnoremap <silent> <space>c  :<C-u>CocList commands<cr>
-" Find symbol of current document
-nnoremap <silent> <space>o  :<C-u>CocList outline<cr>
-" Search workspace symbols
-nnoremap <silent> <space>s  :<C-u>CocList -I symbols<cr>
-" Do default action for next item.
-nnoremap <silent> <space>j  :<C-u>CocNext<CR>
-" Do default action for previous item.
-nnoremap <silent> <space>k  :<C-u>CocPrev<CR>
-" Resume latest coc list
-nnoremap <silent> <space>p  :<C-u>CocListResume<CR>
-
-" Notify coc.nvim that <enter> has been pressed.
-" Currently used for the formatOnType feature.
-inoremap <silent><expr> <cr> pumvisible() ? coc#_select_confirm()
-      \: "\<C-g>u\<CR>\<c-r>=coc#on_enter()\<CR>"
 
 " Toggle panel with Tree Views
 nnoremap <silent> <space>t :<C-u>CocCommand metals.tvp<CR>
@@ -307,7 +201,7 @@ open buffer.
 ![Tree View Protocol](https://i.imgur.com/GvcU9Mu.gif)
 
 coc-metals has a built-in implementation of the [Tree View
-Protocol](https://scalameta.org/metals/docs/editors/tree-view-protocol.html).
+Protocol](https://scalameta.org/metals/docs/integrations/tree-view-protocol.html).
 If you have the [recommended mappings](vim.md#recommended-cocnvim-mappings) copied, you'll notice
 that in the bottom you'll have some TVP related settings. You can start by
 opening the TVP panel by using the default `<space> t`. Once open, you'll see
@@ -328,7 +222,7 @@ Configuration Options](#tree-view-protocol-configuration-options).
 `metals.treeviews.toggleNode`                   | Expand / Collapse tree node (default `<CR>`)
 `metals.treeviews.initialWidth`                 | Initial Tree Views panels (default `40`)
 `metals.treeviews.initialViews`                 | Initial views that the Tree View Panel displays. Don't mess with this unless you know what you're doing.
-`metals.treeviews.gotoLastChild`                | Go to the last child Node (defalt `J`)
+`metals.treeviews.gotoLastChild`                | Go to the last child Node (default `J`)
 `metals.treeviews.gotoParentNode`               | Go to parent Node (default `p`)
 `metals.treeviews.gotoFirstChild`               | Go to first child Node (default `K`)
 `metals.treeviews.executeCommand`               | Execute command for node (default `r`)
@@ -337,7 +231,7 @@ Configuration Options](#tree-view-protocol-configuration-options).
 `metals.treeviews.forceChildrenReload`          | Force the reloading of the children of this node. May be useful when the wrong result is cached and tree contains invalid data. (default `f`)
 `metals.treeviews.executeCommandAndOpenTab`     | Execute command and open node under cursor in tab (if node is class, trait and so on) (default `t`)
 `metals.treeviews.executeCommandAndOpenSplit`   | Execute command and open node under cursor in horizontal split (if node is class, trait and so on) (default `s`)
-`metals.treeviews.executeCommandAndOpenVSplit`  | Execute command and open node under cursor in horizontal split (if node is class, trait and so on) (default `v`)
+`metals.treeviews.executeCommandAndOpenVSplit`  | Execute command and open node under cursor in vertical split (if node is class, trait and so on) (default `v`)
 
 ## Goto Super Method
 
@@ -376,7 +270,7 @@ having multiple windows, you can use `<C-w> + w` to jump into it.
 ## Other Available Commands
 
 You can see a full list of the Metals server commands
-[here](https://scalameta.org/metals/docs/editors/new-editor.html#metals-server-commands).
+[here](https://scalameta.org/metals/docs/integrations/new-editor#metals-server-commands).
 
 ## Show document symbols
 
@@ -397,7 +291,6 @@ install [coc-json](https://github.com/neoclide/coc-json).
 ```
 
 ```scala mdoc:new-project:vim
-
 ```
 
 ## Enable on type formatting for multiline string formatting
@@ -489,8 +382,10 @@ This step cleans up resources that are used by the server.
 
 ## Using an alternative LSP Client
 
-While we recommend using the `coc-metals` extension with `coc.nvim`, Metals will work
-with these alternative LSP clients. Keep in mind that they have varying levels of LSP support.
+While we recommend using the `coc-metals` extension with `coc.nvim`, or
+`nvim-metals` with Neovim, Metals will work with these alternative LSP clients.
+Keep in mind that they have varying levels of LSP support, and you need to
+bootstrap Metals yourself.
 
 - [`vim-lsc`](https://github.com/natebosch/vim-lsc/): simple installation and written in Vimscript.
 - [`LanguageClient-neovim`](https://github.com/autozimu/LanguageClient-neovim/): client written in Rust.
@@ -499,12 +394,20 @@ with these alternative LSP clients. Keep in mind that they have varying levels o
 
 ### Generating metals binary
 
-If you now start Vim in a Scala project, it will fail since the `metals-vim`
-binary does not exist yet.
+If you only want to use the latest stable version of Metals, the easiest way to
+install Metals is using [coursier](https://get-coursier.io/). Once installed you
+can simply do a `cs install metals` to install the latest stable version of
+Metals. You can then also do a `cs update metals` to update it.
+
+If you'd like to bootstrap your own Metals for a specific version, you're also
+able to do so like this:
 
 ```scala mdoc:bootstrap:metals-vim vim-lsc
 
 ```
-
-The `-Dmetals.client=vim-lsc` flag is important since it configures Metals for
-usage with the `vim-lsc` client.
+The `-Dmetals.client=vim-lsc` flag is there just as a helper to match your
+potential client. So make sure it matches your client name. This line isn't
+mandatory though as your client can fully be configured via
+`InitializationOptions`, which should be easily configurable by your client. You
+can read more about his
+[here](https://scalameta.org/metals/blog/2020/07/23/configuring-a-client#initializationoptions).

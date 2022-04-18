@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.util.Properties
 
 import scala.meta.internal.io.PathIO
+import scala.meta.internal.metals.BloopServers
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.UserConfiguration
 import scala.meta.io.AbsolutePath
@@ -12,21 +13,31 @@ import scala.meta.io.AbsolutePath
  * Detects what build tool is used in this workspace.
  *
  * Although we only support a limited set of build tools, knowing
- * what build tool is used in the workspace helps to produce better error
+ * what build tool is used in the workspace helps to produce better errors
  * for people using unsupported build tools. For example: "Gradle is not supported"
  * instead of "Unsupported build tool".
  *
  * @param bspGlobalDirectories Directories for user and system installed BSP connection
  *                            details according to BSP spec:
- *                            https://github.com/scalacenter/bsp/blob/master/docs/bsp.md#default-locations-for-bsp-connection-files
+ *                            https://build-server-protocol.github.io/docs/server-discovery.html#default-locations-for-bsp-connection-files
  */
 final class BuildTools(
     workspace: AbsolutePath,
     bspGlobalDirectories: List[AbsolutePath],
-    userConfig: () => UserConfiguration
+    userConfig: () => UserConfiguration,
+    explicitChoiceMade: () => Boolean
 ) {
-  def isAutoConnectable: Boolean =
-    isBloop || isBsp
+  // NOTE: We do a couple extra check here before we say a workspace with a
+  // `.bsp` is auto-connectable, and we ensure that a user has explicity chosen
+  // to use another build server besides Bloop or it's a BSP server for a build
+  // tool we don't support. If this isn't done, it causes unexpected warnings
+  // since if a `.bsp/<something>.json` exists before a `.bloop` one does in a
+  // workspace with a build tool we support, we will attempt to autoconnect to
+  // Bloop since Metals thinks it's in state that's auto-connectable before the
+  // user is even prompted.
+  def isAutoConnectable: Boolean = {
+    isBloop || (isBsp && all.isEmpty) || (isBsp && explicitChoiceMade())
+  }
   def isBloop: Boolean = {
     hasJsonFile(workspace.resolve(".bloop"))
   }
@@ -52,10 +63,15 @@ final class BuildTools(
     }
   }
   def isMill: Boolean = workspace.resolve("build.sc").isFile
-  def isGradle: Boolean =
-    workspace.resolve("build.gradle").isFile || workspace
-      .resolve("build.gradle.kts")
-      .isFile
+  def isGradle: Boolean = {
+    val defaultGradlePaths = List(
+      "settings.gradle",
+      "settings.gradle.kts",
+      "build.gradle",
+      "build.gradle.kts"
+    )
+    defaultGradlePaths.exists(workspace.resolve(_).isFile)
+  }
   def isMaven: Boolean = workspace.resolve("pom.xml").isFile
   def isPants: Boolean = workspace.resolve("pants.ini").isFile
   def isBazel: Boolean = workspace.resolve("WORKSPACE").isFile
@@ -71,7 +87,7 @@ final class BuildTools(
 
   def all: List[String] = {
     val buf = List.newBuilder[String]
-    if (isBloop) buf += "Bloop"
+    if (isBloop) buf += BloopServers.name
     if (isSbt) buf += "sbt"
     if (isMill) buf += "Mill"
     if (isGradle) buf += "Gradle"
@@ -106,7 +122,7 @@ final class BuildTools(
     if (isSbt) SbtBuildTool.isSbtRelatedPath(workspace, path)
     else if (isGradle) GradleBuildTool.isGradleRelatedPath(workspace, path)
     else if (isMaven) MavenBuildTool.isMavenRelatedPath(workspace, path)
-    else if (isMill) MillBuildTool.isMillRelatedPath(workspace, path)
+    else if (isMill) MillBuildTool.isMillRelatedPath(path)
     else false
   }
 }
@@ -116,6 +132,7 @@ object BuildTools {
     new BuildTools(
       workspace,
       Nil,
-      () => UserConfiguration()
+      () => UserConfiguration(),
+      explicitChoiceMade = () => false
     )
 }

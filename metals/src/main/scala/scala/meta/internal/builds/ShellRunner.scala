@@ -1,23 +1,23 @@
 package scala.meta.internal.builds
 
 import scala.concurrent.Future
+import scala.concurrent.Promise
 import scala.util.Properties
 
 import scala.meta.internal.metals.Cancelable
 import scala.meta.internal.metals.JavaBinary
 import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.MetalsLanguageClient
-import scala.meta.internal.metals.MetalsSlowTaskParams
 import scala.meta.internal.metals.MutableCancelable
 import scala.meta.internal.metals.StatusBar
 import scala.meta.internal.metals.Time
 import scala.meta.internal.metals.Timer
 import scala.meta.internal.metals.UserConfiguration
+import scala.meta.internal.metals.clients.language.MetalsLanguageClient
+import scala.meta.internal.metals.clients.language.MetalsSlowTaskParams
 import scala.meta.internal.process.ExitCodes
-import scala.meta.internal.process.ProcessHandler
+import scala.meta.internal.process.SystemProcess
 import scala.meta.io.AbsolutePath
 
-import com.zaxxer.nuprocess.NuProcessBuilder
 import coursierapi._
 
 class ShellRunner(
@@ -38,7 +38,11 @@ class ShellRunner(
       dependency: Dependency,
       main: String,
       dir: AbsolutePath,
-      arguments: List[String]
+      arguments: List[String],
+      redirectErrorOutput: Boolean = false,
+      processOut: String => Unit = scribe.info(_),
+      processErr: String => Unit = scribe.error(_),
+      propagateError: Boolean = false
   ): Future[Int] = {
 
     val classpathSeparator = if (Properties.isWin) ";" else ":"
@@ -55,7 +59,15 @@ class ShellRunner(
       classpath,
       main
     ) ::: arguments
-    run(main, cmd, dir, redirectErrorOutput = false)
+    run(
+      main,
+      cmd,
+      dir,
+      redirectErrorOutput,
+      processOut = processOut,
+      processErr = processErr,
+      propagateError = propagateError
+    )
   }
 
   def run(
@@ -63,20 +75,24 @@ class ShellRunner(
       args: List[String],
       directory: AbsolutePath,
       redirectErrorOutput: Boolean,
-      additionalEnv: Map[String, String] = Map.empty
+      additionalEnv: Map[String, String] = Map.empty,
+      processOut: String => Unit = scribe.info(_),
+      processErr: String => Unit = scribe.error(_),
+      propagateError: Boolean = false,
+      logInfo: Boolean = true
   ): Future[Int] = {
     val elapsed = new Timer(time)
-    val handler = ProcessHandler(
-      joinErrorWithInfo = redirectErrorOutput
+
+    val env = additionalEnv ++ userConfig().javaHome.map("JAVA_HOME" -> _).toMap
+    val ps = SystemProcess.run(
+      args,
+      directory,
+      redirectErrorOutput,
+      env,
+      Some(processOut),
+      Some(processErr),
+      propagateError
     )
-    val pb = new NuProcessBuilder(handler, args.asJava)
-    pb.setCwd(directory.toNIO)
-    userConfig().javaHome.foreach(pb.environment().put("JAVA_HOME", _))
-    additionalEnv.foreach {
-      case (key, value) =>
-        pb.environment().put(key, value)
-    }
-    val runningProcess = pb.start()
     // NOTE(olafur): older versions of VS Code don't respect cancellation of
     // window/showMessageRequest, meaning the "cancel build import" button
     // stays forever in view even after successful build import. In newer
@@ -85,28 +101,32 @@ class ShellRunner(
       languageClient.metalsSlowTask(
         new MetalsSlowTaskParams(commandRun)
       )
-    handler.response = Some(taskResponse)
-    val processFuture = handler.completeProcess.future.map { result =>
-      taskResponse.cancel(false)
-      scribe.info(
-        s"time: ran '$commandRun' in $elapsed"
-      )
-      result
+
+    val result = Promise[Int]
+    taskResponse.asScala.foreach { item =>
+      if (item.cancel) {
+        if (logInfo)
+          scribe.info(s"user cancelled $commandRun")
+        result.trySuccess(ExitCodes.Cancel)
+        ps.cancel
+      }
     }
+    cancelables
+      .add(() => ps.cancel)
+      .add(() => taskResponse.cancel(false))
+
+    val processFuture = ps.complete
     statusBar.trackFuture(
       s"Running '$commandRun'",
       processFuture
     )
-    taskResponse.asScala.foreach { item =>
-      if (item.cancel) {
-        scribe.info(s"user cancelled $commandRun")
-        handler.completeProcess.trySuccess(ExitCodes.Cancel)
-        ProcessHandler.destroyProcess(runningProcess)
-      }
+    processFuture.map { code =>
+      taskResponse.cancel(false)
+      if (logInfo)
+        scribe.info(s"time: ran '$commandRun' in $elapsed")
+      result.trySuccess(code)
     }
-    cancelables
-      .add(() => ProcessHandler.destroyProcess(runningProcess))
-      .add(() => taskResponse.cancel(false))
-    processFuture
+    result.future
   }
+
 }

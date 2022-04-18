@@ -1,24 +1,23 @@
 package tests.pc
 
 import tests.BaseCompletionSuite
-import tests.BuildInfoVersions
 
 class CompletionArgSuite extends BaseCompletionSuite {
 
-  override def excludedScalaVersions: Set[String] =
-    BuildInfoVersions.scala3Versions.toSet
-
+  // In scala3, we get NoSymbol for `assert`, so we get no completions here.
+  // This might be because the `assert` method has multiple overloaded methods, and that's why we can't retrieve a specfic symbol.
+  // Might be good to fixed in Dotty.
+  // see: https://github.com/scalameta/metals/pull/2369
   check(
-    "arg",
+    "arg".tag(IgnoreScala3),
     s"""|object Main {
         |  assert(@@)
         |}
         |""".stripMargin,
     """|assertion = : Boolean
        |Main arg
-       |:: scala.collection.immutable
        |""".stripMargin,
-    topLines = Option(3)
+    topLines = Option(2)
   )
 
   check(
@@ -29,9 +28,20 @@ class CompletionArgSuite extends BaseCompletionSuite {
         |""".stripMargin,
     """|message = : => Any
        |Main arg1
-       |:: scala.collection.immutable
        |""".stripMargin,
-    topLines = Option(3)
+    topLines = Option(2)
+  )
+
+  checkEdit(
+    "arg-edit",
+    s"""|object Main {
+        |  assert(assertion = true, me@@)
+        |}
+        |""".stripMargin,
+    """|object Main {
+       |  assert(assertion = true, message = )
+       |}
+       |""".stripMargin
   )
 
   check(
@@ -42,9 +52,8 @@ class CompletionArgSuite extends BaseCompletionSuite {
         |""".stripMargin,
     """|message = : => Any
        |Main arg2
-       |:: scala.collection.immutable
        |""".stripMargin,
-    topLines = Option(3)
+    topLines = Option(2)
   )
 
   def user: String =
@@ -71,8 +80,11 @@ class CompletionArgSuite extends BaseCompletionSuite {
     topLines = Option(4)
   )
 
+  // We should get NamedArg `address` from args in scala3, and remove `address` from completion, but it doesn't appear.
+  // This might be good to fix in Dotty.
+  // see: https://github.com/scalameta/metals/pull/2369
   check(
-    "arg4",
+    "arg4".tag(IgnoreScala3),
     s"""|
         |$user
         |object Main {
@@ -99,11 +111,19 @@ class CompletionArgSuite extends BaseCompletionSuite {
        |Main arg5
        |User arg5
        |""".stripMargin,
-    topLines = Option(4)
+    topLines = Option(4),
+    compat = Map(
+      "3" ->
+        """|age = : Int
+           |followers = : Int
+           |Main arg5
+           |User arg5
+           |""".stripMargin
+    )
   )
 
   check(
-    "arg6",
+    "arg6".tag(IgnoreScala3),
     s"""|
         |$user
         |object Main {
@@ -127,7 +147,13 @@ class CompletionArgSuite extends BaseCompletionSuite {
     """|x = : Int
        |Main arg7
        |""".stripMargin,
-    topLines = Option(2)
+    topLines = Option(2),
+    compat = Map(
+      "3" ->
+        """|x = : A
+           |Main arg7
+           |""".stripMargin
+    )
   )
 
   check(
@@ -139,13 +165,17 @@ class CompletionArgSuite extends BaseCompletionSuite {
         |""".stripMargin,
     """|suffix = : String
        |Main arg8
-       |:: scala.collection.immutable
        |""".stripMargin,
-    topLines = Option(3)
+    topLines = Option(2)
   )
 
+  // In scala3, we get NoSymbol for `until`, so we get no completions here.
+  // This might be because the `1.until` method has multiple overloaded methods, like `until(end: Long)` and `until(start: Long, end: Long)`,
+  // and that's why we can't retrieve a specfic symbol.
+  // Might be good to fixed in Dotty.
+  // see: https://github.com/scalameta/metals/pull/2369
   check(
-    "arg9",
+    "arg9".tag(IgnoreScala3),
     // `until` has multiple implicit conversion alternatives
     s"""|
         |object Main {
@@ -154,9 +184,8 @@ class CompletionArgSuite extends BaseCompletionSuite {
         |""".stripMargin,
     """|end = : Int
        |Main arg9
-       |:: scala.collection.immutable
        |""".stripMargin,
-    topLines = Option(3)
+    topLines = Option(2)
   )
 
   check(
@@ -202,6 +231,35 @@ class CompletionArgSuite extends BaseCompletionSuite {
     ""
   )
 
+  checkSnippet( // see: https://github.com/scalameta/metals/issues/2400
+    "explicit-dollar",
+    """
+      |object Main {
+      |  def test($foo: Int, $bar: Int): Int = ???
+      |  test($f@@)
+      |}
+      |""".stripMargin,
+    """|$$foo = 
+       |""".stripMargin,
+    topLines = Option(1)
+  )
+
+  // known issue: the second parameter with $ become | (returned from compiler)
+  // see: https://github.com/scalameta/metals/issues/3690
+  checkSnippet(
+    "explicit-dollar-autofill".tag(IgnoreScala3),
+    """
+      |object Main {
+      |  def test($foo: Int, $bar: Int): Int = ???
+      |  test($f@@)
+      |}
+      |""".stripMargin,
+    """|$$foo = 
+       |$$foo = ${1:???}, | = ${2:???}
+       |""".stripMargin,
+    topLines = Option(2)
+  )
+
   check(
     "arg14",
     s"""|object Main {
@@ -212,7 +270,12 @@ class CompletionArgSuite extends BaseCompletionSuite {
         |""".stripMargin,
     """|isResourceFile = : Boolean
        |isResourceFile = isLargeBanana : Boolean
-       |""".stripMargin
+       |""".stripMargin,
+    compat = Map(
+      "3" ->
+        """|isResourceFile = : Boolean
+           |""".stripMargin
+    )
   )
 
   check(
@@ -227,7 +290,34 @@ class CompletionArgSuite extends BaseCompletionSuite {
        |argument = : Int
        |argument = argument : Int
        |""".stripMargin,
-    topLines = Some(3)
+    topLines = Some(3),
+    compat = Map(
+      "3" ->
+        """|argument: Int
+           |argument = : Int
+           |""".stripMargin
+    )
+  )
+
+  check(
+    "priority-2",
+    s"""|case class A(argument: Int)
+        |object Main {
+        |  def foo(argument: Int): A =
+        |    A(argu@@)
+        |}
+        |""".stripMargin,
+    """|argument: Int
+       |argument = : Int
+       |argument = argument : Int
+       |""".stripMargin,
+    topLines = Some(3),
+    compat = Map(
+      "3" ->
+        """|argument: Int
+           |argument = : Int
+           |""".stripMargin
+    )
   )
 
   check(
@@ -238,7 +328,7 @@ class CompletionArgSuite extends BaseCompletionSuite {
         |  val number2 = 2
         |  val number4 = 4
         |  val number8 = 8
-        |  foo(ar@@)
+        |  foo(argu@@)
         |}
         |""".stripMargin,
     """|argument = : Int
@@ -247,11 +337,37 @@ class CompletionArgSuite extends BaseCompletionSuite {
        |argument = number4 : Int
        |argument = number8 : Int
        |""".stripMargin,
-    topLines = Some(5)
+    topLines = Some(5),
+    compat = Map(
+      "3" ->
+        """|argument = : Int
+           |""".stripMargin
+    )
+  )
+
+  check(
+    "named-backticked",
+    s"""|object Main {
+        |  def foo(`type` : Int) : Int = argument
+        |  val number = 1
+        |  val number2 = 2
+        |  foo(ty@@)
+        |}
+        |""".stripMargin,
+    """|`type` = : Int
+       |`type` = number : Int
+       |`type` = number2 : Int
+       |""".stripMargin,
+    topLines = Some(5),
+    compat = Map(
+      "3" ->
+        """|`type` = : Int
+           |""".stripMargin
+    )
   )
 
   checkEditLine(
-    "auto-no-show",
+    "auto-no-show".tag(IgnoreScala3),
     s"""|object Main {
         |  def foo(argument : Int, other : String) : Int = argument
         |  val number = 5
@@ -265,7 +381,7 @@ class CompletionArgSuite extends BaseCompletionSuite {
   )
 
   checkEditLine(
-    "auto",
+    "auto".tag(IgnoreScala3),
     s"""|object Main {
         |  def foo(argument : Int, other : String) : Int = argument
         |  val number = 5
@@ -278,7 +394,7 @@ class CompletionArgSuite extends BaseCompletionSuite {
   )
 
   checkEditLine(
-    "auto-inheritance",
+    "auto-inheritance".tag(IgnoreScala3),
     s"""|object Main {
         |  trait Animal
         |  class Dog extends Animal
@@ -296,7 +412,7 @@ class CompletionArgSuite extends BaseCompletionSuite {
   )
 
   checkEditLine(
-    "auto-multiple-type",
+    "auto-multiple-type".tag(IgnoreScala3),
     s"""|object Main {
         |  def foo(argument : Int, other : String, last : String = "") : Int = argument
         |  val number = 5
@@ -310,7 +426,7 @@ class CompletionArgSuite extends BaseCompletionSuite {
   )
 
   checkEditLine(
-    "auto-not-found",
+    "auto-not-found".tag(IgnoreScala3),
     s"""|object Main {
         |  val number = 234
         |  val nothing = throw new Exception
@@ -324,7 +440,7 @@ class CompletionArgSuite extends BaseCompletionSuite {
   )
 
   checkEditLine(
-    "auto-list",
+    "auto-list".tag(IgnoreScala3),
     s"""|object Main {
         |  def foo(argument : List[String], other : List[Int]) : Int = 0
         |  val list1 = List(1,2,3)
@@ -336,6 +452,19 @@ class CompletionArgSuite extends BaseCompletionSuite {
         |""".stripMargin,
     "foo(auto@@)",
     "foo(argument = ${1|???,list4,list3|}, other = ${2|???,list2,list1|})"
+  )
+
+  checkEditLine(
+    "wrap-idents".tag(IgnoreScala3),
+    s"""|object Main {
+        |  def f(a: String, b: String, `type`: String) = a + b + `type`
+        |  val str = ""
+        |  val str1 = ""
+        |  ___
+        |}
+        |""".stripMargin,
+    "f(auto@@)",
+    "f(a = ${1|???,str1,str|}, b = ${2|???,str1,str|}, `type` = ${3|???,str1,str|})"
   )
 
 }

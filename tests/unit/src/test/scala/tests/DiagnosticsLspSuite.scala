@@ -8,7 +8,7 @@ class DiagnosticsLspSuite extends BaseLspSuite("diagnostics") {
     cleanCompileCache("a")
     cleanCompileCache("b")
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """|
            |/metals.json
            |{
@@ -96,7 +96,7 @@ class DiagnosticsLspSuite extends BaseLspSuite("diagnostics") {
   test("reset".ignore) {
     cleanCompileCache("a")
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """|
            |/metals.json
            |{"a": {}}
@@ -132,7 +132,7 @@ class DiagnosticsLspSuite extends BaseLspSuite("diagnostics") {
   test("post-typer") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""|
             |/metals.json
             |{
@@ -149,7 +149,8 @@ class DiagnosticsLspSuite extends BaseLspSuite("diagnostics") {
       _ <- server.didOpen("a/src/main/scala/a/Post.scala")
       _ = assertNoDiff(
         client.workspaceDiagnostics,
-        """|a/src/main/scala/a/Post.scala:5:1: error: object creation impossible, since method post in trait Post of type => Int is not defined
+        """|a/src/main/scala/a/Post.scala:5:1: error: object creation impossible. Missing implementation for:
+           |  def post: Int // inherited from trait Post
            |object Post extends Post
            |^^^^^^^^^^^^^^^^^^^^^^^^
            |""".stripMargin
@@ -160,7 +161,7 @@ class DiagnosticsLspSuite extends BaseLspSuite("diagnostics") {
   test("deprecation") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""|
             |/metals.json
             |{
@@ -169,16 +170,16 @@ class DiagnosticsLspSuite extends BaseLspSuite("diagnostics") {
             |/a/src/main/scala/a/Deprecation.scala
             |package a
             |object Deprecation {
-            | val x = readInt()
+            |  val stream = Stream.empty
             |}
             |""".stripMargin
       )
       _ <- server.didOpen("a/src/main/scala/a/Deprecation.scala")
       _ = assertNoDiff(
         client.workspaceDiagnostics,
-        """|a/src/main/scala/a/Deprecation.scala:3:10: error: method readInt in trait DeprecatedPredef is deprecated (since 2.11.0): use the method in `scala.io.StdIn`
-           | val x = readInt()
-           |         ^^^^^^^
+        """|a/src/main/scala/a/Deprecation.scala:3:16: error: value Stream in package scala is deprecated (since 2.13.0): Use LazyList instead of Stream
+           |  val stream = Stream.empty
+           |               ^^^^^^
            |""".stripMargin
       )
     } yield ()
@@ -197,7 +198,7 @@ class DiagnosticsLspSuite extends BaseLspSuite("diagnostics") {
          |}
          |""".stripMargin
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""|
             |/metals.json
             |{
@@ -224,7 +225,7 @@ class DiagnosticsLspSuite extends BaseLspSuite("diagnostics") {
     cleanWorkspace()
     import scala.meta.internal.metals.ServerCommands
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""|
             |/metals.json
             |{
@@ -252,14 +253,14 @@ class DiagnosticsLspSuite extends BaseLspSuite("diagnostics") {
            |                  ^^
            |""".stripMargin
       )
-      _ <- server.executeCommand(ServerCommands.DisconnectBuildServer.id)
+      _ <- server.executeCommand(ServerCommands.DisconnectBuildServer)
       _ = assertNoDiagnostics()
       _ <- server.didSave("a/src/main/scala/a/B.scala")(
         _.replace("String", "Int")
       )
       _ <- server.didClose("a/src/main/scala/a/B.scala")
       _ <- server.didOpen("a/src/main/scala/a/A.scala")
-      _ <- server.executeCommand(ServerCommands.ConnectBuildServer.id)
+      _ <- server.executeCommand(ServerCommands.ConnectBuildServer)
       _ = assertNoDiagnostics()
     } yield ()
   }
@@ -267,7 +268,7 @@ class DiagnosticsLspSuite extends BaseLspSuite("diagnostics") {
   test("delete") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """|
            |/metals.json
            |{"a": {}}
@@ -300,7 +301,7 @@ class DiagnosticsLspSuite extends BaseLspSuite("diagnostics") {
   test("single-source") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{

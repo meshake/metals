@@ -1,23 +1,23 @@
 package scala.meta.internal.metals
 
-import java.net.URI
 import java.nio.charset.Charset
-import java.nio.file.Paths
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicReference
 
-import scala.collection.concurrent.TrieMap
+import scala.util.Success
+import scala.util.Try
 
+import scala.meta.internal.builds.SbtBuildTool
 import scala.meta.internal.io.FileIO
 import scala.meta.internal.metals.Messages._
 import scala.meta.internal.metals.MetalsEnrichments._
+import scala.meta.internal.metals.clients.language.MetalsLanguageClient
+import scala.meta.internal.mtags.MD5
 import scala.meta.internal.mtags.Semanticdbs
 import scala.meta.internal.mtags.TextDocumentLookup
-import scala.meta.internal.semanticdb.TextDocument
 import scala.meta.internal.{semanticdb => s}
 import scala.meta.io.AbsolutePath
 
-import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import org.eclipse.lsp4j.DiagnosticSeverity
 import org.eclipse.lsp4j.PublishDiagnosticsParams
 import org.eclipse.{lsp4j => l}
@@ -39,24 +39,16 @@ final class InteractiveSemanticdbs(
     tables: Tables,
     statusBar: StatusBar,
     compilers: () => Compilers,
-    clientConfig: ClientConfiguration
+    clientConfig: ClientConfiguration,
+    semanticdbIndexer: () => SemanticdbIndexer,
+    javaInteractiveSemanticdb: Option[JavaInteractiveSemanticdb]
 ) extends Cancelable
     with Semanticdbs {
+
   private val activeDocument = new AtomicReference[Option[String]](None)
   private val textDocumentCache = Collections.synchronizedMap(
     new java.util.HashMap[AbsolutePath, s.TextDocument]()
   )
-  // keys are created files in .metals/readonly/ and values are the original paths
-  // in *-sources.jar files.
-  private val readonlyToSource = TrieMap.empty[AbsolutePath, AbsolutePath]
-
-  def toFileOnDisk(path: AbsolutePath): AbsolutePath = {
-    val disk = path.toFileOnDisk(workspace)
-    if (disk != path) {
-      readonlyToSource(disk) = path
-    }
-    disk
-  }
 
   def reset(): Unit = {
     textDocumentCache.clear()
@@ -66,15 +58,49 @@ final class InteractiveSemanticdbs(
     reset()
   }
 
-  override def textDocument(source: AbsolutePath): TextDocumentLookup = {
-    if (
-      !source.toLanguage.isScala ||
-      !source.isDependencySource(workspace)
-    ) {
+  override def textDocument(
+      source: AbsolutePath
+  ): TextDocumentLookup = textDocument(source, unsavedContents = None)
+
+  def textDocument(
+      source: AbsolutePath,
+      unsavedContents: Option[String]
+  ): TextDocumentLookup = {
+
+    def doesNotBelongToBuildTarget = buildTargets.inverseSources(source).isEmpty
+    def shouldTryCalculateInteractiveSemanticdb = {
+      source.isLocalFileSystem(workspace) && (
+        unsavedContents.isDefined ||
+          source.isInReadonlyDirectory(workspace) || // dependencies
+          source.isSbt || // sbt files
+          source.isWorksheet || // worksheets
+          doesNotBelongToBuildTarget // standalone files
+      ) || source.isJarFileSystem // dependencies
+    }
+
+    // anything aside from `*.scala`, `*.sbt`, `*.sc`, `*.java` file
+    def isExcludedFile = !source.isScalaFilename && !source.isJavaFilename
+
+    if (isExcludedFile || !shouldTryCalculateInteractiveSemanticdb) {
       TextDocumentLookup.NotFound(source)
     } else {
-      val result =
-        textDocumentCache.computeIfAbsent(source, path => compile(path).orNull)
+      val result = textDocumentCache.compute(
+        source,
+        (path, existingDoc) => {
+          val text = unsavedContents.getOrElse(FileIO.slurp(source, charset))
+          val sha = MD5.compute(text)
+          if (existingDoc == null || existingDoc.md5 != sha) {
+            Try(compile(path, text)) match {
+              case Success(doc) if doc != null =>
+                if (!source.isDependencySource(workspace))
+                  semanticdbIndexer().onChange(source, doc)
+                doc
+              case _ => null
+            }
+          } else
+            existingDoc
+        }
+      )
       TextDocumentLookup.fromOption(source, Option(result))
     }
   }
@@ -86,9 +112,15 @@ final class InteractiveSemanticdbs(
     for {
       destination <- result.definition
       if destination.isDependencySource(workspace)
-      buildTarget <- buildTargets.inverseSources(source)
+      buildTarget = buildTargets.inverseSources(source)
     } {
-      tables.dependencySources.setBuildTarget(destination, buildTarget)
+      if (source.isWorksheet) {
+        tables.worksheetSources.setWorksheet(destination, source)
+      } else {
+        buildTarget.foreach { target =>
+          tables.dependencySources.setBuildTarget(destination, target)
+        }
+      }
     }
   }
 
@@ -104,7 +136,8 @@ final class InteractiveSemanticdbs(
     }
     if (path.isDependencySource(workspace)) {
       textDocument(path).toOption.foreach { doc =>
-        activeDocument.set(Some(doc.uri))
+        val uri = path.toURI.toString()
+        activeDocument.set(Some(uri))
         val diagnostics = for {
           diag <- doc.diagnostics
           if diag.severity.isError
@@ -118,7 +151,7 @@ final class InteractiveSemanticdbs(
         if (diagnostics.nonEmpty) {
           statusBar.addMessage(partialNavigation(clientConfig.icons))
           client.publishDiagnostics(
-            new PublishDiagnosticsParams(doc.uri, diagnostics.asJava)
+            new PublishDiagnosticsParams(uri, diagnostics.asJava)
           )
         }
       }
@@ -127,47 +160,112 @@ final class InteractiveSemanticdbs(
     }
   }
 
-  def getBuildTarget(
-      source: AbsolutePath
-  ): Option[BuildTargetIdentifier] = {
-    val fromDatabase = tables.dependencySources.getBuildTarget(source)
-    fromDatabase.orElse(inferBuildTarget(source))
+  private def compile(source: AbsolutePath, text: String): s.TextDocument = {
+    if (source.isJavaFilename)
+      javaInteractiveSemanticdb.fold(s.TextDocument())(
+        _.textDocument(source, text)
+      )
+    else scalaCompile(source, text)
   }
 
-  private def compile(source: AbsolutePath): Option[s.TextDocument] = {
-    for {
-      buildTarget <- getBuildTarget(source)
+  private def scalaCompile(
+      source: AbsolutePath,
+      text: String
+  ): s.TextDocument = {
+    def worksheetCompiler =
+      if (source.isWorksheet) compilers().loadWorksheetCompiler(source)
+      else None
+    def fromTarget = for {
+      buildTarget <- buildTargets.inverseSources(source)
       pc <- compilers().loadCompiler(buildTarget)
-    } yield {
-      val text = FileIO.slurp(source, charset)
-      val uri = source.toURI.toString
-      // NOTE(olafur): it's unfortunate that we block on `semanticdbTextDocument`
-      // here but to avoid it we would need to refactor the `Semanticdbs` trait,
-      // which requires more effort than it's worth.
-      val bytes = pc
-        .semanticdbTextDocument(uri, text)
-        .get(
-          clientConfig.initialConfig.compilers.timeoutDelay,
-          clientConfig.initialConfig.compilers.timeoutUnit
+    } yield pc
+
+    val pc = worksheetCompiler
+      .orElse(fromTarget)
+      .orElse {
+        // load presentation compiler for sources that were create by a worksheet definition request
+        tables.worksheetSources
+          .getWorksheet(source)
+          .flatMap(compilers().loadWorksheetCompiler)
+      }
+      .getOrElse(compilers().fallbackCompiler(source))
+
+    val (prependedLinesSize, modifiedText) =
+      buildTargets
+        .sbtAutoImports(source)
+        .fold((0, text))(imports =>
+          (imports.size, SbtBuildTool.prependAutoImports(text, imports))
         )
-      val textDocument = TextDocument.parseFrom(bytes)
-      textDocument
+
+    // NOTE(olafur): it's unfortunate that we block on `semanticdbTextDocument`
+    // here but to avoid it we would need to refactor the `Semanticdbs` trait,
+    // which requires more effort than it's worth.
+    val bytes = pc
+      .semanticdbTextDocument(source.toURI, modifiedText)
+      .get(
+        clientConfig.initialConfig.compilers.timeoutDelay,
+        clientConfig.initialConfig.compilers.timeoutUnit
+      )
+    val textDocument = {
+      val doc = s.TextDocument.parseFrom(bytes)
+      if (doc.text.isEmpty()) doc.withText(text)
+      else doc
     }
+    if (prependedLinesSize > 0)
+      cleanupAutoImports(textDocument, text, prependedLinesSize)
+    else textDocument
   }
 
-  private def inferBuildTarget(
-      source: AbsolutePath
-  ): Option[BuildTargetIdentifier] = {
-    for {
-      sourcesJarElement <- readonlyToSource.get(source).iterator
-      elementUri = sourcesJarElement.toURI.toString
-      uri = elementUri.stripPrefix("jar:").replaceFirst("!/.*", "")
-      sourcesJar = AbsolutePath(Paths.get(URI.create(uri)))
-      id <- buildTargets.inverseDependencySource(sourcesJar)
-    } yield {
-      tables.dependencySources.setBuildTarget(source, id)
-      id
+  private def cleanupAutoImports(
+      document: s.TextDocument,
+      originalText: String,
+      linesSize: Int
+  ): s.TextDocument = {
+
+    def adjustRange(range: s.Range): Option[s.Range] = {
+      val nextStartLine = range.startLine - linesSize
+      val nextEndLine = range.endLine - linesSize
+      if (nextEndLine >= 0) {
+        val nextRange = range.copy(
+          startLine = nextStartLine,
+          endLine = nextEndLine
+        )
+        Some(nextRange)
+      } else None
     }
-  }.take(1).toList.headOption
+
+    val adjustedOccurences =
+      document.occurrences.flatMap { occurence =>
+        occurence.range
+          .flatMap(adjustRange)
+          .map(r => occurence.copy(range = Some(r)))
+      }
+
+    val adjustedDiagnostic =
+      document.diagnostics.flatMap { diagnostic =>
+        diagnostic.range
+          .flatMap(adjustRange)
+          .map(r => diagnostic.copy(range = Some(r)))
+      }
+
+    val adjustedSynthetic =
+      document.synthetics.flatMap { synthetic =>
+        synthetic.range
+          .flatMap(adjustRange)
+          .map(r => synthetic.copy(range = Some(r)))
+      }
+
+    s.TextDocument(
+      schema = document.schema,
+      uri = document.uri,
+      text = originalText,
+      md5 = MD5.compute(originalText),
+      language = document.language,
+      symbols = document.symbols,
+      occurrences = adjustedOccurences,
+      diagnostics = adjustedDiagnostic,
+      synthetics = adjustedSynthetic
+    )
+  }
 
 }

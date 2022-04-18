@@ -192,8 +192,6 @@ object PackageIndex {
       }.toList
       entry <- entries
       if entry.isFile
-      // The bootclasspath doesn't reliably contain jfr.jar when running test in CI.
-      if !Testing.isEnabled || !entry.toNIO.endsWith("jfr.jar")
     } yield entry
 
   private def findJar(name: String) = {
@@ -206,6 +204,8 @@ object PackageIndex {
   }
 
   def scalaLibrary: Seq[Path] = findJar("scala-library")
+
+  def scala3Library: Seq[Path] = findJar("scala3-library")
 
   def dottyLibrary: Seq[Path] = findJar("dotty-library")
 

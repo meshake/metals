@@ -4,12 +4,11 @@ import scala.meta.internal.pc.PresentationCompilerConfigImpl
 import scala.meta.pc.PresentationCompilerConfig
 
 import tests.BaseCompletionSuite
-import tests.BuildInfoVersions
 
 class CompletionCaseSuite extends BaseCompletionSuite {
 
-  override def excludedScalaVersions: Set[String] =
-    BuildInfoVersions.scala3Versions.toSet
+  override def ignoreScalaVersion: Option[IgnoreScalaVersion] =
+    Some(IgnoreScala3)
 
   def paramHint: Option[String] = Some("param-hint")
 
@@ -366,13 +365,13 @@ class CompletionCaseSuite extends BaseCompletionSuite {
       |    cas@@
       |  }
       |}""".stripMargin,
-    """|case Nil => scala.collection.immutable
-       |case head :: tl => scala.collection.immutable
+    """|case head :: tl => scala.collection.immutable
+       |case Nil => scala.collection.immutable
        |""".stripMargin,
     compat = Map(
       "2.13" ->
-        """|case Nil => scala.collection.immutable
-           |case head :: next => scala.collection.immutable
+        """|case head :: next => scala.collection.immutable
+           |case Nil => scala.collection.immutable
            |""".stripMargin
     )
   )

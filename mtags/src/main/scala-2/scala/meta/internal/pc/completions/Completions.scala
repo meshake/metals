@@ -1,5 +1,6 @@
 package scala.meta.internal.pc.completions
 
+import java.net.URI
 import java.util.logging.Level
 
 import scala.collection.immutable.Nil
@@ -198,7 +199,10 @@ trait Completions { this: MetalsGlobal =>
               if (byFuzzy != 0) byFuzzy
               else {
                 val byIdentifier =
-                  IdentifierComparator.compare(o1.sym.name, o2.sym.name)
+                  IdentifierComparator.compare(
+                    o1.sym.name.decode,
+                    o2.sym.name.decode
+                  )
                 if (byIdentifier != 0) byIdentifier
                 else {
                   val byOwner =
@@ -385,6 +389,7 @@ trait Completions { this: MetalsGlobal =>
 
   def completionPosition(
       pos: Position,
+      source: URI,
       text: String,
       editRange: l.Range,
       completions: CompletionResult,
@@ -393,13 +398,15 @@ trait Completions { this: MetalsGlobal =>
     // the implementation of completionPositionUnsafe does a lot of `typedTreeAt(pos).tpe`
     // which often causes null pointer exceptions, it's easier to catch the error here than
     // enforce discipline in the code.
-    try completionPositionUnsafe(
-      pos,
-      text,
-      editRange,
-      completions,
-      latestEnclosing
-    )
+    try
+      completionPositionUnsafe(
+        pos,
+        source,
+        text,
+        editRange,
+        completions,
+        latestEnclosing
+      )
     catch {
       case NonFatal(e) =>
         logger.log(Level.SEVERE, e.getMessage(), e)
@@ -408,6 +415,7 @@ trait Completions { this: MetalsGlobal =>
   }
   def completionPositionUnsafe(
       pos: Position,
+      source: URI,
       text: String,
       editRange: l.Range,
       completions: CompletionResult,
@@ -436,9 +444,9 @@ trait Completions { this: MetalsGlobal =>
         }
         associatedDef
           .map(definition =>
-            ScaladocCompletion(editRange, definition, pos, text)
+            ScaladocCompletion(editRange, Some(definition), pos, text)
           )
-          .getOrElse(NoneCompletion)
+          .getOrElse(ScaladocCompletion(editRange, None, pos, text))
       case (ident: Ident) :: (a: Apply) :: _ =>
         fromIdentApply(ident, a)
       case (ident: Ident) :: (_: Select) :: (_: Assign) :: (a: Apply) :: _ =>
@@ -499,14 +507,13 @@ trait Completions { this: MetalsGlobal =>
           ident.pos.start,
           _ => true
         )
-      case Import(select, selector) :: _
-          if pos.source.file.name.isAmmoniteGeneratedFile && select
-            .toString()
-            .startsWith("$file") =>
+      case (imp @ Import(select, selector)) :: _
+          if isAmmoniteFileCompletionPosition(imp, pos) =>
         AmmoniteFileCompletions(select, selector, pos, editRange)
       case _ =>
         inferCompletionPosition(
           pos,
+          source,
           text,
           latestEnclosingArg,
           completions,
@@ -515,8 +522,19 @@ trait Completions { this: MetalsGlobal =>
     }
   }
 
+  def isAmmoniteFileCompletionPosition(tree: Tree, pos: Position): Boolean = {
+    tree match {
+      case Import(select, _) =>
+        pos.source.file.name.isAmmoniteGeneratedFile && select
+          .toString()
+          .startsWith("$file")
+      case _ => false
+    }
+  }
+
   private def inferCompletionPosition(
       pos: Position,
+      source: URI,
       text: String,
       enclosing: List[Tree],
       completions: CompletionResult,
@@ -538,6 +556,7 @@ trait Completions { this: MetalsGlobal =>
                     result.prefix,
                     editRange,
                     pos,
+                    source,
                     text
                   )
               }
@@ -559,7 +578,14 @@ trait Completions { this: MetalsGlobal =>
               NoneCompletion
             }
           case _ =>
-            inferCompletionPosition(pos, text, tail, completions, editRange)
+            inferCompletionPosition(
+              pos,
+              source,
+              text,
+              tail,
+              completions,
+              editRange
+            )
         }
       case AppliedTypeTree(_, args) :: _ =>
         if (args.exists(_.pos.includes(pos))) {
@@ -570,7 +596,7 @@ trait Completions { this: MetalsGlobal =>
       case New(_) :: _ =>
         NewCompletion
       case head :: tail if !head.pos.includes(pos) =>
-        inferCompletionPosition(pos, text, tail, completions, editRange)
+        inferCompletionPosition(pos, source, text, tail, completions, editRange)
       case _ =>
         NoneCompletion
     }
@@ -586,6 +612,7 @@ trait Completions { this: MetalsGlobal =>
           None
       }
   }
+
   class MetalsLocator(pos: Position) extends Traverser {
     def locateIn(root: Tree): Tree = {
       lastVisitedParentTrees = Nil
@@ -595,16 +622,38 @@ trait Completions { this: MetalsGlobal =>
         case _ => EmptyTree
       }
     }
-    protected def isEligible(t: Tree): Boolean = !t.pos.isTransparent
+    private def addToPath(path: List[Tree], t: Tree): List[Tree] = {
+      def goesAfter(prev: Tree): Boolean =
+        // in most cases prev tree should include next one
+        // however it doesn't work for some synthetic trees
+        // in this case check if both tree have different position ranges
+        prev.pos.includes(t.pos) || !t.pos.includes(prev.pos)
+
+      path match {
+        case Nil => List(t)
+        case head :: tl if goesAfter(head) => t :: head :: tl
+        case head :: tl => head :: addToPath(tl, t)
+      }
+    }
+
+    protected def isEligible(t: Tree): Boolean = {
+      !t.pos.isTransparent || {
+        t match {
+          // new User(age = 42, name = "") becomes transparent, which doesn't happen with normal methods
+          case Apply(Select(_: New, _), _) => true
+          case _ => false
+        }
+      }
+    }
     override def traverse(t: Tree): Unit = {
       t match {
         case tt: TypeTree
             if tt.original != null && (tt.pos includes tt.original.pos) =>
           traverse(tt.original)
         case _ =>
-          if (t.pos includes pos) {
+          if (t.pos.includes(pos)) {
             if (isEligible(t)) {
-              lastVisitedParentTrees ::= t
+              lastVisitedParentTrees = addToPath(lastVisitedParentTrees, t)
             }
             super.traverse(t)
           } else {
@@ -683,13 +732,12 @@ trait Completions { this: MetalsGlobal =>
     metalsConfig
       .symbolPrefixes()
       .asScala
-      .map {
-        case (sym, name) =>
-          val nme =
-            if (name.endsWith("#")) TypeName(name.stripSuffix("#"))
-            else if (name.endsWith(".")) TermName(name.stripSuffix("."))
-            else TermName(name)
-          inverseSemanticdbSymbol(sym) -> nme
+      .map { case (sym, name) =>
+        val nme =
+          if (name.endsWith("#")) TypeName(name.stripSuffix("#"))
+          else if (name.endsWith(".")) TermName(name.stripSuffix("."))
+          else TermName(name)
+        inverseSemanticdbSymbol(sym) -> nme
       }
       .filterKeys(_ != NoSymbol)
       .toMap
@@ -721,11 +769,13 @@ trait Completions { this: MetalsGlobal =>
       imp.tree.selectors.foreach { sel =>
         if (sel.rename != null) {
           val member = pre.member(sel.name)
-          result(member) = sel.rename
+          if (member != NoSymbol)
+            result(member) = sel.rename
           member.companion match {
             case NoSymbol =>
             case companion =>
-              result(companion) = sel.rename
+              if (companion != NoSymbol)
+                result(companion) = sel.rename
           }
         }
       }
@@ -739,7 +789,7 @@ trait Completions { this: MetalsGlobal =>
   def inferIdentStart(pos: Position, text: String): Int = {
     def fallback: Int = {
       var i = pos.point - 1
-      while (i > 0 && Chars.isIdentifierPart(text.charAt(i))) {
+      while (i >= 0 && Chars.isIdentifierPart(text.charAt(i))) {
         i -= 1
       }
       i + 1

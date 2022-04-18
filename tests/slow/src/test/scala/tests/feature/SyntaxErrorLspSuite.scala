@@ -3,6 +3,7 @@ package tests.feature
 import scala.concurrent.Future
 
 import scala.meta.internal.metals.{BuildInfo => V}
+import scala.meta.internal.semver.SemVer
 
 import munit.Location
 import tests.BaseLspSuite
@@ -32,7 +33,7 @@ class SyntaxErrorLspSuite extends BaseLspSuite("syntax-error") {
         }
 
       for {
-        _ <- server.initialize(
+        _ <- initialize(
           s"""
              |/metals.json
              |{"a": {}}
@@ -48,7 +49,7 @@ class SyntaxErrorLspSuite extends BaseLspSuite("syntax-error") {
 
   test("basic") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """|
            |/metals.json
            |{"a": {}}
@@ -92,7 +93,7 @@ class SyntaxErrorLspSuite extends BaseLspSuite("syntax-error") {
 
   test("mix1") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """|
            |/metals.json
            |{"a": {}}
@@ -128,7 +129,7 @@ class SyntaxErrorLspSuite extends BaseLspSuite("syntax-error") {
 
   test("mix2") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """|
            |/metals.json
            |{"a": {}}
@@ -162,7 +163,7 @@ class SyntaxErrorLspSuite extends BaseLspSuite("syntax-error") {
 
   test("no-build-tool") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/A.scala
           |object A { val x = }
@@ -182,7 +183,7 @@ class SyntaxErrorLspSuite extends BaseLspSuite("syntax-error") {
 
   test("unclosed-literal") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{"a": {}}
@@ -258,7 +259,7 @@ class SyntaxErrorLspSuite extends BaseLspSuite("syntax-error") {
        |""".stripMargin,
     Assert(
       _.replace("object A", "object B"),
-      """|a/src/main/scala/A.scala:2:3: error: not enough arguments for method lengthCompare: (len: Int)Int.
+      """|a/src/main/scala/A.scala:2:3: error: not enough arguments for method lengthCompare: (len: Int): Int.
          |Unspecified value parameter len.
          |  "".lengthCompare()
          |  ^^^^^^^^^^^^^^^^^^
@@ -320,7 +321,7 @@ class SyntaxErrorLspSuite extends BaseLspSuite("syntax-error") {
   test("literal-types") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""
            |/metals.json
            |{"a": { "scalaVersion": "${V.scala213}" }}
@@ -332,6 +333,36 @@ class SyntaxErrorLspSuite extends BaseLspSuite("syntax-error") {
       )
       _ <- server.didOpen("a/src/main/scala/A.scala")
       _ = assertEmpty(client.workspaceDiagnostics)
+    } yield ()
+  }
+
+  test("scala3-inline-position") {
+    cleanWorkspace()
+    // works from 3.0.1-RC1
+    val latestScala3 =
+      V.nonDeprecatedScalaVersions
+        .map(SemVer.Version.fromString)
+        .filter(_.major == 3)
+        .sortWith(_ > _)
+        .head
+    for {
+      _ <- initialize(
+        s"""
+           |/metals.json
+           |{"a": { "scalaVersion": "$latestScala3" }}
+           |/a/src/main/scala/A.scala
+           |inline def mark[T] = compiletime.summonInline[T]
+           |val x = mark[1 =:= 2]
+           |""".stripMargin
+      )
+      _ <- server.didOpen("a/src/main/scala/A.scala")
+      _ = assertNoDiff(
+        client.workspaceDiagnostics,
+        """|a/src/main/scala/A.scala:2:9: error: Cannot prove that (1 : Int) =:= (2 : Int).
+           |val x = mark[1 =:= 2]
+           |        ^^^^^^^^^^^^^
+           |""".stripMargin
+      )
     } yield ()
   }
 

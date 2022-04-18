@@ -1,5 +1,7 @@
 package tests
 
+import java.io.File
+
 import scala.meta.internal.jdk.CollectionConverters._
 import scala.meta.internal.metals.Messages
 import scala.meta.internal.metals.Messages.MissingScalafmtConf
@@ -12,10 +14,13 @@ import com.google.gson.JsonPrimitive
 class FormattingLspSuite extends BaseLspSuite("formatting") {
   test("basic") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""|/.scalafmt.conf
             |maxColumn = 100
             |version=${V.scalafmtVersion}
+            |runner.dialect = scala213
+            |/metals.json
+            |{"a":{"scalaVersion" : ${V.scala213}}}
             |/a/src/main/scala/a/Main.scala
             |object FormatMe {
             | val x = 1  }
@@ -36,11 +41,13 @@ class FormattingLspSuite extends BaseLspSuite("formatting") {
 
   test("require-config") {
     for {
-      _ <- server.initialize(
-        """|/a/src/main/scala/a/Main.scala
-           |object FormatMe {
-           | val x = 1  }
-           |""".stripMargin,
+      _ <- initialize(
+        s"""|/metals.json
+            |{"a":{"scalaVersion" : ${V.scala213}}}
+            |/a/src/main/scala/a/Main.scala
+            |object FormatMe {
+            | val x = 1  }
+            |""".stripMargin,
         expectError = true
       )
       _ <- server.didOpen("a/src/main/scala/a/Main.scala")
@@ -59,12 +66,44 @@ class FormattingLspSuite extends BaseLspSuite("formatting") {
     } yield ()
   }
 
+  test("initial-config-scala2") {
+    cleanWorkspace()
+    client.showMessageRequestHandler = { params =>
+      val expected = MissingScalafmtConf.createScalafmtConfMessage
+      if (params.getMessage() == expected) {
+        params.getActions().asScala.find(_ == MissingScalafmtConf.createFile)
+      } else None
+    }
+    for {
+      _ <- initialize(
+        s"""|/metals.json
+            |{"a":{"scalaVersion" : ${V.scala213}}}
+            |/a/src/main/scala/a/Main.scala
+            |object FormatMe {
+            | val x = 1  }
+            |""".stripMargin,
+        expectError = true
+      )
+      _ <- server.didOpen("a/src/main/scala/a/Main.scala")
+      _ <- server.formatting("a/src/main/scala/a/Main.scala")
+      _ = assertNoDiff(
+        server.textContents(".scalafmt.conf"),
+        s"""|version = "${V.scalafmtVersion}"
+            |runner.dialect = scala213
+            |""".stripMargin
+      )
+    } yield ()
+  }
+
   test("custom-config-path") {
     for {
-      _ <- server.initialize(
-        s"""|/project/.scalafmt.conf
+      _ <- initialize(
+        s"""|/metals.json
+            |{"a":{"scalaVersion" : ${V.scala213}}}
+            |/project/.scalafmt.conf
             |maxColumn=100
             |version=${V.scalafmtVersion}
+            |runner.dialect = scala213
             |/a/src/main/scala/a/Main.scala
             |object FormatMe {
             | val x = 1  }
@@ -76,7 +115,9 @@ class FormattingLspSuite extends BaseLspSuite("formatting") {
         val config = new JsonObject
         config.add(
           "scalafmt-config-path",
-          new JsonPrimitive("project/.scalafmt.conf")
+          new JsonPrimitive(
+            workspace.resolve("./project/.scalafmt.conf").toString()
+          )
         )
         server.didChangeConfiguration(config.toString)
       }
@@ -92,11 +133,14 @@ class FormattingLspSuite extends BaseLspSuite("formatting") {
 
   test("version") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""|.scalafmt.conf
             |version=${V.scalafmtVersion}
+            |runner.dialect = scala213
             |maxColumn=30
             |trailingCommas=never
+            |/metals.json
+            |{"a":{"scalaVersion" : ${V.scala213}}}
             |/a/src/main/scala/a/Main.scala
             |case class User(
             |  name: String,
@@ -120,9 +164,12 @@ class FormattingLspSuite extends BaseLspSuite("formatting") {
   // Ignored because it's very slow, takes ~15s because of HTTP retries.
   test("download-error".ignore) {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """|.scalafmt.conf
            |version="does-not-exist"
+           |runner.dialect = scala213
+           |/metals.json
+           |{"a":{"scalaVersion" : ${V.scala213}}}
            |/Main.scala
            |object  Main
            |""".stripMargin,
@@ -142,10 +189,13 @@ class FormattingLspSuite extends BaseLspSuite("formatting") {
 
   test("config-error") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""|.scalafmt.conf
             |version=${V.scalafmtVersion}
+            |runner.dialect = scala213
             |align=does-not-exist
+            |/metals.json
+            |{"a":{"scalaVersion" : ${V.scala213}}}
             |/Main.scala
             |object  Main
             |""".stripMargin,
@@ -155,10 +205,14 @@ class FormattingLspSuite extends BaseLspSuite("formatting") {
       _ <- server.formatting("Main.scala")
       _ = assertNoDiff(
         client.workspaceDiagnostics,
-        s"""|.scalafmt.conf:1:1: error: Invalid config: Type mismatch;
+        s"""|.scalafmt.conf:1:1: error: Invalid config: $workspace${File.separator}.scalafmt.conf:3:0 error: Type mismatch;
             |  found    : String (value: "does-not-exist")
             |  expected : Object
+            |align=does-not-exis
+            |^
+            |
             |> version=${V.scalafmtVersion}
+            |> runner.dialect = scala213
             |> align=does-not-exist
         """.stripMargin
       )
@@ -167,15 +221,18 @@ class FormattingLspSuite extends BaseLspSuite("formatting") {
 
   test("filters") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""|/.scalafmt.conf
             |version=${V.scalafmtVersion}
+            |runner.dialect = scala213
             |project.includeFilters = [
             |  ".*Spec.scala$$"
             |]
             |project.excludeFilters = [
             |  "UserSpec.scala$$"
             |]
+            |/metals.json
+            |{"a":{"scalaVersion" : ${V.scala213}}}
             |/Main.scala
             |  object   Main
             |/UserSpec.scala
@@ -212,9 +269,12 @@ class FormattingLspSuite extends BaseLspSuite("formatting") {
 
   test("sbt") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""|/.scalafmt.conf
             |version=${V.scalafmtVersion}
+            |runner.dialect = scala213
+            |/metals.json
+            |{"a":{"scalaVersion" : ${V.scala213}}}
             |/project/plugins.sbt
             |  object   Plugins
             |""".stripMargin,
@@ -241,12 +301,14 @@ class FormattingLspSuite extends BaseLspSuite("formatting") {
       }
     }
     for {
-      _ <- server.initialize(
-        """|/.scalafmt.conf
-           |maxColumn=40
-           |/Main.scala
-           |object   Main
-           |""".stripMargin,
+      _ <- initialize(
+        s"""|/.scalafmt.conf
+            |maxColumn=40
+            |/metals.json
+            |{"a":{"scalaVersion" : ${V.scala213}}}
+            |/Main.scala
+            |object   Main
+            |""".stripMargin,
         expectError = true
       )
       _ <- server.didOpen("Main.scala")
@@ -270,9 +332,150 @@ class FormattingLspSuite extends BaseLspSuite("formatting") {
           server.textContents(".scalafmt.conf"),
           s"""|version = "${V.scalafmtVersion}"
               |maxColumn=40
+              |runner.dialect = scala213
               |""".stripMargin
         )
       }
+    } yield ()
+  }
+
+  test("rewrite-dialect-global") {
+    cleanWorkspace()
+    client.showMessageRequestHandler = { params =>
+      params.getActions.asScala
+        .find(_ == Messages.UpdateScalafmtConf.letUpdate)
+    }
+    for {
+      _ <- initialize(
+        """|/metals.json
+           |{
+           |  "a": {
+           |     "scalaVersion": "3.0.0"
+           |  }
+           |}
+           |/.scalafmt.conf
+           |version = "2.7.5"
+           |/a/src/main/scala/A.scala
+           |object A
+           |""".stripMargin
+      )
+      _ = assertNoDiff(
+        server.textContents(".scalafmt.conf"),
+        s"""|version = "${V.scalafmtVersion}"
+            |runner.dialect = scala3
+            |""".stripMargin
+      )
+
+    } yield ()
+  }
+
+  test("rewrite-dialect-global-xsource3") {
+    cleanWorkspace()
+    client.showMessageRequestHandler = { params =>
+      params.getActions.asScala
+        .find(_ == Messages.UpdateScalafmtConf.letUpdate)
+    }
+    for {
+      _ <- initialize(
+        """|/metals.json
+           |{
+           |  "a": {
+           |     "scalaVersion": "2.13.6",
+           |     "scalacOptions": ["-Xsource:3"]
+           |  }
+           |}
+           |/.scalafmt.conf
+           |version = "2.7.5"
+           |/a/src/main/scala/A.scala
+           |object A
+           |""".stripMargin
+      )
+      _ = assertNoDiff(
+        server.textContents(".scalafmt.conf"),
+        s"""|version = "${V.scalafmtVersion}"
+            |runner.dialect = scala213source3
+            |""".stripMargin
+      )
+
+    } yield ()
+  }
+
+  test("rewrite-dialect-ignore-sbt") {
+    cleanWorkspace()
+    client.showMessageRequestHandler = { params =>
+      params.getActions.asScala
+        .find(_ == Messages.UpdateScalafmtConf.letUpdate)
+    }
+    for {
+      _ <- initialize(
+        s"""|/metals.json
+            |{
+            |  "a": {
+            |     "scalaVersion": "2.12.15"
+            |  },
+            |  "b": {
+            |     "scalaVersion": "2.12.15",
+            |     "scalacOptions": ["-Xsource:3"],
+            |     "sbtVersion": "1.6.0-RC2"
+            |  }
+            |}
+            |/.scalafmt.conf
+            |version = "${V.scalafmtVersion}"
+            |runner.dialect = scala211
+            |/a/src/main/scala/A.scala
+            |object A
+            |/b/src/main/scala/B.scala
+            |object B
+            |""".stripMargin
+      )
+      _ = assertNoDiff(
+        server.textContents(".scalafmt.conf"),
+        s"""|version = "${V.scalafmtVersion}"
+            |runner.dialect = scala212
+            |""".stripMargin
+      )
+
+    } yield ()
+  }
+
+  test("rewrite-dialect-file-override") {
+    cleanWorkspace()
+    client.showMessageRequestHandler = { params =>
+      params.getActions.asScala
+        .find(_ == Messages.UpdateScalafmtConf.letUpdate)
+    }
+    for {
+      _ <- initialize(
+        """|/metals.json
+           |{
+           |  "a": {
+           |     "scalaVersion": "3.0.0"
+           |  },
+           |  "b" : {
+           |     "scalaVersion": "2.13.5",
+           |     "scalacOptions": ["-Xsource:3"]
+           |  }
+           |}
+           |/.scalafmt.conf
+           |version = "2.7.5"
+           |/a/src/main/scala/A.scala
+           |object A
+           |/b/src/main/scala/B.scala
+           |object B
+           |""".stripMargin
+      )
+      _ = assertNoDiff(
+        server.textContents(".scalafmt.conf"),
+        s"""|version = "${V.scalafmtVersion}"
+            |runner.dialect = scala213source3
+            |fileOverride {
+            |  "glob:**/a/src/main/scala/**" {
+            |     runner.dialect = scala3
+            |  }
+            |}
+            |""".stripMargin
+      )
+
     } yield ()
   }
 
@@ -286,12 +489,14 @@ class FormattingLspSuite extends BaseLspSuite("formatting") {
       }
     }
     for {
-      _ <- server.initialize(
-        """|/.scalafmt.conf
-           |maxColumn=40
-           |/Main.scala
-           |object   Main
-           |""".stripMargin,
+      _ <- initialize(
+        s"""|/.scalafmt.conf
+            |maxColumn=40
+            |/metals.json
+            |{"a":{"scalaVersion" : ${V.scala213}}}
+            |/Main.scala
+            |object   Main
+            |""".stripMargin,
         expectError = true
       )
       _ <- server.didOpen("Main.scala")
@@ -324,30 +529,4 @@ class FormattingLspSuite extends BaseLspSuite("formatting") {
       }
     } yield ()
   }
-
-  test("workspace-folder") {
-    for {
-      _ <- server.initialize(
-        s"""|/a/.scalafmt.conf
-            |version=${V.scalafmtVersion}
-            |maxColumn=10
-            |/Main.scala
-            |object   Main { val x = 2 }
-            |""".stripMargin,
-        expectError = true,
-        workspaceFolders = List("a")
-      )
-      _ <- server.didOpen("Main.scala")
-      _ <- server.formatting("Main.scala")
-      _ = assertNoDiff(
-        server.bufferContents("Main.scala"),
-        """object Main {
-          |  val x =
-          |    2
-          |}
-          |""".stripMargin
-      )
-    } yield ()
-  }
-
 }

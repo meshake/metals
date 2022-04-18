@@ -4,7 +4,7 @@ import scala.meta.internal.metals.{BuildInfo => V}
 
 import munit.TestOptions
 
-class WorksheetLspSuite extends tests.BaseWorksheetLspSuite(V.scala212) {
+class WorksheetLspSuite extends tests.BaseWorksheetLspSuite(V.scala213) {
 
   checkWorksheetDeps(
     "imports-inside",
@@ -15,8 +15,9 @@ class WorksheetLspSuite extends tests.BaseWorksheetLspSuite(V.scala212) {
 
   def checkWorksheetDeps(opts: TestOptions, path: String): Unit = {
     test(opts) {
+      cleanWorkspace()
       for {
-        _ <- server.initialize(
+        _ <- initialize(
           s"""
              |/metals.json
              |{
@@ -63,11 +64,110 @@ class WorksheetLspSuite extends tests.BaseWorksheetLspSuite(V.scala212) {
              |  body(
              |    p("This is a big paragraph of text")
              |  )
-             |) // : scalatags.Text.TypedTag[String] = TypedTag("html",List(WrappedArray(TypedTag("body",List(WrappedArray(TypedTag("p",Li…
+             |) // : scalatags.Text.TypedTag[String] = TypedTag(tag = "html",modifiers = List(ArraySeq(TypedTag(tag = "body",modifiers = L…
              |htmlFile.render // : String = "<html><body><p>This is a big paragraph of text</p></body></html>"
              |""".stripMargin
         )
       } yield ()
     }
+  }
+
+  test("bad-dep") {
+    cleanWorkspace()
+    val path = "hi.worksheet.sc"
+    for {
+      _ <- initialize(
+        s"""
+           |/metals.json
+           |{
+           |  "a": {}
+           |}
+           |/${path}
+           |import $$dep.`com.lihaoyi::scalatags:0.999.0`
+           |""".stripMargin
+      )
+      _ <- server.didOpen(path)
+      _ = assertNoDiff(
+        client.workspaceErrorShowMessages,
+        "Error downloading com.lihaoyi:scalatags_2.13:0.999.0"
+      )
+    } yield ()
+  }
+  // Ensure that on Java +9 that all modules are correctly loaded with the Mdoc
+  // classloader including things like the java.sql module.
+  // https://github.com/scalameta/metals/issues/2187
+  test("classloader") {
+    cleanWorkspace()
+    val path = "hi.worksheet.sc"
+    for {
+      _ <- initialize(
+        s"""
+           |/metals.json
+           |{
+           |  "a": {}
+           |}
+           |/${path}
+           |new java.sql.Date(100L)
+           |""".stripMargin
+      )
+      _ <- server.didOpen(path)
+      _ = assertNoDiff(
+        client.workspaceDecorations,
+        "new java.sql.Date(100L) // : java.sql.Date = 1970-01-01"
+      )
+    } yield ()
+  }
+
+  test("akka") {
+    cleanWorkspace()
+    val path = "hi.worksheet.sc"
+    for {
+      _ <- initialize(
+        s"""
+           |/metals.json
+           |{
+           |  "a": {}
+           |}
+           |/${path}
+           |import $$dep.`com.typesafe.akka::akka-stream:2.6.13`
+           |
+           |import akka.actor.ActorSystem
+           |import akka.NotUsed
+           |import akka.stream.scaladsl.Source
+           |import akka.stream.scaladsl.Sink
+           |import java.io.File
+           |import scala.concurrent.Await
+           |import scala.concurrent.duration.DurationInt
+           |
+           |
+           |implicit val system: ActorSystem = ActorSystem("QuickStart")
+           |val source: Source[Int, NotUsed] = Source(1 to 2)
+           |val future = source.runWith(Sink.foreach(_ => ()))
+           |Await.result(future, 3.seconds)
+           |
+           |""".stripMargin
+      )
+      _ <- server.didOpen(path)
+      _ = assertNoDiff(
+        // it seems that part of the string is always different, so let's remove it
+        client.workspaceDecorations.replaceAll(".out\\(.*", ".out(..."),
+        """|import $dep.`com.typesafe.akka::akka-stream:2.6.13`
+           |
+           |import akka.actor.ActorSystem
+           |import akka.NotUsed
+           |import akka.stream.scaladsl.Source
+           |import akka.stream.scaladsl.Sink
+           |import java.io.File
+           |import scala.concurrent.Await
+           |import scala.concurrent.duration.DurationInt
+           |
+           |
+           |implicit val system: ActorSystem = ActorSystem("QuickStart") // : ActorSystem = akka://QuickStart
+           |val source: Source[Int, NotUsed] = Source(1 to 2) // : Source[Int, NotUsed] = Source(SourceShape(StatefulMapConcat.out(...
+           |val future = source.runWith(Sink.foreach(_ => ())) // : concurrent.Future[akka.Done] = Future(Success(Done))
+           |Await.result(future, 3.seconds) // : akka.Done = Done
+           |""".stripMargin
+      )
+    } yield ()
   }
 }

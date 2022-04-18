@@ -18,7 +18,7 @@ class BillLspSuite extends BaseLspSuite("bill") {
     List(globalBsp.resolve("bsp"))
   def testRoundtripCompilation(): Future[Unit] = {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/src/com/App.scala
           |object App {
@@ -51,11 +51,11 @@ class BillLspSuite extends BaseLspSuite("bill") {
     testRoundtripCompilation()
   }
 
-  test("reconnect") {
+  test("reconnect-manual") {
     cleanWorkspace()
     Bill.installWorkspace(workspace.toNIO)
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/src/com/App.scala
           |object App {
@@ -65,11 +65,47 @@ class BillLspSuite extends BaseLspSuite("bill") {
           |true
         """.stripMargin
       )
-      _ <- server.executeCommand(ServerCommands.ConnectBuildServer.id)
-      _ <- server.executeCommand(ServerCommands.ConnectBuildServer.id)
+      _ <- server.executeCommand(ServerCommands.DisconnectBuildServer)
+      _ <- server.executeCommand(ServerCommands.ConnectBuildServer)
       _ = {
         val logs = workspace
-          .resolve(Directories.log)
+          .resolve(Bill.logName)
+          .readText
+          .linesIterator
+          .filter(_.startsWith("trace:"))
+          .mkString("\n")
+        assertNoDiff(
+          logs,
+          // Assert that we can manually shut downn the server, and then
+          // manually connect back up with no issues.
+          """|trace: initialize
+             |trace: shutdown
+             |trace: initialize
+             |""".stripMargin
+        )
+      }
+    } yield ()
+  }
+
+  test("reconnect") {
+    cleanWorkspace()
+    Bill.installWorkspace(workspace.toNIO)
+    for {
+      _ <- initialize(
+        """
+          |/src/com/App.scala
+          |object App {
+          |  val x: Int = ""
+          |}
+          |/shutdown-trace
+          |true
+        """.stripMargin
+      )
+      _ <- server.executeCommand(ServerCommands.ConnectBuildServer)
+      _ <- server.executeCommand(ServerCommands.ConnectBuildServer)
+      _ = {
+        val logs = workspace
+          .resolve(Bill.logName)
           .readText
           .linesIterator
           .filter(_.startsWith("trace:"))
@@ -78,6 +114,8 @@ class BillLspSuite extends BaseLspSuite("bill") {
           logs,
           // Assert that "Connect to build server" waits for the shutdown
           // response from the build server before sending "initialize".
+          // Essentially the same from above without needing to manually
+          // disconnect first
           """|trace: initialize
              |trace: shutdown
              |trace: initialize
@@ -93,7 +131,7 @@ class BillLspSuite extends BaseLspSuite("bill") {
     cleanWorkspace()
     Bill.installWorkspace(workspace.toNIO)
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/src/com/App.scala
           |object App {
@@ -149,8 +187,12 @@ class BillLspSuite extends BaseLspSuite("bill") {
   }
 
   def testSelectServerDialogue(): Future[Unit] = {
+    // when asked, choose the Bob build tool
+    client.selectBspServer = { actions =>
+      actions.find(_.getTitle == "Bob").get
+    }
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/src/App.scala
           |object App {}
@@ -159,7 +201,7 @@ class BillLspSuite extends BaseLspSuite("bill") {
       _ = assertNoDiff(
         client.workspaceMessageRequests,
         List(
-          Messages.SelectBspServer.message,
+          Messages.BspSwitch.message,
           Messages.CheckDoctor.allProjectsMisconfigured
         ).mkString("\n")
       )

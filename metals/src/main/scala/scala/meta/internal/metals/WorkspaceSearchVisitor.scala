@@ -31,16 +31,15 @@ class WorkspaceSearchVisitor(
     query: WorkspaceSymbolQuery,
     token: CancelChecker,
     index: GlobalSymbolIndex,
-    fileOnDisk: AbsolutePath => AbsolutePath
+    saveClassFileToDisk: Boolean
 ) extends SymbolSearchVisitor {
   private val fromWorkspace = new ju.ArrayList[l.SymbolInformation]()
   private val fromClasspath = new ju.ArrayList[l.SymbolInformation]()
   private val bufferedClasspath = new ju.ArrayList[(String, String)]()
   def allResults(): Seq[l.SymbolInformation] = {
     if (fromWorkspace.isEmpty) {
-      bufferedClasspath.forEach {
-        case (pkg, name) =>
-          expandClassfile(pkg, name)
+      bufferedClasspath.forEach { case (pkg, name) =>
+        expandClassfile(pkg, name)
       }
     }
 
@@ -72,7 +71,7 @@ class WorkspaceSearchVisitor(
         )
       )
     }
-    result.asScala
+    result.asScala.toSeq
   }
   private val byNameLength = new ju.Comparator[l.SymbolInformation] {
     def compare(x: l.SymbolInformation, y: l.SymbolInformation): Int = {
@@ -88,10 +87,14 @@ class WorkspaceSearchVisitor(
   ): Option[SymbolDefinition] = {
     val nme = Classfile.name(filename)
     val tpe = Symbol(Symbols.Global(pkg, Descriptor.Type(nme)))
-    index.definition(tpe).orElse {
+
+    val forTpe = index.definitions(tpe)
+    val defs = if (forTpe.isEmpty) {
       val term = Symbol(Symbols.Global(pkg, Descriptor.Term(nme)))
-      index.definition(term)
-    }
+      index.definitions(term)
+    } else forTpe
+
+    defs.sortBy(_.path.toURI.toString).headOption
   }
   override def shouldVisitPackage(pkg: String): Boolean = true
   override def visitWorkspaceSymbol(
@@ -128,10 +131,13 @@ class WorkspaceSearchVisitor(
     } {
       isVisited += defn.path
       val input = defn.path.toInput
-      lazy val uri = fileOnDisk(defn.path).toURI.toString
-      SemanticdbDefinition.foreach(input) { defn =>
-        if (query.matches(defn.info)) {
-          fromClasspath.add(defn.toLSP(uri))
+      SemanticdbDefinition.foreach(input, defn.dialect) { semanticDefn =>
+        if (query.matches(semanticDefn.info)) {
+          val path =
+            if (saveClassFileToDisk) defn.path.toFileOnDisk(workspace)
+            else defn.path
+          val uri = path.toURI.toString
+          fromClasspath.add(semanticDefn.toLSP(uri))
           isHit = true
         }
       }

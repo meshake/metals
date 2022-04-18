@@ -7,14 +7,17 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.collection.concurrent.TrieMap
 
+import scala.meta.dialects
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals._
+import scala.meta.internal.metals.clients.language.MetalsLanguageClient
 import scala.meta.internal.mtags.GlobalSymbolIndex
 import scala.meta.internal.mtags.Mtags
 import scala.meta.internal.mtags.Symbol
 import scala.meta.internal.semanticdb.Scala._
 import scala.meta.io.AbsolutePath
 
+import ch.epfl.scala.bsp4j.BuildTarget
 import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import org.eclipse.{lsp4j => l}
 
@@ -26,7 +29,8 @@ class MetalsTreeViewProvider(
     definitionIndex: GlobalSymbolIndex,
     statistics: StatisticsConfig,
     doCompile: BuildTargetIdentifier => Unit,
-    sh: ScheduledExecutorService
+    sh: ScheduledExecutorService,
+    isBloop: () => Boolean
 ) extends TreeViewProvider {
   private val ticks =
     TrieMap.empty[String, ScheduledFuture[_]]
@@ -51,29 +55,27 @@ class MetalsTreeViewProvider(
     (path, symbol) => classpath.symbols(path, symbol)
   )
 
-  val projects = new ClasspathTreeView[ScalaTarget, BuildTargetIdentifier](
+  val projects = new ClasspathTreeView[BuildTarget, BuildTargetIdentifier](
     definitionIndex,
     Project,
     "projects",
     "Projects",
-    _.id,
+    _.getId(),
     _.getUri(),
     uri => new BuildTargetIdentifier(uri),
-    _.displayName,
+    _.getDisplayName(),
     _.baseDirectory,
     { () =>
       buildTargets.all.filter(target =>
-        buildTargets.buildTargetSources(target.id).nonEmpty
+        buildTargets.buildTargetSources(target.getId()).nonEmpty
       )
     },
     { (id, symbol) =>
-      doCompile(id)
-      buildTargets.scalacOptions(id) match {
-        case None =>
-          Nil.iterator
-        case Some(info) =>
-          classpath.symbols(info.getClassDirectory().toAbsolutePath, symbol)
-      }
+      if (isBloop()) doCompile(id)
+      buildTargets
+        .targetClassDirectories(id)
+        .flatMap(cd => classpath.symbols(cd.toAbsolutePath, symbol))
+        .iterator
     }
   )
 
@@ -99,7 +101,7 @@ class MetalsTreeViewProvider(
         !isCollapsed.getOrElse(id, true) &&
         isVisible(Project)
       }
-      .flatMap(buildTargets.scalaTarget)
+      .flatMap(buildTargets.info)
       .toArray
     if (toUpdate.nonEmpty) {
       val nodes = toUpdate.map { target =>
@@ -114,9 +116,9 @@ class MetalsTreeViewProvider(
   }
 
   override def onBuildTargetDidCompile(id: BuildTargetIdentifier): Unit = {
-    buildTargets.scalaTarget(id).foreach { target =>
-      classpath.clearCache(target.scalac.getClassDirectory().toAbsolutePath)
-    }
+    buildTargets
+      .targetClassDirectories(id)
+      .foreach(cd => classpath.clearCache(cd.toAbsolutePath))
     if (isCollapsed.contains(id)) {
       pendingProjectUpdates.add(id)
       flushPendingProjectUpdates()
@@ -177,7 +179,7 @@ class MetalsTreeViewProvider(
       }
     )
   }
-  def echoCommand(command: Command, icon: String): TreeViewNode =
+  def echoCommand(command: BaseCommand, icon: String): TreeViewNode =
     TreeViewNode(
       viewId = "help",
       nodeUri = s"help:${command.id}",
@@ -201,7 +203,6 @@ class MetalsTreeViewProvider(
           echoCommand(ServerCommands.GotoLog, "bug"),
           echoCommand(ServerCommands.ReadVscodeDocumentation, "book"),
           echoCommand(ServerCommands.ReadBloopDocumentation, "book"),
-          echoCommand(ServerCommands.ChatOnGitter, "gitter"),
           echoCommand(ServerCommands.ChatOnDiscord, "discord"),
           echoCommand(ServerCommands.OpenIssue, "issue-opened"),
           echoCommand(ServerCommands.MetalsGithub, "github"),
@@ -266,7 +267,14 @@ class MetalsTreeViewProvider(
   ): Option[TreeViewNodeRevealResult] = {
     val input = path.toInput
     val occurrences =
-      Mtags.allToplevels(input).occurrences.filterNot(_.symbol.isPackage)
+      Mtags
+        .allToplevels(
+          input,
+          // TreeViewProvider doesn't work with Scala 3 - see #2859
+          dialects.Scala213
+        )
+        .occurrences
+        .filterNot(_.symbol.isPackage)
     if (occurrences.isEmpty) None
     else {
       val closestSymbol = occurrences.minBy { occ =>
@@ -276,7 +284,7 @@ class MetalsTreeViewProvider(
         (!isLeading, distance)
       }
       val result =
-        if (path.isDependencySource(workspace())) {
+        if (path.isDependencySource(workspace()) || path.isJarFileSystem) {
           buildTargets
             .inferBuildTarget(List(Symbol(closestSymbol.symbol).toplevel))
             .map { inferred =>

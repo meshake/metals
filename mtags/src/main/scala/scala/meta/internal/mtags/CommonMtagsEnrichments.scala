@@ -1,5 +1,6 @@
 package scala.meta.internal.mtags
 
+import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
@@ -11,17 +12,24 @@ import java.{util => ju}
 
 import scala.annotation.tailrec
 import scala.collection.AbstractIterator
+import scala.util.Try
 import scala.util.control.NonFatal
 import scala.{meta => m}
 
 import scala.meta.inputs.Input
+import scala.meta.inputs.Position
 import scala.meta.internal.io.FileIO
 import scala.meta.internal.io.PathIO
+import scala.meta.internal.metals.CompilerOffsetParams
+import scala.meta.internal.metals.CompilerRangeParams
 import scala.meta.internal.pc.CompletionItemData
 import scala.meta.internal.semanticdb.Language
+import scala.meta.internal.semanticdb.SymbolInformation.{Kind => k}
 import scala.meta.internal.{semanticdb => s}
 import scala.meta.io.AbsolutePath
 import scala.meta.io.RelativePath
+import scala.meta.pc.OffsetParams
+import scala.meta.pc.RangeParams
 
 import com.google.gson.Gson
 import com.google.gson.JsonElement
@@ -60,6 +68,19 @@ trait CommonMtagsEnrichments {
       else Right(either.getRight)
   }
 
+  implicit class XtensionEitherCross[A, B](either: Either[A, B]) {
+    def asJava: JEither[A, B] =
+      either match {
+        case Left(value) => JEither.forLeft(value)
+        case Right(value) => JEither.forRight(value)
+      }
+
+    def mapLeft[C](f: A => C): Either[C, B] = either match {
+      case Left(value) => Left(f(value))
+      case Right(value) => Right(value)
+    }
+  }
+
   implicit class XtensionMetaPosition(pos: m.Position) {
     def toSemanticdb: s.Range = {
       new s.Range(
@@ -75,12 +96,56 @@ trait CommonMtagsEnrichments {
         new l.Position(pos.endLine, pos.endColumn)
       )
     }
+    def encloses(other: m.Position): Boolean = {
+      pos.start <= other.start && pos.end >= other.end
+    }
+
+    def encloses(other: l.Range): Boolean = {
+      val start = other.getStart()
+      val end = other.getEnd()
+      val isBefore =
+        pos.startLine < start.getLine ||
+          (pos.startLine == start.getLine && pos.startColumn <= start
+            .getCharacter())
+
+      val isAfter = pos.endLine > end.getLine() ||
+        (pos.endLine >= end.getLine() && pos.endColumn >= end.getCharacter())
+
+      isBefore && isAfter
+    }
+  }
+  implicit class XtensionRangeParams(params: RangeParams) {
+
+    def trimWhitespaceInRange: Option[OffsetParams] = {
+      def isWhitespace(i: Int): Boolean =
+        params.text.charAt(i).isWhitespace
+
+      @tailrec
+      def trim(start: Int, end: Int): Option[(Int, Int)] =
+        if (start == end) Some((start, start)).filter(_ => !isWhitespace(start))
+        else if (isWhitespace(start)) trim(start + 1, end)
+        else if (isWhitespace(end - 1)) trim(start, end - 1)
+        else Some((start, end))
+
+      trim(params.offset, params.endOffset()).map { case (start, end) =>
+        if (start == end)
+          CompilerOffsetParams(params.uri, params.text, start, params.token)
+        else
+          CompilerRangeParams(params.uri, params.text, start, end, params.token)
+      }
+    }
   }
 
   implicit class XtensionSemanticdbRange(range: s.Range) {
     def isPoint: Boolean = {
       range.startLine == range.endLine &&
       range.startCharacter == range.endCharacter
+    }
+    def isEqual(other: s.Range): Boolean = {
+      range.startLine == other.startLine &&
+      range.startCharacter == other.startCharacter &&
+      range.endLine == other.endLine &&
+      range.endCharacter == other.endCharacter
     }
     def encloses(other: s.Range): Boolean = {
       val startsBeforeOrAt =
@@ -147,6 +212,17 @@ trait CommonMtagsEnrichments {
         case data =>
           decodeJson(data, classOf[CompletionItemData])
       }
+
+    def setTextEdit(edit: l.TextEdit): Unit = {
+      item.setTextEdit(JEither.forLeft(edit))
+    }
+
+    def getLeftTextEdit(): Option[l.TextEdit] = {
+      for {
+        either <- Option(item.getTextEdit)
+        textEdit <- Option(either.getLeft())
+      } yield textEdit
+    }
   }
 
   implicit class XtensionLspPosition(pos: l.Position) {
@@ -250,6 +326,17 @@ trait CommonMtagsEnrichments {
     }
   }
 
+  implicit class XtensionInputVirtual(input: Input.VirtualFile) {
+    def filename: String = {
+      Try {
+        val uri = URI.create(input.path)
+        Paths.get(uri).filename
+      }.getOrElse {
+        Paths.get(input.path).filename
+      }
+    }
+  }
+
   implicit class XtensionStringDoc(doc: String) {
     def isScala: Boolean =
       doc.endsWith(".scala")
@@ -261,8 +348,12 @@ trait CommonMtagsEnrichments {
       doc.endsWith(".worksheet.sc")
     def isScalaFilename: Boolean =
       doc.isScala || isScalaScript || isSbt
+    def isScalaOrJavaFilename: Boolean =
+      doc.isScala || isScalaScript || isSbt || isJavaFilename
+    def isJavaFilename: Boolean =
+      doc.endsWith(".java")
     def isAmmoniteGeneratedFile: Boolean =
-      doc.endsWith(".sc.scala")
+      doc.endsWith(".amm.sc.scala")
     def isAmmoniteScript: Boolean =
       isScalaScript && !isWorksheet
     def asSymbol: Symbol = Symbol(doc)
@@ -277,11 +368,35 @@ trait CommonMtagsEnrichments {
       content.setValue(doc)
       content
     }
+
+    def checkIfNotInComment(
+        treeStart: Int,
+        treeEnd: Int,
+        currentOffset: Int
+    ): Boolean = {
+      import scala.meta._
+      val text = doc.slice(treeStart, treeEnd)
+      val tokens = text.tokenize.toOption
+      tokens
+        .flatMap(t =>
+          t.find {
+            case t: Token.Comment
+                if treeStart + t.pos.start < currentOffset &&
+                  treeStart + t.pos.end >= currentOffset =>
+              true
+            case _ =>
+              false
+          }
+        )
+        .isEmpty
+    }
   }
 
   implicit class XtensionRelativePathMetals(file: RelativePath) {
     def filename: String = file.toNIO.filename
     def isScalaFilename: Boolean = filename.isScalaFilename
+    def isJavaFilename: Boolean = filename.isJavaFilename
+    def isScalaOrJavaFilename: Boolean = isScalaFilename || isJavaFilename
   }
 
   implicit class XtensionStream[A](stream: java.util.stream.Stream[A]) {
@@ -343,6 +458,14 @@ trait CommonMtagsEnrichments {
       FileIO.slurp(path, StandardCharsets.UTF_8)
     }
 
+    def readTextOpt: Option[String] = {
+      if (path.exists) {
+        Option(path.readText)
+      } else {
+        None
+      }
+    }
+
     def filename: String = path.toNIO.filename
 
     def toIdeallyRelativeURI(sourceItemOpt: Option[AbsolutePath]): String =
@@ -367,6 +490,12 @@ trait CommonMtagsEnrichments {
     def isSbt: Boolean = {
       filename.endsWith(".sbt")
     }
+    def isClassfile: Boolean = {
+      filename.endsWith(".class")
+    }
+    def isTasty: Boolean = {
+      filename.endsWith(".tasty")
+    }
     def isScalaScript: Boolean = {
       filename.endsWith(".sc")
     }
@@ -374,6 +503,9 @@ trait CommonMtagsEnrichments {
       isScalaScript && !isWorksheet
     def isWorksheet: Boolean = {
       filename.endsWith(".worksheet.sc")
+    }
+    def isJavaFilename: Boolean = {
+      filename.isJavaFilename
     }
     def isScalaFilename: Boolean = {
       filename.isScalaFilename
@@ -393,9 +525,8 @@ trait CommonMtagsEnrichments {
     }
     def toInput: Input.VirtualFile = {
       val text = FileIO.slurp(path, StandardCharsets.UTF_8)
-      val file = path.toString()
-      val input = Input.VirtualFile(file, text)
-      input
+      val file = path.toURI.toString()
+      Input.VirtualFile(file, text)
     }
   }
 
@@ -410,5 +541,80 @@ trait CommonMtagsEnrichments {
         override def next(): A = q.poll()
       }
 
+  }
+
+  implicit class XtensionSymbolInformation(kind: s.SymbolInformation.Kind) {
+    def toLSP: l.SymbolKind =
+      kind match {
+        case k.LOCAL => l.SymbolKind.Variable
+        case k.FIELD => l.SymbolKind.Field
+        case k.METHOD => l.SymbolKind.Method
+        case k.CONSTRUCTOR => l.SymbolKind.Constructor
+        case k.MACRO => l.SymbolKind.Method
+        case k.TYPE => l.SymbolKind.Class
+        case k.PARAMETER => l.SymbolKind.Variable
+        case k.SELF_PARAMETER => l.SymbolKind.Variable
+        case k.TYPE_PARAMETER => l.SymbolKind.TypeParameter
+        case k.OBJECT => l.SymbolKind.Object
+        case k.PACKAGE => l.SymbolKind.Module
+        case k.PACKAGE_OBJECT => l.SymbolKind.Module
+        case k.CLASS => l.SymbolKind.Class
+        case k.TRAIT => l.SymbolKind.Interface
+        case k.INTERFACE => l.SymbolKind.Interface
+        case _ => l.SymbolKind.Class
+      }
+  }
+
+  implicit class XtensionInputOffset(input: Input) {
+    def toLanguage: Language =
+      input match {
+        case Input.VirtualFile(path, _) =>
+          filenameToLanguage(path)
+        case _ =>
+          Language.UNKNOWN_LANGUAGE
+      }
+
+    /**
+     * Returns offset position with end == start == offset
+     */
+    def toOffsetPosition(offset: Int): Position =
+      Position.Range(input, offset, offset)
+
+    /**
+     * Returns an offset for this input
+     */
+    def toOffset(line: Int, column: Int): Int =
+      input.lineToOffset(line) + column
+
+    /**
+     * Returns an offset position for this input
+     */
+    def toPosition(startLine: Int, startColumn: Int): Position.Range =
+      toPosition(startLine, startColumn, startLine, startColumn)
+
+    def toPosition(occ: s.SymbolOccurrence): Position.Range = {
+      val range = occ.range.getOrElse(s.Range())
+      toPosition(
+        range.startLine,
+        range.startCharacter,
+        range.endLine,
+        range.endCharacter
+      )
+    }
+
+    /**
+     * Returns a range position for this input
+     */
+    def toPosition(
+        startLine: Int,
+        startColumn: Int,
+        endLine: Int,
+        endColumn: Int
+    ): Position.Range =
+      Position.Range(
+        input,
+        toOffset(startLine, startColumn),
+        toOffset(endLine, endColumn)
+      )
   }
 }

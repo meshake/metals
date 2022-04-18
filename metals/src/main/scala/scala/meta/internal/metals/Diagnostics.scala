@@ -6,20 +6,25 @@ import java.{util => ju}
 
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
-import scala.{meta => m}
 
 import scala.meta.inputs.Input
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.PositionSyntax._
+import scala.meta.internal.parsing.TokenEditDistance
+import scala.meta.internal.parsing.Trees
 import scala.meta.io.AbsolutePath
 
 import ch.epfl.scala.bsp4j
 import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import org.eclipse.lsp4j.Diagnostic
-import org.eclipse.lsp4j.DiagnosticSeverity
 import org.eclipse.lsp4j.PublishDiagnosticsParams
 import org.eclipse.lsp4j.services.LanguageClient
 import org.eclipse.{lsp4j => l}
+
+private final case class CompilationStatus(
+    code: bsp4j.StatusCode,
+    errors: Int
+)
 
 /**
  * Converts diagnostics from the build server and Scalameta parser into LSP diagnostics.
@@ -35,11 +40,11 @@ import org.eclipse.{lsp4j => l}
  * goto definition in stale buffers.
  */
 final class Diagnostics(
-    buildTargets: BuildTargets,
     buffers: Buffers,
     languageClient: LanguageClient,
     statistics: StatisticsConfig,
-    config: () => UserConfiguration
+    workspace: Option[AbsolutePath],
+    trees: Trees
 ) {
   private val diagnostics =
     TrieMap.empty[AbsolutePath, ju.Queue[Diagnostic]]
@@ -53,6 +58,8 @@ final class Diagnostics(
     new ConcurrentLinkedQueue[AbsolutePath]()
   private val compileTimer =
     TrieMap.empty[BuildTargetIdentifier, Timer]
+  private val compilationStatus =
+    TrieMap.empty[BuildTargetIdentifier, CompilationStatus]
 
   def reset(): Unit = {
     val keys = diagnostics.keys
@@ -72,9 +79,27 @@ final class Diagnostics(
     }
   }
 
-  def onFinishCompileBuildTarget(target: BuildTargetIdentifier): Unit = {
+  def onFinishCompileBuildTarget(
+      report: bsp4j.CompileReport,
+      statusCode: bsp4j.StatusCode
+  ): Unit = {
     publishDiagnosticsBuffer()
+
+    val target = report.getTarget()
     compileTimer.remove(target)
+
+    val status = CompilationStatus(statusCode, report.getErrors())
+    compilationStatus.update(target, status)
+  }
+
+  def onSyntaxError(path: AbsolutePath, diags: List[Diagnostic]): Unit = {
+    diags.headOption match {
+      case Some(diagnostic) if !workspace.exists(path.isInReadonlyDirectory) =>
+        syntaxError(path) = diagnostic
+        publishDiagnostics(path)
+      case _ =>
+        onNoSyntaxError(path)
+    }
   }
 
   def onNoSyntaxError(path: AbsolutePath): Unit = {
@@ -84,27 +109,6 @@ final class Diagnostics(
       case None =>
         () // Do nothing, there was no previous syntax error.
     }
-  }
-
-  def onSyntaxError(
-      path: AbsolutePath,
-      pos: m.Position,
-      shortMessage: String
-  ): Unit = {
-    onSyntaxError(
-      path,
-      new Diagnostic(
-        pos.toLSP,
-        shortMessage,
-        DiagnosticSeverity.Error,
-        "scalameta"
-      )
-    )
-  }
-
-  def onSyntaxError(path: AbsolutePath, d: Diagnostic): Unit = {
-    syntaxError(path) = d
-    publishDiagnostics(path)
   }
 
   def didDelete(path: AbsolutePath): Unit = {
@@ -128,7 +132,7 @@ final class Diagnostics(
     val path = params.getTextDocument.getUri.toAbsolutePath
     onPublishDiagnostics(
       path,
-      params.getDiagnostics().asScala.map(_.toLSP),
+      params.getDiagnostics().asScala.map(_.toLSP).toSeq,
       params.getReset()
     )
   }
@@ -175,8 +179,28 @@ final class Diagnostics(
     )
   }
 
+  def hasCompilationErrors(buildTarget: BuildTargetIdentifier): Boolean = {
+    compilationStatus
+      .get(buildTarget)
+      .map(status => status.code.isError || status.errors > 0)
+      .getOrElse(false)
+  }
+
   def hasSyntaxError(path: AbsolutePath): Boolean =
     syntaxError.contains(path)
+
+  def hasDiagnosticError(path: AbsolutePath): Boolean = {
+    val fileDiagnostics = diagnostics
+      .get(path)
+
+    fileDiagnostics match {
+      case Some(diagnostics) =>
+        diagnostics.asScala.exists(
+          _.getSeverity() == l.DiagnosticSeverity.Error
+        )
+      case None => false
+    }
+  }
 
   private def publishDiagnostics(
       path: AbsolutePath,
@@ -188,13 +212,14 @@ final class Diagnostics(
     val edit = TokenEditDistance(
       snapshot,
       current,
+      trees,
       doNothingWhenUnchanged = false
     )
     val uri = path.toURI.toString
     val all = new ju.ArrayList[Diagnostic](queue.size() + 1)
     for {
       diagnostic <- queue.asScala
-      freshDiagnostic <- toFreshDiagnostic(edit, uri, diagnostic, snapshot)
+      freshDiagnostic <- toFreshDiagnostic(edit, diagnostic, snapshot)
     } {
       all.add(freshDiagnostic)
     }
@@ -222,7 +247,6 @@ final class Diagnostics(
   // Only needed when merging syntax errors with type errors.
   private def toFreshDiagnostic(
       edit: TokenEditDistance,
-      uri: String,
       d: Diagnostic,
       snapshot: Input
   ): Option[Diagnostic] = {

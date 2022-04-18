@@ -4,13 +4,14 @@ import scala.reflect.internal.util.BatchSourceFile
 import scala.reflect.io.VirtualFile
 import scala.tools.nsc.interactive.Global
 
+import scala.meta.dialects
 import scala.meta.interactive.InteractiveSemanticdb
 import scala.meta.internal.metals.JdkSources
 import scala.meta.internal.metals.MetalsLogger
-import scala.meta.internal.metals.Trees
 import scala.meta.internal.mtags.Mtags
 import scala.meta.internal.mtags.OnDemandSymbolIndex
 import scala.meta.internal.mtags.SemanticdbClasspath
+import scala.meta.internal.parsing.Trees
 import scala.meta.internal.semanticdb.TextDocument
 import scala.meta.internal.tokenizers.LegacyScanner
 import scala.meta.internal.tokenizers.LegacyToken
@@ -29,7 +30,7 @@ import tests.Library
 class MetalsBench {
 
   MetalsLogger.updateDefaultFormat()
-  val inputs: InputProperties = InputProperties.default()
+  val inputs: InputProperties = InputProperties.scala2()
   val classpath = new SemanticdbClasspath(inputs.sourceroot, inputs.classpath)
   val documents: List[(AbsolutePath, TextDocument)] =
     inputs.scalaFiles.map { input =>
@@ -44,7 +45,7 @@ class MetalsBench {
       )
     }
 
-  val jdk: Classpath = Classpath(JdkSources().toList)
+  val jdk: Classpath = Classpath(JdkSources().right.get)
   val fullClasspath: Classpath = jdk ++ inputs.dependencySources
 
   val inflated: Inflated = Inflated.jars(fullClasspath)
@@ -62,14 +63,16 @@ class MetalsBench {
   }
 
   val megaSources: Classpath = Classpath(
-    Library.all
+    Library.allScala2
       .flatMap(_.sources.entries)
       .filter(_.toNIO.getFileName.toString.endsWith(".jar"))
   )
   @Benchmark
   @BenchmarkMode(Array(Mode.SingleShotTime))
   def mtagsScalaIndex(): Unit = {
-    scalaDependencySources.inputs.foreach { input => Mtags.index(input) }
+    scalaDependencySources.inputs.foreach { input =>
+      Mtags.index(input, dialects.Scala213)
+    }
   }
 
   @Benchmark
@@ -82,7 +85,7 @@ class MetalsBench {
   @BenchmarkMode(Array(Mode.SingleShotTime))
   def scalaTokenize(): Unit = {
     scalaDependencySources.inputs.foreach { input =>
-      val scanner = new LegacyScanner(input, meta.dialects.Scala213)
+      val scanner = new LegacyScanner(input, Trees.defaultTokenizerDialect)
       var i = 0
       scanner.foreach(_ => i += 1)
     }
@@ -109,7 +112,7 @@ class MetalsBench {
   def scalametaParse(): Unit = {
     scalaDependencySources.inputs.foreach { input =>
       import scala.meta._
-      Trees.defaultDialect(input).parse[Source].get
+      Trees.defaultTokenizerDialect(input).parse[Source].get
     }
   }
 
@@ -137,14 +140,18 @@ class MetalsBench {
   @Benchmark
   @BenchmarkMode(Array(Mode.SingleShotTime))
   def mtagsJavaParse(): Unit = {
-    javaDependencySources.inputs.foreach { input => Mtags.index(input) }
+    javaDependencySources.inputs.foreach { input =>
+      Mtags.index(input, dialects.Scala213)
+    }
   }
 
   @Benchmark
   @BenchmarkMode(Array(Mode.SingleShotTime))
   def indexSources(): Unit = {
-    val index = OnDemandSymbolIndex()
-    fullClasspath.entries.foreach(entry => index.addSourceJar(entry))
+    val index = OnDemandSymbolIndex.empty()
+    fullClasspath.entries.foreach(entry =>
+      index.addSourceJar(entry, dialects.Scala213)
+    )
   }
 
 }

@@ -10,10 +10,11 @@ class DidFocusLspSuite extends BaseLspSuite("did-focus") {
     fakeTime = new FakeTime()
     super.beforeEach(context)
   }
+
   test("is-compiled") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{
@@ -67,11 +68,31 @@ class DidFocusLspSuite extends BaseLspSuite("did-focus") {
       )
     } yield ()
   }
+}
 
-  test("497") {
+// https://github.com/scalameta/metals/issues/497
+class DidFocusWhileCompilingLspSuite
+    extends BaseLspSuite("did-focus-while-compiling") {
+  var fakeTime: FakeTime = _
+  val compileDelayMillis = 5000
+  override def time: Time = fakeTime
+
+  // sleep 5s during the compilation, so that we can make sure
+  // calling `didFocus` during compilation.
+  override def beforeEach(context: BeforeEach): Unit = {
+    fakeTime = new FakeTime()
+    onStartCompilation = () => {
+      Thread.sleep(compileDelayMillis)
+    }
+    super.beforeEach(context)
+  }
+
+  test(
+    "Trigger compilation by didFocus when current compile may affect focused buffer"
+  ) {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{
@@ -121,10 +142,16 @@ class DidFocusLspSuite extends BaseLspSuite("did-focus") {
       didSaveA = server.didSave("a/src/main/scala/a/A.scala")(
         _.replace("Int", "String")
       )
+      // Wait until compilation against project a is started (before we invoke didFocus on project b)
+      _ <- server.waitFor(compileDelayMillis / 2)
       // Focus before compilation of A.scala is complete.
+      // And make sure didFocus during the compilation causes compilation against project b.
       didCompile <- server.didFocus("b/src/main/scala/b/B.scala")
       _ <- didSaveA
-      _ = assert(didCompile == Compiled)
+      _ = assert(
+        didCompile == Compiled,
+        s"expect 'Compiled', actual: ${didCompile}"
+      )
       _ = assertNoDiff(
         client.workspaceDiagnostics,
         """|b/src/main/scala/b/B.scala:3:16: error: type mismatch;

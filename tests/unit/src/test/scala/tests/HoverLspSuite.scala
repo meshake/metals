@@ -1,12 +1,17 @@
 package tests
 
 import scala.meta.internal.metals.Directories
+import scala.meta.internal.metals.InitializationOptions
+import scala.meta.internal.metals.{BuildInfo => V}
 
-class HoverLspSuite extends BaseLspSuite("hover") with TestHovers {
+class HoverLspSuite extends BaseLspSuite("hover-") with TestHovers {
+
+  override protected def initializationOptions: Option[InitializationOptions] =
+    Some(TestingServer.TestDefault)
 
   test("basic".tag(FlakyWindows)) {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """/metals.json
           |{"a":{}}
         """.stripMargin
@@ -17,19 +22,31 @@ class HoverLspSuite extends BaseLspSuite("hover") with TestHovers {
           |object Main {
           |  Option(1).he@@ad
           |}""".stripMargin,
-        """override def head: Int""".hover
+        """|```scala
+           |def head: Int
+           |```
+           |Selects the first element of this iterable collection.
+           | Note: might return different results for different runs, unless the underlying collection type is ordered.
+           |
+           |**Returns:** the first element of this iterable collection.
+           |
+           |**Throws**
+           |- `NoSuchElementException`:
+           |""".stripMargin.hover
       )
     } yield ()
   }
 
   test("basic-rambo".tag(FlakyWindows)) {
     for {
-      _ <- server.initialize(
-        """|/a/src/main/scala/a/Main.scala
-           |object Main extends App {
-           |  // @@
-           |}
-           |""".stripMargin,
+      _ <- initialize(
+        s"""|/metals.json
+            |{"a":{"scalaVersion" : ${V.scala213}}}
+            |/Main.scala
+            |object Main extends App {
+            |  // @@
+            |}
+            |""".stripMargin,
         expectError = true
       )
       _ <- server.assertHover(
@@ -38,14 +55,24 @@ class HoverLspSuite extends BaseLspSuite("hover") with TestHovers {
           |object Main {
           |  Option(1).he@@ad
           |}""".stripMargin,
-        """override def head: Int""".hover
+        """|```scala
+           |def head: Int
+           |```
+           |Selects the first element of this iterable collection.
+           | Note: might return different results for different runs, unless the underlying collection type is ordered.
+           |
+           |**Returns:** the first element of this iterable collection.
+           |
+           |**Throws**
+           |- `NoSuchElementException`:
+           |""".stripMargin.hover
       )
     } yield ()
   }
 
   test("docstrings".tag(FlakyWindows)) {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """/metals.json
           |{"a":{}}
           |/a/src/main/scala/a/Def.scala
@@ -77,7 +104,7 @@ class HoverLspSuite extends BaseLspSuite("hover") with TestHovers {
 
   test("update-docstrings".tag(FlakyWindows)) {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """/metals.json
           |{"a":{}}
           |/a/src/main/scala/a/Def.scala
@@ -123,9 +150,9 @@ class HoverLspSuite extends BaseLspSuite("hover") with TestHovers {
     } yield ()
   }
 
-  test("dependencies".tag(FlakyWindows)) {
+  test("dependencies".tag(FlakyWindows), withoutVirtualDocs = true) {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """/metals.json
           |{"a":{}}
           |/a/src/main/scala/a/Main.scala
@@ -144,7 +171,17 @@ class HoverLspSuite extends BaseLspSuite("hover") with TestHovers {
           |object Main {
           |  Option(1).he@@ad
           |}""".stripMargin,
-        """override def head: Int""".hover,
+        """|```scala
+           |def head: Int
+           |```
+           |Selects the first element of this iterable collection.
+           | Note: might return different results for different runs, unless the underlying collection type is ordered.
+           |
+           |**Returns:** the first element of this iterable collection.
+           |
+           |**Throws**
+           |- `NoSuchElementException`:
+           |""".stripMargin.hover,
         root = workspace.resolve(Directories.readonly)
       )
     } yield ()

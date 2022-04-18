@@ -3,10 +3,15 @@ package scala.meta.internal.metals
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.util.Collections
 
 import scala.collection.mutable
+import scala.concurrent.ExecutionContext
+import scala.concurrent.Future
+import scala.util.Failure
+import scala.util.Success
 import scala.util.control.NonFatal
 
 import scala.meta.internal.io.InputStreamIO
@@ -33,7 +38,6 @@ import org.eclipse.lsp4j.ExecuteCommandParams
  * Http server
  */
 final class MetalsHttpServer private (
-    languageServer: MetalsLanguageServer,
     server: Undertow,
     openChannels: mutable.Set[WebSocketChannel]
 ) extends Cancelable {
@@ -75,8 +79,9 @@ object MetalsHttpServer {
       languageServer: MetalsLanguageServer,
       render: () => String,
       complete: HttpServerExchange => Unit,
-      doctor: () => String
-  ): MetalsHttpServer = {
+      doctor: () => String,
+      tasty: (URI) => Future[Either[String, String]]
+  )(implicit ec: ExecutionContext): MetalsHttpServer = {
     val port = freePort(host, preferredPort)
     scribe.info(s"Selected port $port")
     val openChannels = mutable.Set.empty[WebSocketChannel]
@@ -125,13 +130,17 @@ object MetalsHttpServer {
           "/livereload",
           websocket(new LiveReloadConnectionCallback(openChannels))
         )
+        .addPrefixPath(
+          "/tasty",
+          tastyEndpointHandler(tasty)
+        )
         .addExactPath("/", textHtmlHandler(render))
         .addExactPath("/doctor", textHtmlHandler(doctor))
     val httpServer = Undertow.builder
       .addHttpListener(port, host)
       .setHandler(baseHandler)
       .build()
-    new MetalsHttpServer(languageServer, httpServer, openChannels)
+    new MetalsHttpServer(httpServer, openChannels)
   }
 
   def address(server: Undertow): String = {
@@ -170,6 +179,48 @@ object MetalsHttpServer {
     } catch {
       case NonFatal(_: IOException) if maxRetries > 0 =>
         freePort(host, port + 1, maxRetries - 1)
+    }
+  }
+
+  private def tastyEndpointHandler(
+      tasty: (URI) => Future[Either[String, String]]
+  )(implicit ec: ExecutionContext) = new HttpHandler {
+    override def handleRequest(exchange: HttpServerExchange): Unit = {
+      exchange.dispatch { () =>
+        val uri: Option[URI] = for {
+          params <- Option(exchange.getQueryParameters.get("file"))
+          path <- params.asScala.headOption
+        } yield new URI(path)
+
+        uri match {
+          case Some(uri) =>
+            tasty(uri)
+              .onComplete {
+                case Success(response) =>
+                  response match {
+                    case Right(value) =>
+                      exchange.getResponseSender().send(value)
+                    case Left(value) =>
+                      exchange
+                        .setStatusCode(StatusCodes.BAD_REQUEST)
+                        .getResponseSender()
+                        .send(value)
+                  }
+                case Failure(e) =>
+                  exchange
+                    .setStatusCode(StatusCodes.BAD_REQUEST)
+                    .getResponseSender()
+                    .send(e.getMessage())
+              }
+          case None =>
+            exchange
+              .setStatusCode(StatusCodes.BAD_REQUEST)
+              .getResponseSender()
+              .send(
+                "Missing query parameter file or provided value has invalid format. File should be an absolute URI"
+              )
+        }
+      }
     }
   }
 

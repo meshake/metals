@@ -8,9 +8,11 @@ import scala.concurrent.Future
 import scala.meta.internal.metals.MetalsEnrichments._
 
 import org.eclipse.lsp4j.debug.Capabilities
+import org.eclipse.lsp4j.debug.CompletionsArguments
 import org.eclipse.lsp4j.debug.ConfigurationDoneArguments
 import org.eclipse.lsp4j.debug.ContinueArguments
 import org.eclipse.lsp4j.debug.DisconnectArguments
+import org.eclipse.lsp4j.debug.EvaluateArguments
 import org.eclipse.lsp4j.debug.InitializeRequestArguments
 import org.eclipse.lsp4j.debug.InitializeRequestArgumentsPathFormat
 import org.eclipse.lsp4j.debug.NextArguments
@@ -65,7 +67,6 @@ final class Debugger(server: RemoteServer)(implicit ec: ExecutionContext) {
   def disconnect: Future[Unit] = {
     val args = new DisconnectArguments
     args.setRestart(false)
-    args.setTerminateDebuggee(false)
     server.disconnect(args).asScala.ignoreValue
   }
 
@@ -97,6 +98,25 @@ final class Debugger(server: RemoteServer)(implicit ec: ExecutionContext) {
         val args = new NextArguments()
         args.setThreadId(threadId)
         server.next(args).asScala.ignoreValue
+      case DebugStep.Evaluate(expression, frameId, callback, nextStep) =>
+        val args = new EvaluateArguments()
+        args.setFrameId(frameId)
+        args.setExpression(expression)
+        server
+          .evaluate(args)
+          .asScala
+          .map(callback)
+          .flatMap(_ => step(threadId, nextStep))
+      case DebugStep.Complete(expression, frameId, callback, line, character) =>
+        val args = new CompletionsArguments()
+        args.setFrameId(frameId)
+        args.setText(expression)
+        args.setLine(line)
+        args.setColumn(character)
+        server.completions(args).asScala.flatMap { completions =>
+          callback(completions)
+          step(threadId, DebugStep.Continue)
+        }
       case cause =>
         val error = s"Unsupported debug step $cause"
         Future.failed(new IllegalStateException(error))
@@ -145,8 +165,8 @@ final class Debugger(server: RemoteServer)(implicit ec: ExecutionContext) {
   }
 
   def shutdown(timeout: Int = 20): Future[Unit] = {
-    server.listening.withTimeout(timeout, TimeUnit.SECONDS).andThen {
-      case _ => server.cancel()
+    server.listening.withTimeout(timeout, TimeUnit.SECONDS).andThen { case _ =>
+      server.cancel()
     }
   }
 }

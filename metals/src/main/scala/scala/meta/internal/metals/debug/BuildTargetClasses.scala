@@ -7,7 +7,6 @@ import scala.concurrent.Future
 import scala.meta.internal.metals.BatchedFunction
 import scala.meta.internal.metals.BuildTargets
 import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.ScalaVersions
 import scala.meta.internal.metals.debug.BuildTargetClasses.Classes
 import scala.meta.internal.semanticdb.Scala.Descriptor
 import scala.meta.internal.semanticdb.Scala.Symbols
@@ -41,7 +40,11 @@ final class BuildTargetClasses(
   def findTestClassByName(
       name: String
   ): List[(String, b.BuildTargetIdentifier)] =
-    findClassesBy(_.testClasses.values.find(_ == name))
+    findClassesBy(
+      _.testClasses.values
+        .find(_.fullyQualifiedName == name)
+        .map(_.fullyQualifiedName)
+    )
 
   private def findClassesBy[A](
       f: Classes => Option[A]
@@ -49,16 +52,17 @@ final class BuildTargetClasses(
     index
       .mapValues(f)
       .toList
-      .collect {
-        case (target, Some(clazz)) => clazz -> target
+      .collect { case (target, Some(clazz)) =>
+        clazz -> target
       }
   }
 
   private def fetchClasses(
       targets: Seq[b.BuildTargetIdentifier]
   ): Future[Unit] = {
+    val distinctTargets = targets.distinct
     Future
-      .traverse(targets.groupBy(buildTargets.buildServerOf)) {
+      .traverse(distinctTargets.groupBy(buildTargets.buildServerOf).toSeq) {
         case (None, _) =>
           Future.successful(())
         case (Some(connection), targets0) =>
@@ -78,8 +82,8 @@ final class BuildTargetClasses(
             _ <- updateMainClasses
             _ <- updateTestClasses
           } yield {
-            classes.foreach {
-              case (id, classes) => index.put(id, classes)
+            classes.foreach { case (id, classes) =>
+              index.put(id, classes)
             }
           }
       }
@@ -115,7 +119,10 @@ final class BuildTargetClasses(
       symbol <-
         symbolFromClassName(className, List(Descriptor.Term, Descriptor.Type))
     } {
-      classes(target).testClasses.put(symbol, className)
+      // item.getFramework() can return null!
+      val framework = TestFramework(Option(item.getFramework()))
+      val testInfo = BuildTargetClasses.TestSymbolInfo(className, framework)
+      classes(target).testClasses.put(symbol, testInfo)
     }
   }
 
@@ -123,10 +130,8 @@ final class BuildTargetClasses(
       buildTarget: b.BuildTargetIdentifier
   ): List[String => Descriptor] = {
     buildTargets.scalaTarget(buildTarget) match {
-      case Some(scalaBuildTarget) =>
-        if (ScalaVersions.isScala3Version(scalaBuildTarget.scalaVersion))
-          List(Descriptor.Term, Descriptor.Type)
-        else List(Descriptor.Term)
+      case Some(_) =>
+        List(Descriptor.Term)
       case None =>
         List(Descriptor.Type)
     }
@@ -150,10 +155,31 @@ final class BuildTargetClasses(
   }
 }
 
+sealed abstract class TestFramework(val canResolveChildren: Boolean)
+object TestFramework {
+  def apply(framework: Option[String]): TestFramework = framework
+    .map {
+      case "JUnit" => JUnit4
+      case "munit" => MUnit
+      case _ => Unknown
+    }
+    .getOrElse(Unknown)
+}
+case object JUnit4 extends TestFramework(true)
+case object MUnit extends TestFramework(true)
+case object Unknown extends TestFramework(false)
+
 object BuildTargetClasses {
+  type Symbol = String
+  type FullyQualifiedClassName = String
+
+  final case class TestSymbolInfo(
+      fullyQualifiedName: FullyQualifiedClassName,
+      framework: TestFramework
+  )
   final class Classes {
-    val mainClasses = new TrieMap[String, b.ScalaMainClass]()
-    val testClasses = new TrieMap[String, String]()
+    val mainClasses = new TrieMap[Symbol, b.ScalaMainClass]()
+    val testClasses = new TrieMap[Symbol, TestSymbolInfo]()
 
     def isEmpty: Boolean = mainClasses.isEmpty && testClasses.isEmpty
   }

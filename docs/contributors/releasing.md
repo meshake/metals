@@ -3,25 +3,71 @@ id: releasing
 title: Making a release
 ---
 
+## Metals
+
+### Tag the release
+
 - Choose the right version number:
 
   - `x.0.0` is reserved for incompatible changes and require a milestone cycle.
   - `x.y.0` is reserved for compatible changes.
   - `x.y.z` is reserved for bugfixes that don't change the public API,
 
-- Tag the release:
+  For most releases bumping `z` is enough especially that Metals not being used
+  as a library anywhere and do not have a public API.
 
   - The tag must be called `vx.y.z`, e.g. `v3.0.0`.
   - `git tag -a vx.y.z -m "vx.y.z"`
-  - `git push upstream --tags`
-  - Do not create a release on GitHub just yet. Creating a release on GitHub
-    sends out a notification to repository watchers, and the release isn't ready
-    for that yet.
 
-- Wait for [the Travis CI job](https://travis-ci.org/scalameta/metals/branches)
-  in Active Branches to build the binaries and stage them to Sonatype.
+  You will need the tag to fill in some information in the release notes.
+  It can always be deleted and tagged again if you want to include more commits.
+  `git tag -d vx.y.z`
 
-- While waiting for Travis, update the milestones:
+  Please wait with pushing the tag until the release notes are accepted.
+
+### Draft the release notes
+
+You might use `./bin/merged_prs.sc` script to generate merged PRs list
+between two last release tags. It can be run using ammonite:
+
+```
+cs install ammonite
+amm ./bin/merged_prs.sc <tag1> <tag2> "<github_api_token>"
+```
+
+It will need a basic github API token to run, which may be specified via
+environment variable `GITHUB_TOKEN` or via the last argument.
+
+The script will generate a new markdown file in `website/blog` filled with a
+basic release template.
+
+You can fill in the number of closed issues from the last milestone, though
+you will need to make sure everything is included there.
+
+### Update Metals version
+
+- `build.sbt` - update `localSnapshotVersion`
+- `.github/ISSUE_TEMPLATE/bug_report.yml` - update `Version of Metals`
+- `./bin/test-release.sh` - remove any unsupported Scala versions and
+  add newly supported ones. This will be needed later to test the new release.
+- `.github/workflows/mtags-auto-release.yml` - update `metals_version` and `metals_ref`
+
+### Open a PR with release notes
+
+Open the PR to the repo https://github.com/scalameta/metals/releases/new.
+
+### Start the release process:
+
+- `git push upstream --tags` will trigger release workflow
+- Do not create a release on GitHub just yet. Creating a release on GitHub
+  sends out a notification to repository watchers, and the release isn't ready
+  for that yet.
+
+- Wait for
+  [the Github Actions job](https://github.com/scalameta/metals/actions?query=workflow%3ARelease)
+  to build the binaries and stage them to Sonatype.
+
+- While waiting for Github Actions, update the milestones:
 
   - https://github.com/scalameta/metals/milestones
   - Close the milestone or milestones corresponding to the release. For example,
@@ -30,24 +76,7 @@ title: Making a release
   - Create the milestone or milestones corresponding to future releases. For
     example, for a v3.3.0 release, we create both v3.3.1 and v3.4.0.
 
-- While waiting for Travis, draft the release notes:
-
-  - Copy `website/blog/2018-12-06-iron.md` as a template
-  - You might use `./bin/merged_prs.sc` script to generate merged PRs list
-    between two last release tags. It can be run using ammonite:
-
-  ```
-  cs install ammonite
-  amm ./bin/merged_prs.sc <tag1> <tag2> "<github_api_token>"
-  ```
-
-  It will need a basic github API token to run, which may be specified via
-  environment variable `GITHUB_TOKEN` or via the last argument.
-
-  - Update Metals SNAPSHOT version in `build.sbt` and the default version in
-    Github issue templates.
-  - Open a PR to the repo.
-  - https://github.com/scalameta/metals/releases/new.
+### Before official release
 
 - Verify the Sonatype release:
 
@@ -68,12 +97,18 @@ title: Making a release
 
   - https://github.com/scalameta/metals-vscode:
     - generate metals website with `sbt docs/run`
-    - open `website/target/docs/editor/vscode.md` and copy everything from
+    - open `website/target/docs/editors/vscode.md` and copy everything from
       "Requirements" over to the scalameta/metals-vscode README
       - remove "Using latest SNAPSHOT" section, this table is only up-to-date on
         the website
+    - check or update `enum` values of `fallbackScalaVersion` property in `package.json`.
+      They should be the same as `V.supportedScalaVersions` in `build.sbt`
     - open a PR, feel free to merge after CI is green
-    - tag a new release and publish to Marketplace
+    - open the last generated release draft, tag with a new version and publish
+      the release. This will start github actions job and publish the extension
+      to both the Visual Studio Code Code Marketplace and openvsx.
+
+### Official release
 
 - Publish the release on GitHub:
 
@@ -84,5 +119,31 @@ title: Making a release
   - Once the VS Code extension has been updated on the Marketplace, click
     "Publish release".
 
-- Announce on Gitter: https://gitter.im/scalameta/metals
-  - Tag everybody with `@/all`
+- Announce the new release with the link to the release notes:
+  - on [Discord](https://discord.com/invite/RFpSVth)
+
+## Sanity check
+
+- [ ] draft release notes and create with PR with them
+- [ ] bump Metals version
+- [ ] push a tag to the repository
+- [ ] merge PR with release notes
+- [ ] check if artifacts are published to the sonatype
+- [ ] update downstream projects like metals-vscode
+- [ ] do release on GitHub
+- [ ] announce it
+
+## Add new Scala version support to the existing release
+
+- If it's a Scala2 you need to release semanticdb plugin for it first.
+
+  - Find out which scalameta version the existing release uses
+  - In scalameta project:
+    - checkout on the tag for this version
+    - apply required changes for supporting new Scala2 compiler
+    - create and push tag with the following name: `semanticdb_v${existing-scalameta-version}_${scala-version}`
+      Notice this tag should include [these changes in `release.yml`](https://github.com/scalameta/scalameta/pull/2562/commits/1dfc99677659f5a9919c0dc9166547a0b332d35c)
+
+- Release mtags artifact.
+  Open [`Mtags auto release` action page](https://github.com/scalameta/metals/actions/workflows/mtags-auto-release.yml),
+  click `Run Workflow`, specify Scala version and confirm.

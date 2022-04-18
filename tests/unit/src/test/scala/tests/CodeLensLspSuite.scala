@@ -40,10 +40,10 @@ class CodeLensLspSuite extends BaseCodeLensLspSuite("codeLenses") {
        |""".stripMargin
   )
 
-  check("test-suite-class", library = Some("org.scalatest::scalatest:3.0.5"))(
+  check("test-suite-class", library = Some("org.scalatest::scalatest:3.2.4"))(
     """|package foo.bar
        |<<test>><<debug test>>
-       |class Foo extends org.scalatest.FunSuite {
+       |class Foo extends org.scalatest.funsuite.AnyFunSuite {
        |  test("foo") {}
        |}
        |""".stripMargin
@@ -62,7 +62,7 @@ class CodeLensLspSuite extends BaseCodeLensLspSuite("codeLenses") {
   test("run-many-main-files") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """|/metals.json
            |{
            |  "a": { }
@@ -104,12 +104,48 @@ class CodeLensLspSuite extends BaseCodeLensLspSuite("codeLenses") {
       )
     } yield ()
   }
+  test("run-java") {
+    cleanWorkspace()
+    for {
+      _ <- initialize(
+        """|/metals.json
+           |{
+           |  "a": { }
+           |}
+           |
+           |/a/src/main/java/Main.java
+           |package foo.bar;
+           |
+           |public class Main {
+           |  public static void main(String[] args){
+           |    System.out.println("Hello from Java!");
+           |  }
+           |}
+           |""".stripMargin
+      )
+      _ <- server.didOpen(
+        "a/src/main/java/Main.java"
+      ) // compile `a` to populate its cache
+      _ <- assertCodeLenses(
+        "a/src/main/java/Main.java",
+        """|package foo.bar;
+           |
+           |public class Main {
+           |<<run>><<debug>>
+           |  public static void main(String[] args){
+           |    System.out.println("Hello from Java!");
+           |  }
+           |}
+           |""".stripMargin
+      )
+    } yield ()
+  }
 
   // Tests, whether main class in one project does not affect other class with same name in other project
   test("run-multi-module") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """|/metals.json
            |{
            |  "a": { },
@@ -132,7 +168,7 @@ class CodeLensLspSuite extends BaseCodeLensLspSuite("codeLenses") {
   test("remove-stale-lenses") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """|/metals.json
            |{
            |  "a": { }
@@ -162,7 +198,7 @@ class CodeLensLspSuite extends BaseCodeLensLspSuite("codeLenses") {
   test("keep-after-error") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """|/metals.json
            |{ "a": { } }
            |
@@ -194,7 +230,7 @@ class CodeLensLspSuite extends BaseCodeLensLspSuite("codeLenses") {
     } yield ()
   }
 
-  check("go-to-super-method-lenses")(
+  check("go-to-super-method-lenses", printCommand = true)(
     """package gameofthrones
       |
       |abstract class Lannister {
@@ -203,51 +239,120 @@ class CodeLensLspSuite extends BaseCodeLensLspSuite("codeLenses") {
       |}
       |
       |trait Tywin extends Lannister{
-      |<< payTheirDebts>>
+      |<< payTheirDebts goto["gameofthrones/Lannister#payTheirDebts()."]>>
       |override def payTheirDebts = true
       |}
       |
       |trait Jamie extends Tywin {
-      |<< payTheirDebts>>
+      |<< payTheirDebts goto["gameofthrones/Tywin#payTheirDebts()."]>>
       |override def payTheirDebts = true
       |}
       |
       |trait Tyrion extends Tywin {
-      |<< payTheirDebts>>
+      |<< payTheirDebts goto["gameofthrones/Tywin#payTheirDebts()."]>>
       |override def payTheirDebts = true
       |}
       |
       |trait Cersei extends Tywin {
-      |<< payTheirDebts>>
+      |<< payTheirDebts goto["gameofthrones/Tywin#payTheirDebts()."]>>
       |override def payTheirDebts = false
-      |<< trueLannister>>
+      |<< trueLannister goto["gameofthrones/Lannister#trueLannister()."]>>
       |override def trueLannister = false
       |}
       |
       |class Joffrey extends Lannister with Jamie with Cersei {
-      |<< payTheirDebts>>
+      |<< payTheirDebts goto["gameofthrones/Cersei#payTheirDebts()."]>>
       |override def payTheirDebts = false
       |}
       |
       |class Tommen extends Lannister with Cersei with Jamie {
-      |<< payTheirDebts>>
+      |<< payTheirDebts goto["gameofthrones/Jamie#payTheirDebts()."]>>
       |override def payTheirDebts = true
       |}
       |""".stripMargin
   )
 
-  check("go-to-super-method-lenses-anonymous-class")(
-    """package a
-      |
-      |class A { def afx(): Unit = ??? }
-      |object X {
-      |  val t = new A {
-      |<< afx>>
-      |override def afx(): Unit = ???
-      |  }
-      |}
-      |
-    """.stripMargin
+  check("go-to-super-method-lenses-anonymous-class", printCommand = true)(
+    s"""|package a
+        |
+        |object X {
+        |  def main = {
+        |    class A { def afx(): Unit = ??? } 
+        |    val t = new A {
+        |<< afx goto-position[{"uri":"${workspace.toURI}a/src/main/scala/a/Foo.scala","range":{"start":{"line":4,"character":18},"end":{"line":4,"character":21}}}]>>
+        |    override def afx(): Unit = ???
+        |    }
+        |  }
+        |}
+        |""".stripMargin
   )
 
+  test("no-stale-supermethod-lenses") {
+    cleanWorkspace()
+    for {
+      _ <- initialize(
+        s"""|/metals.json
+            |{
+            |  "a": {}
+            |}
+            |/a/src/main/scala/a/A.scala
+            |package a
+            |trait X {
+            |  def foo: Int
+            |}
+            |case class Y(foo: Int) extends X
+            |
+            |trait Z {
+            |  def bar: Int
+            |}
+            |case class W(bar: Int) extends Z
+            |""".stripMargin
+      )
+      _ <- server.didOpen("a/src/main/scala/a/A.scala")
+      _ <- assertCodeLenses(
+        "a/src/main/scala/a/A.scala",
+        """|package a
+           |trait X {
+           |  def foo: Int
+           |}
+           |<< foo>>
+           |case class Y(foo: Int) extends X
+           |
+           |trait Z {
+           |  def bar: Int
+           |}
+           |<< bar>>
+           |case class W(bar: Int) extends Z
+           |""".stripMargin
+      )
+      _ <- server.didChange("a/src/main/scala/a/A.scala") { _ =>
+        s"""|package a
+            |trait X {
+            |  def foo: Int
+            |}
+            |//case class Y(foo: Int) extends X
+            |
+            |trait Z {
+            |  def bar: Int
+            |}
+            |case class W(bar: Int) extends Z
+            |""".stripMargin
+      }
+      _ <- assertCodeLenses(
+        "a/src/main/scala/a/A.scala",
+        """|package a
+           |trait X {
+           |  def foo: Int
+           |}
+           |//case class Y(foo: Int) extends X
+           |
+           |trait Z {
+           |  def bar: Int
+           |}
+           |<< bar>>
+           |case class W(bar: Int) extends Z
+           |""".stripMargin
+      )
+    } yield ()
+  }
 }

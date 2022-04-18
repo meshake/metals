@@ -1,12 +1,8 @@
 package tests.pc
 
 import tests.BaseCompletionSuite
-import tests.BuildInfoVersions
 
 class CompletionWorkspaceSuite extends BaseCompletionSuite {
-
-  override def excludedScalaVersions: Set[String] =
-    BuildInfoVersions.scala3Versions.toSet
 
   checkEdit(
     "files",
@@ -102,6 +98,76 @@ class CompletionWorkspaceSuite extends BaseCompletionSuite {
        |}
        |""".stripMargin,
     filter = _ == "Files - java.nio.file"
+  )
+
+  checkEdit(
+    "import-conflict3",
+    """|package `import-conflict3`
+       |import java.util.concurrent.Future
+       |case class Foo(
+       |  name: Future@@
+       |)
+       |""".stripMargin,
+    """|package `import-conflict3`
+       |import java.util.concurrent.Future
+       |case class Foo(
+       |  name: scala.concurrent.Future
+       |)
+       |""".stripMargin,
+    filter = _ == "Future - scala.concurrent"
+  )
+
+  checkEdit(
+    "import-conflict4",
+    """|package `import-conflict4`
+       |import java.util.concurrent._
+       |case class Foo(
+       |  name: Future@@
+       |)
+       |""".stripMargin,
+    """|package `import-conflict4`
+       |import java.util.concurrent._
+       |case class Foo(
+       |  name: scala.concurrent.Future
+       |)
+       |""".stripMargin,
+    filter = _ == "Future - scala.concurrent"
+  )
+
+  checkEdit(
+    "import-no-conflict",
+    """|package `import-no-conflict`
+       |import java.util.concurrent.{Future => _, _}
+       |case class Foo(
+       |  name: Future@@
+       |)
+       |""".stripMargin,
+    """|package `import-no-conflict`
+       |import java.util.concurrent.{Future => _, _}
+       |import scala.concurrent.Future
+       |case class Foo(
+       |  name: Future
+       |)
+       |""".stripMargin,
+    filter = _ == "Future - scala.concurrent"
+  )
+
+  checkEdit(
+    "imported-names-check1",
+    """|package `imported-names-check`
+       |import scala.concurrent.Future
+       |object A {
+       |  Await@@
+       |}
+       |""".stripMargin,
+    """|package `imported-names-check`
+       |import scala.concurrent.Future
+       |import scala.concurrent.Await
+       |object A {
+       |  Await
+       |}
+       |""".stripMargin,
+    filter = _ == "Await - scala.concurrent"
   )
 
   checkEdit(
@@ -231,10 +297,10 @@ class CompletionWorkspaceSuite extends BaseCompletionSuite {
        |  }
        |}
        |""".stripMargin,
-    """|import java.{util => ju}
+    """|import java.util.ArrayDeque
        |object Main {
        |  def foo(): Unit = null match {
-       |    case x: ju.ArrayDeque =>
+       |    case x: ArrayDeque =>
        |  }
        |}
        |""".stripMargin,
@@ -364,7 +430,7 @@ class CompletionWorkspaceSuite extends BaseCompletionSuite {
   )
 
   checkEditLine(
-    "backtick",
+    "backtick".tag(IgnoreScala3),
     """package `type`
       |abstract class Foo {
       |  def backtick: Foo
@@ -386,11 +452,11 @@ class CompletionWorkspaceSuite extends BaseCompletionSuite {
        |  def foo: ArrayBuffer@@[Int] = ???
        |}
        |""".stripMargin,
-    """|import scala.collection.mutable
+    """|import scala.collection.mutable.ArrayBuffer
        |
        |object Main {
        |  @noinline
-       |  def foo: mutable.ArrayBuffer[Int] = ???
+       |  def foo: ArrayBuffer[Int] = ???
        |}
        |""".stripMargin,
     filter = _ == "ArrayBuffer - scala.collection.mutable"
@@ -406,10 +472,10 @@ class CompletionWorkspaceSuite extends BaseCompletionSuite {
        |""".stripMargin,
     """|package annotationclass
        |
-       |import scala.collection.mutable
+       |import scala.collection.mutable.ArrayBuffer
        |object Main {
        |  @deprecated("", "")
-       |  class Foo extends mutable.ArrayBuffer[Int]
+       |  class Foo extends ArrayBuffer[Int]
        |}
        |""".stripMargin,
     filter = _ == "ArrayBuffer - scala.collection.mutable"
@@ -425,10 +491,10 @@ class CompletionWorkspaceSuite extends BaseCompletionSuite {
        |""".stripMargin,
     """|package annotationtrait
        |
-       |import scala.collection.mutable
+       |import scala.collection.mutable.ArrayBuffer
        |object Main {
        |  @deprecated("", "")
-       |  trait Foo extends mutable.ArrayBuffer[Int]
+       |  trait Foo extends ArrayBuffer[Int]
        |}
        |""".stripMargin,
     filter = _ == "ArrayBuffer - scala.collection.mutable"
@@ -512,5 +578,124 @@ class CompletionWorkspaceSuite extends BaseCompletionSuite {
        |}
        |""".stripMargin,
     filter = _ == "Future - scala.concurrent"
+  )
+
+  checkEdit(
+    "parent-object-scala2".tag(IgnoreScala3),
+    """|object Main {
+       |  Implicits@@
+       |}
+       |""".stripMargin,
+    """|import scala.concurrent.ExecutionContext
+       |object Main {
+       |  ExecutionContext.Implicits
+       |}
+       |""".stripMargin,
+    filter = _ == "Implicits - scala.concurrent.ExecutionContext"
+  )
+
+  // this test was intended to check that import is rendered correctly - without `$` symbol
+  // but it spotted the difference in scala2/scala3 `AutoImports` implementation
+  // this one might be removed / joined with `parent-object-scala2` in future
+  checkEdit(
+    "parent-object-scala3".tag(IgnoreScala2),
+    """|object Main {
+       |  Implicits@@
+       |}
+       |""".stripMargin,
+    """|import scala.concurrent.ExecutionContext.Implicits
+       |object Main {
+       |  Implicits
+       |}
+       |""".stripMargin,
+    filter = _ == "Implicits - scala.concurrent.ExecutionContext"
+  )
+
+  checkEdit(
+    "specify-owner",
+    """|object Main {
+       |  Map@@
+       |}
+       |""".stripMargin,
+    """|import scala.collection.mutable
+       |object Main {
+       |  mutable.Map
+       |}
+       |""".stripMargin,
+    filter = _ == "Map - scala.collection.mutable"
+  )
+
+  checkEdit(
+    "renamed-mutable",
+    """|import scala.collection.{mutable => mut}
+       |object Main {
+       |  Map@@
+       |}
+       |""".stripMargin,
+    """|import scala.collection.{mutable => mut}
+       |object Main {
+       |  mut.Map
+       |}
+       |""".stripMargin,
+    filter = _ == "Map - scala.collection.mutable"
+  )
+
+  checkEdit(
+    "ju-import",
+    """|object Main {
+       |  Map@@
+       |}
+       |""".stripMargin,
+    """|import java.{util => ju}
+       |object Main {
+       |  ju.Map
+       |}
+       |""".stripMargin,
+    filter = _ == "Map - java.util"
+  )
+
+  checkEdit(
+    "ju-import-dup",
+    """|import java.{util => ju}
+       |object Main {
+       |  Map@@
+       |}
+       |""".stripMargin,
+    """|import java.{util => ju}
+       |object Main {
+       |  ju.Map
+       |}
+       |""".stripMargin,
+    filter = _ == "Map - java.util"
+  )
+
+  check(
+    "ordering-1",
+    """|import scala.concurrent.Future
+       |object Main {
+       |  def foo(
+       |    x: Futu@@
+       |  ): String = ???
+       |}
+       |""".stripMargin,
+    """|Future scala.concurrent
+       |Future - java.util.concurrent
+       |""".stripMargin,
+    topLines = Some(2)
+  )
+
+  check(
+    "ordering-2",
+    """|import java.util.concurrent.Future
+       |object Main {
+       |  def foo(
+       |    x: Futu@@
+       |  ): String = ???
+       |}
+       |""".stripMargin,
+    """|Future java.util.concurrent
+       |Future - scala.concurrent
+       |""".stripMargin,
+    topLines = Some(2)
   )
 }

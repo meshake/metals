@@ -4,6 +4,7 @@ import scala.collection.JavaConverters._
 
 import scala.meta.internal.metals.JdkSources
 import scala.meta.internal.metals.PackageIndex
+import scala.meta.internal.metals.ScalaVersions
 import scala.meta.internal.mtags
 import scala.meta.io.AbsolutePath
 import scala.meta.io.Classpath
@@ -22,11 +23,30 @@ object Library {
     Library(
       "JDK",
       Classpath(PackageIndex.bootClasspath),
-      Classpath(JdkSources().get :: Nil)
+      Classpath(JdkSources().right.get :: Nil)
     )
   def cats: Seq[AbsolutePath] =
     fetch("org.typelevel", "cats-core_2.12", "2.0.0-M4")
-  def all: List[Library] = {
+
+  def scala3: Library = {
+    val binaryVersion =
+      ScalaVersions.scalaBinaryVersionFromFullVersion(BuildInfoVersions.scala3)
+    val dependencies = List(
+      Dependency.of(
+        "org.scala-lang",
+        s"scala3-compiler_$binaryVersion",
+        BuildInfoVersions.scala3
+      ),
+      Dependency.of(
+        "org.scala-lang",
+        s"scala3-library_$binaryVersion",
+        BuildInfoVersions.scala3
+      )
+    )
+    fetchSources("scala3-suite", dependencies)
+  }
+
+  def allScala2: List[Library] = {
     import mtags.BuildInfo.scalaCompilerVersion
 
     val dependencies = List(
@@ -44,13 +64,16 @@ object Library {
       Dependency.of("org.scalameta", "scalameta_2.12", "4.1.4"),
       Dependency.of("org.scala-lang", "scala-compiler", scalaCompilerVersion)
     )
+    List(fetchSources("scala2-suite", dependencies))
+  }
 
+  def fetchSources(name: String, deps: List[Dependency]): Library = {
     val fetch = Fetch
       .create()
       .withMainArtifacts()
       .withClassifiers(Set("sources", "_").asJava)
       .withDependencies(
-        dependencies: _*
+        deps: _*
       )
     val jars = fetch
       .fetch()
@@ -58,12 +81,11 @@ object Library {
       .map(_.toPath)
     val (sources, classpath) =
       jars.partition(_.getFileName.toString.endsWith("-sources.jar"))
-    List(
-      Library(
-        "suite",
-        Classpath(classpath.map(AbsolutePath(_)).toList),
-        Classpath(sources.map(AbsolutePath(_)).toList)
-      )
+
+    Library(
+      name,
+      Classpath(classpath.map(AbsolutePath(_)).toList),
+      Classpath(sources.map(AbsolutePath(_)).toList)
     )
   }
 
@@ -75,5 +97,6 @@ object Library {
       )
       .fetch()
       .asScala
+      .toSeq
       .map(f => AbsolutePath(f.toPath))
 }

@@ -1,12 +1,11 @@
 package tests.pc
 
 import tests.BaseCompletionSuite
-import tests.BuildInfoVersions
 
 class CompletionScaladocSuite extends BaseCompletionSuite {
 
-  override def excludedScalaVersions: Set[String] =
-    BuildInfoVersions.scala3Versions.toSet
+  override def ignoreScalaVersion: Option[IgnoreScalaVersion] =
+    Some(IgnoreScala3)
   check(
     "methoddef-label",
     """
@@ -29,13 +28,15 @@ class CompletionScaladocSuite extends BaseCompletionSuite {
        |""".stripMargin
   )
 
+  // see: https://github.com/scalameta/metals/issues/1941
   check(
-    "no-completion",
+    "no-associated-def-label",
     """
       |object A {
       |  /**@@
       |}""".stripMargin,
-    ""
+    """|/** */Scaladoc Comment
+       |""".stripMargin
   )
 
   checkEdit(
@@ -301,6 +302,19 @@ class CompletionScaladocSuite extends BaseCompletionSuite {
        |    * @param c
        |    */
        |  case class Test(a: Int, b: String)(c: Long)
+       |}
+       |""".stripMargin
+  )
+
+  checkEdit(
+    "no-associated-def",
+    """|object A {
+       |  /**@@
+       |}""".stripMargin,
+    """|object A {
+       |  /**
+       |    * $0
+       |    */
        |}
        |""".stripMargin
   )

@@ -6,30 +6,32 @@ import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.io.AbsolutePath
 
 import ch.epfl.scala.bsp4j.BuildTargetIdentifier
-import org.eclipse.lsp4j.debug.Source
 
 final class SourcePathProvider(
     definitionProvider: DefinitionProvider,
     buildTargets: BuildTargets,
     targets: List[BuildTargetIdentifier]
 ) {
-  def findPathFor(source: Source): Option[AbsolutePath] = {
-    if (source == null) None
-    else {
-      searchAsClassPathSymbol(source).orElse(searchAsSourceFile(source))
-    }
+  def findPathFor(
+      sourcePath: String,
+      sourceName: String
+  ): Option[AbsolutePath] = {
+    searchAsClassPathSymbol(sourcePath).orElse(searchAsSourceFile(sourceName))
   }
 
-  private def searchAsClassPathSymbol(source: Source): Option[AbsolutePath] = {
-    val symbolBase = source.getPath
+  private def searchAsClassPathSymbol(
+      sourcePath: String
+  ): Option[AbsolutePath] = {
+    val base = sourcePath
       .stripSuffix(".scala")
       .stripSuffix(".java")
       .replace("\\", "/") // adapt windows paths to the expected format
 
+    val symbolBase = if (base.contains("/")) base else "_empty_/" + base
     val symbols = for {
-      symbol <- Set(symbolBase + ".", symbolBase + "#")
-      definition <- definitionProvider.fromSymbol(symbol).asScala
-    } yield definition.getUri.toAbsolutePath
+      symbol <- Set(symbolBase + ".", symbolBase + "#").toIterator
+      location <- definitionProvider.fromSymbol(symbol, targets).asScala
+    } yield location.getUri.toAbsolutePath
 
     if (symbols.isEmpty) {
       scribe.debug(s"no definition for symbol: $symbolBase")
@@ -38,15 +40,15 @@ final class SourcePathProvider(
     symbols.headOption
   }
 
-  private def searchAsSourceFile(source: Source): Option[AbsolutePath] = {
+  private def searchAsSourceFile(sourceName: String): Option[AbsolutePath] = {
     val files = for {
       target <- targets.view
-      sourceFile <- buildTargets.buildTargetSources(target)
-      if sourceFile.filename == source.getName
+      sourceFile <- buildTargets.buildTargetTransitiveSources(target)
+      if sourceFile.filename == sourceName
     } yield sourceFile
 
     if (files.isEmpty) {
-      scribe.debug(s"no matching source file: $source")
+      scribe.debug(s"no matching source file: $sourceName")
     }
 
     files.headOption

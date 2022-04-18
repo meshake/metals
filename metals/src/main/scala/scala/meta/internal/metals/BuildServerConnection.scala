@@ -14,10 +14,13 @@ import scala.concurrent.ExecutionContext
 import scala.concurrent.ExecutionContextExecutorService
 import scala.concurrent.Future
 import scala.concurrent.Promise
+import scala.reflect.ClassTag
 import scala.util.Try
 
+import scala.meta.internal.builds.SbtBuildTool
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.pc.InterruptException
+import scala.meta.internal.semver.SemVer
 import scala.meta.io.AbsolutePath
 
 import ch.epfl.scala.bsp4j._
@@ -60,6 +63,28 @@ class BuildServerConnection private (
   // the name is set before when establishing conenction
   def name: String = initialConnection.socketConnection.serverName
 
+  def isBloop: Boolean = name == BloopServers.name
+
+  def isSbt: Boolean = name == SbtBuildTool.name
+
+  // although hasDebug is already available in BSP capabilities
+  // see https://github.com/build-server-protocol/build-server-protocol/pull/161
+  // most of the bsp servers such as bloop and sbt don't support it.
+  def isBloopOrSbt: Boolean = isBloop || isSbt
+
+  /* Some users may still use an old version of Bloop that relies on scala-debug-adapter 1.x.
+   * This method is used to do the switch between MetalsDebugAdapter1x and MetalsDebugAdapter2x.
+   * At some point we should drop the support for those old versions of Bloop and remove
+   * this method, also the MetalsDebugAdapter1x and the ClassFinder classes
+   */
+  def usesScalaDebugAdapter2x: Boolean = {
+    def supportNewDebugAdapter = SemVer.isCompatibleVersion(
+      "1.4.10",
+      version
+    )
+    isSbt || (isBloop && supportNewDebugAdapter)
+  }
+
   def workspaceDirectory: AbsolutePath = workspace
 
   def onReconnection(
@@ -77,6 +102,7 @@ class BuildServerConnection private (
         if (isShuttingDown.compareAndSet(false, true)) {
           conn.server.buildShutdown().get(2, TimeUnit.SECONDS)
           conn.server.onBuildExit()
+          scribe.info("Shut down connection with build server.")
           // Cancel pending compilations on our side, this is not needed for Bloop.
           cancel()
         }
@@ -102,6 +128,17 @@ class BuildServerConnection private (
     register(server => server.buildTargetCleanCache(params))
   }
 
+  def workspaceReload(): Future[Object] = {
+    if (initialConnection.capabilities.getCanReload()) {
+      register(server => server.workspaceReload()).asScala
+    } else {
+      scribe.warn(
+        s"${initialConnection.displayName} does not support `workspace/reload`, unable to reload"
+      )
+      Future.successful(null)
+    }
+  }
+
   def mainClasses(
       params: ScalaMainClassesParams
   ): Future[ScalaMainClassesResult] = {
@@ -123,10 +160,34 @@ class BuildServerConnection private (
     register(server => server.workspaceBuildTargets()).asScala
   }
 
+  def buildTargetJavacOptions(
+      params: JavacOptionsParams
+  ): Future[JavacOptionsResult] = {
+    val resultOnJavacOptionsUnsupported = new JavacOptionsResult(
+      List.empty[JavacOptionsItem].asJava
+    )
+    if (isSbt) Future.successful(resultOnJavacOptionsUnsupported)
+    else {
+      val onFail = Some(
+        (
+          resultOnJavacOptionsUnsupported,
+          "Java targets not supported by server"
+        )
+      )
+      register(server => server.buildTargetJavacOptions(params), onFail).asScala
+    }
+  }
+
   def buildTargetScalacOptions(
       params: ScalacOptionsParams
   ): Future[ScalacOptionsResult] = {
-    register(server => server.buildTargetScalacOptions(params)).asScala
+    val resultOnScalaOptionsUnsupported = new ScalacOptionsResult(
+      List.empty[ScalacOptionsItem].asJava
+    )
+    val onFail = Some(
+      (resultOnScalaOptionsUnsupported, "Scala targets not supported by server")
+    )
+    register(server => server.buildTargetScalacOptions(params), onFail).asScala
   }
 
   def buildTargetSources(params: SourcesParams): Future[SourcesResult] = {
@@ -137,6 +198,20 @@ class BuildServerConnection private (
       params: DependencySourcesParams
   ): Future[DependencySourcesResult] = {
     register(server => server.buildTargetDependencySources(params)).asScala
+  }
+
+  def buildTargetInverseSources(
+      params: InverseSourcesParams
+  ): Future[InverseSourcesResult] = {
+    if (initialConnection.capabilities.getInverseSourcesProvider()) {
+      register(server => server.buildTargetInverseSources(params)).asScala
+    } else {
+      scribe.warn(
+        s"${initialConnection.displayName} does not support `buildTarget/inverseSources`, unable to fetch targets owning source."
+      )
+      val empty = new InverseSourcesResult(Collections.emptyList)
+      Future.successful(empty)
+    }
   }
 
   private val cancelled = new AtomicBoolean(false)
@@ -190,8 +265,9 @@ class BuildServerConnection private (
     }
 
   }
-  private def register[T](
-      action: MetalsBuildServer => CompletableFuture[T]
+  private def register[T: ClassTag](
+      action: MetalsBuildServer => CompletableFuture[T],
+      onFail: => Option[(T, String)] = None
   ): CompletableFuture[T] = {
     val original = connection
     val actionFuture = original
@@ -209,6 +285,17 @@ class BuildServerConnection private (
           synchronized {
             reconnect().flatMap(conn => action(conn.server).asScala)
           }
+        case t
+            if implicitly[ClassTag[T]].runtimeClass.getSimpleName != "Object" =>
+          onFail
+            .map { case (defaultResult, message) =>
+              scribe.info(message)
+              Future.successful(defaultResult)
+            }
+            .getOrElse({
+              val name = implicitly[ClassTag[T]].runtimeClass.getSimpleName
+              Future.failed(MetalsBspException(name, t.getMessage))
+            })
       }
     CancelTokens.future(_ => actionFuture)
   }
@@ -230,51 +317,81 @@ object BuildServerConnection {
       languageClient: LanguageClient,
       connect: () => Future[SocketConnection],
       reconnectNotification: DismissedNotifications#Notification,
-      config: MetalsServerConfig
+      config: MetalsServerConfig,
+      serverName: String,
+      retry: Int = 5
   )(implicit
       ec: ExecutionContextExecutorService
   ): Future[BuildServerConnection] = {
 
     def setupServer(): Future[LauncherConnection] = {
-      connect().map {
-        case conn @ SocketConnection(_, output, input, _, _) =>
-          val tracePrinter = GlobalTrace.setupTracePrinter("BSP")
-          val launcher = new Launcher.Builder[MetalsBuildServer]()
-            .traceMessages(tracePrinter)
-            .setOutput(output)
-            .setInput(input)
-            .setLocalService(localClient)
-            .setRemoteInterface(classOf[MetalsBuildServer])
-            .setExecutorService(ec)
-            .create()
-          val listening = launcher.startListening()
-          val server = launcher.getRemoteProxy
-          val result = BuildServerConnection.initialize(workspace, server)
-          val stopListening =
-            Cancelable(() => listening.cancel(false))
-          LauncherConnection(
-            conn,
-            server,
-            result.getDisplayName(),
-            stopListening,
-            result.getVersion()
-          )
+      connect().map { case conn @ SocketConnection(_, output, input, _, _) =>
+        val tracePrinter = Trace.setupTracePrinter("BSP", workspace)
+        val launcher = new Launcher.Builder[MetalsBuildServer]()
+          .traceMessages(tracePrinter.orNull)
+          .setOutput(output)
+          .setInput(input)
+          .setLocalService(localClient)
+          .setRemoteInterface(classOf[MetalsBuildServer])
+          .setExecutorService(ec)
+          .create()
+        val listening = launcher.startListening()
+        val server = launcher.getRemoteProxy
+        val stopListening =
+          Cancelable(() => listening.cancel(false))
+        val result =
+          try {
+            BuildServerConnection.initialize(workspace, server, serverName)
+          } catch {
+            case e: TimeoutException =>
+              conn.cancelables.foreach(_.cancel())
+              stopListening.cancel()
+              scribe.error("Timeout waiting for 'build/initialize' response")
+              throw e
+          }
+        LauncherConnection(
+          conn,
+          server,
+          result.getDisplayName(),
+          stopListening,
+          result.getVersion(),
+          result.getCapabilities()
+        )
       }
     }
 
-    setupServer().map { connection =>
-      new BuildServerConnection(
-        setupServer,
-        connection,
-        languageClient,
-        reconnectNotification,
-        config,
-        workspace
-      )
-    }
+    setupServer()
+      .map { connection =>
+        new BuildServerConnection(
+          setupServer,
+          connection,
+          languageClient,
+          reconnectNotification,
+          config,
+          workspace
+        )
+      }
+      .recoverWith { case e: TimeoutException =>
+        if (retry > 0) {
+          scribe.warn(s"Retrying connection to the build server $serverName")
+          fromSockets(
+            workspace,
+            localClient,
+            languageClient,
+            connect,
+            reconnectNotification,
+            config,
+            serverName,
+            retry - 1
+          )
+        } else {
+          Future.failed(e)
+        }
+      }
   }
 
-  final case class BloopExtraBuildParams(
+  final case class BspExtraBuildParams(
+      javaSemanticdbVersion: String,
       semanticdbVersion: String,
       supportedScalaVersions: java.util.List[String]
   )
@@ -284,9 +401,11 @@ object BuildServerConnection {
    */
   private def initialize(
       workspace: AbsolutePath,
-      server: MetalsBuildServer
+      server: MetalsBuildServer,
+      serverName: String
   ): InitializeBuildResult = {
-    val extraParams = BloopExtraBuildParams(
+    val extraParams = BspExtraBuildParams(
+      BuildInfo.javaSemanticdbVersion,
       BuildInfo.scalametaVersion,
       BuildInfo.supportedScala2Versions.asJava
     )
@@ -298,7 +417,7 @@ object BuildServerConnection {
         BuildInfo.bspVersion,
         workspace.toURI.toString,
         new BuildClientCapabilities(
-          Collections.singletonList("scala")
+          List("scala", "java").asJava
         )
       )
       val gson = new Gson
@@ -309,17 +428,12 @@ object BuildServerConnection {
     // Block on the `build/initialize` request because it should respond instantly
     // and we want to fail fast if the connection is not
     val result =
-      try {
-        def isCI: Boolean = "true" == System.getenv("CI")
-        if (isCI)
-          initializeResult.get(20, TimeUnit.SECONDS)
-        else
-          initializeResult.get(5, TimeUnit.SECONDS)
-      } catch {
-        case e: TimeoutException =>
-          scribe.error("Timeout waiting for 'build/initialize' response")
-          throw e
+      if (serverName == SbtBuildTool.name) {
+        initializeResult.get(60, TimeUnit.SECONDS)
+      } else {
+        initializeResult.get(20, TimeUnit.SECONDS)
       }
+
     server.onBuildInitialized()
     result
   }
@@ -329,7 +443,8 @@ object BuildServerConnection {
       server: MetalsBuildServer,
       displayName: String,
       cancelServer: Cancelable,
-      version: String
+      version: String,
+      capabilities: BuildServerCapabilities
   ) {
 
     def cancelables: List[Cancelable] =

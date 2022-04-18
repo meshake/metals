@@ -4,9 +4,11 @@ import java.nio.file.Paths
 
 import scala.meta.XtensionSyntax
 import scala.meta.internal.metals.CompilerOffsetParams
+import scala.meta.internal.metals.CompilerRangeParams
 import scala.meta.internal.mtags.MtagsEnrichments._
 
 import munit.Location
+import munit.TestOptions
 import tests.BasePCSuite
 import tests.RangeReplace
 import tests.TestHovers
@@ -17,16 +19,16 @@ abstract class BaseHoverSuite
     with RangeReplace {
 
   def check(
-      name: String,
+      testOpt: TestOptions,
       original: String,
       expected: String,
       includeRange: Boolean = false,
       automaticPackage: Boolean = true,
       compat: Map[String, String] = Map.empty
   )(implicit loc: Location): Unit = {
-    test(name) {
+    test(testOpt) {
       val filename = "Hover.scala"
-      val pkg = scala.meta.Term.Name(name).syntax
+      val pkg = scala.meta.Term.Name(testOpt.name).syntax
       val noRange = original
         .replace("<<", "")
         .replace(">>", "")
@@ -34,11 +36,14 @@ abstract class BaseHoverSuite
         if (automaticPackage) s"package $pkg\n"
         else ""
       val codeOriginal = packagePrefix + noRange
-      val (code, offset) = params(codeOriginal, filename)
+      val (code, so, eo) = hoverParams(codeOriginal, filename)
+      val pcParams = if (so == eo) {
+        CompilerOffsetParams(Paths.get(filename).toUri(), code, so)
+      } else {
+        CompilerRangeParams(Paths.get(filename).toUri(), code, so, eo)
+      }
       val hover = presentationCompiler
-        .hover(
-          CompilerOffsetParams(Paths.get(filename).toUri(), code, offset)
-        )
+        .hover(pcParams)
         .get()
       val obtained: String = renderAsString(code, hover.asScala, includeRange)
       assertNoDiff(
@@ -49,11 +54,15 @@ abstract class BaseHoverSuite
         h <- hover.asScala
         range <- Option(h.getRange)
       } {
-        val base = codeOriginal.replace("@@", "")
+        val base =
+          codeOriginal.replace("@@", "").replace("%<%", "").replace("%>%", "")
         val withRange = replaceInRange(base, range)
         assertNoDiff(
           withRange,
-          packagePrefix + original.replace("@@", ""),
+          packagePrefix + original
+            .replace("@@", "")
+            .replace("%<%", "")
+            .replace("%>%", ""),
           "Invalid range"
         )
       }

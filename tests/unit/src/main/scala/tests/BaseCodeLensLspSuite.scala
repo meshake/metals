@@ -5,19 +5,19 @@ import scala.concurrent.Future
 import munit.Location
 import munit.TestOptions
 
-class BaseCodeLensLspSuite(name: String) extends BaseLspSuite(name) {
+abstract class BaseCodeLensLspSuite(name: String) extends BaseLspSuite(name) {
 
   def check(
       name: TestOptions,
       library: Option[String] = None,
-      scalaVersion: Option[String] = None
+      scalaVersion: Option[String] = None,
+      printCommand: Boolean = false
   )(
-      expected: String
+      expected: => String
   )(implicit loc: Location): Unit = {
     test(name) {
       cleanWorkspace()
-      val original = expected.replaceAll("<<.*>>[^a-zA-Z0-9@]+", "")
-
+      val original = expected.replaceAll("(<<.*>>[ \t]*)+(\n|\r\n)", "")
       val actualScalaVersion = scalaVersion.getOrElse(BuildInfo.scalaVersion)
       val sourceFile = {
         val file = """package (.*).*""".r
@@ -32,7 +32,7 @@ class BaseCodeLensLspSuite(name: String) extends BaseLspSuite(name) {
 
       val libraryString = library.map(s => s""" "$s" """).getOrElse("")
       for {
-        _ <- server.initialize(
+        _ <- initialize(
           s"""|/metals.json
               |{
               |  "a": { 
@@ -45,7 +45,7 @@ class BaseCodeLensLspSuite(name: String) extends BaseLspSuite(name) {
               |$original
               |""".stripMargin
         )
-        _ <- assertCodeLenses(sourceFile, expected)
+        _ <- assertCodeLenses(sourceFile, expected, printCommand = printCommand)
       } yield ()
     }
   }
@@ -53,12 +53,14 @@ class BaseCodeLensLspSuite(name: String) extends BaseLspSuite(name) {
   protected def assertCodeLenses(
       relativeFile: String,
       expected: String,
-      maxRetries: Int = 4
+      maxRetries: Int = 4,
+      printCommand: Boolean = false
   )(implicit loc: Location): Future[Unit] = {
-    val obtained = server.codeLenses(relativeFile)(maxRetries).recover {
-      case _: NoSuchElementException =>
-        server.textContents(relativeFile)
-    }
+    val obtained =
+      server.codeLenses(relativeFile, printCommand)(maxRetries).recover {
+        case _: NoSuchElementException =>
+          server.textContents(relativeFile)
+      }
 
     obtained.map(assertNoDiff(_, expected))
   }

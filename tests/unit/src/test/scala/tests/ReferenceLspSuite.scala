@@ -2,14 +2,18 @@ package tests
 
 import scala.concurrent.Future
 
+import scala.meta.internal.metals.InitializationOptions
 import scala.meta.internal.metals.ServerCommands
 
 class ReferenceLspSuite extends BaseRangesSuite("reference") {
 
+  override protected def initializationOptions: Option[InitializationOptions] =
+    Some(TestingServer.TestDefault)
+
   test("case-class") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{
@@ -38,11 +42,11 @@ class ReferenceLspSuite extends BaseRangesSuite("reference") {
           |  val z: Int = y.a
           |  val param: String = a.A.param(arg = 2)
           |}
-          |""".stripMargin,
-        preInitialized = { () => server.didOpen("a/src/main/scala/a/A.scala") }
+          |""".stripMargin
       )
-      _ = assertNoDiagnostics()
       _ <- server.didOpen("a/src/main/scala/a/A.scala")
+      _ <- server.didOpen("b/src/main/scala/b/B.scala")
+      _ = assertNoDiagnostics()
       _ = server.assertReferenceDefinitionDiff(
         """|^
            |+a/src/main/scala/a/A.scala:4:36: a/A#
@@ -65,10 +69,25 @@ class ReferenceLspSuite extends BaseRangesSuite("reference") {
     } yield ()
   }
 
+  check(
+    "references-standalone",
+    """|/Main.scala
+       |package a
+       |
+       |object Main{
+       |  def <<hel@@lo>>() = println("Hello world")
+       |  <<hello>>()
+       |  <<hello>>()
+       |  <<hello>>()
+       |}
+       |
+       |""".stripMargin
+  )
+
   test("synthetic") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{
@@ -86,9 +105,9 @@ class ReferenceLspSuite extends BaseRangesSuite("reference") {
           |object B {
           |  val a = A(1)
           |}
-          |""".stripMargin,
-        preInitialized = { () => server.didOpen("a/src/main/scala/a/A.scala") }
+          |""".stripMargin
       )
+      _ <- server.didOpen("a/src/main/scala/a/A.scala")
       _ = assertNoDiagnostics()
       _ <- server.didOpen("a/src/main/scala/a/A.scala")
       _ = server.assertReferenceDefinitionDiff(
@@ -126,12 +145,11 @@ class ReferenceLspSuite extends BaseRangesSuite("reference") {
   ): Unit = {
     def input(chunks: Seq[String]): String =
       chunks.zipWithIndex
-        .map {
-          case (chunk, i) =>
-            s"""|/a/src/main/scala/a/Chunk$i.scala
-                |package a
-                |$chunk
-                |""".stripMargin
+        .map { case (chunk, i) =>
+          s"""|/a/src/main/scala/a/Chunk$i.scala
+              |package a
+              |$chunk
+              |""".stripMargin
         }
         .mkString("\n")
     check(s"$name-together", input(Seq((code +: moreCode) mkString "\n")))
@@ -151,9 +169,9 @@ class ReferenceLspSuite extends BaseRangesSuite("reference") {
        |""".stripMargin
   )
 
-  checkInSamePackage( // FIXME: doesn't find the case class declaration: https://github.com/scalameta/metals/issues/1553#issuecomment-617884934
+  checkInSamePackage(
     "simple-case-class-starting-elsewhere",
-    """|case class Main(name: String) // doesn't find this
+    """|case class Main(name: String)
        |object F {
        |  val ma = <<Main>>("a")
        |}
@@ -181,7 +199,7 @@ class ReferenceLspSuite extends BaseRangesSuite("reference") {
   checkInSamePackage( // FIXME: should, but doesn't find the class declaration: https://github.com/scalameta/metals/issues/1553#issuecomment-617884934
     "case-class-unapply-starting-elsewhere",
     """|sealed trait Stuff
-       |case class Foo(n: Int) extends Stuff // doesn't find this
+       |case class <<Foo>>(n: Int) extends Stuff // doesn't find this
        |""".stripMargin,
     """|
        |object ByTheWay {
@@ -198,10 +216,10 @@ class ReferenceLspSuite extends BaseRangesSuite("reference") {
        |""".stripMargin
   )
 
-  checkInSamePackage( // FIXME: doesn't find the class declaration: https://github.com/scalameta/metals/issues/1553#issuecomment-617884934
+  checkInSamePackage(
     "explicit-unapply",
     """|sealed trait Stuff
-       |class Foo(val n: Int) extends Stuff // doesn't find this; but should it?
+       |class Foo(val n: Int) extends Stuff
        |object Foo {
        |  def apply(n: Int): Foo = new Foo(n)
        |  def <<un@@apply>>(foo: Foo): Option[Int] = Some(foo.n)
@@ -219,7 +237,7 @@ class ReferenceLspSuite extends BaseRangesSuite("reference") {
   test("edit-distance".flaky) {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{
@@ -237,9 +255,9 @@ class ReferenceLspSuite extends BaseRangesSuite("reference") {
           |object B {
           |  val b = new a.A().bar(2)
           |}
-          |""".stripMargin,
-        preInitialized = { () => server.didOpen("a/src/main/scala/a/A.scala") }
+          |""".stripMargin
       )
+      _ <- server.didOpen("a/src/main/scala/a/A.scala")
       _ = assertNoDiagnostics()
       // Assert that goto definition and reference are still bijective after buffer changes
       // in both the definition source and reference sources.
@@ -249,7 +267,7 @@ class ReferenceLspSuite extends BaseRangesSuite("reference") {
       _ <- server.didChange("b/src/main/scala/b/B.scala")(
         _.replace("val b", "\n  val number")
       )
-      _ <- server.executeCommand(ServerCommands.ConnectBuildServer.id)
+      _ <- server.executeCommand(ServerCommands.ConnectBuildServer)
       _ = server.assertReferenceDefinitionDiff(
         """|        ^
            |+=============
@@ -265,7 +283,7 @@ class ReferenceLspSuite extends BaseRangesSuite("reference") {
 
   test("var") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{
@@ -288,7 +306,7 @@ class ReferenceLspSuite extends BaseRangesSuite("reference") {
 
   test("implicit") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{
@@ -328,6 +346,55 @@ class ReferenceLspSuite extends BaseRangesSuite("reference") {
        |trait BB extends <<AA>>
        |trait CC extends <<AA>>
        |trait DD extends <<AA>>
+       |""".stripMargin
+  )
+
+  check(
+    "worksheet",
+    """|/a/src/main/scala/a/Main.worksheet.sc
+       |trait <<A@@A>>
+       |trait BB extends <<AA>>
+       |trait CC extends <<AA>>
+       |trait DD extends <<AA>>
+       |""".stripMargin
+  )
+
+  check(
+    "case-class-separate-reference",
+    """|/a/src/main/scala/a/Main.scala
+       |case class <<Main>>(name: String)
+       |object F {
+       |  val ma = <<Main>>("a")
+       |}
+       |/a/src/main/scala/a/Other.scala
+       |object Other {
+       |  val mb = new <<M@@ain>>("b")
+       |}
+       |""".stripMargin
+  )
+
+  check(
+    "synthetic-object-reference",
+    """|/a/src/main/scala/a/Main.scala
+       |case class <<Main>>(name: String)
+       |object F {
+       |  val ma = <<Ma@@in>>("a")
+       |}
+       |/a/src/main/scala/a/Other.scala
+       |object Other {
+       |  val mb = new <<Main>>("b")
+       |}
+       |""".stripMargin
+  )
+
+  check(
+    "constructor",
+    """|/a/src/main/scala/a/Main.scala
+       |case class Name(<<value>>: String)
+       |
+       |object Main {
+       |  val name2 = new Name(<<va@@lue>> = "44")
+       |}
        |""".stripMargin
   )
 

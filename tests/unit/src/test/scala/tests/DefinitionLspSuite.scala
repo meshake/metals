@@ -1,9 +1,14 @@
 package tests
 
+import scala.meta.internal.metals.InitializationOptions
 import scala.meta.internal.metals.MetalsServerConfig
 import scala.meta.internal.metals.StatisticsConfig
 
 class DefinitionLspSuite extends BaseLspSuite("definition") {
+
+  override protected def initializationOptions: Option[InitializationOptions] =
+    Some(TestingServer.TestDefault)
+
   override def serverConfig: MetalsServerConfig =
     super.serverConfig.copy(
       statistics = new StatisticsConfig("diagnostics")
@@ -11,14 +16,14 @@ class DefinitionLspSuite extends BaseLspSuite("definition") {
 
   test("definition") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """|
            |/metals.json
            |{
            |  "a": { },
            |  "b": {
            |    "libraryDependencies": [
-           |      "org.scalatest::scalatest:3.0.5"
+           |      "org.scalatest::scalatest:3.2.4"
            |    ],
            |    "dependsOn": [ "a" ]
            |  }
@@ -41,8 +46,8 @@ class DefinitionLspSuite extends BaseLspSuite("definition") {
            |package a
            |import java.util.concurrent.Future // unused
            |import scala.util.Failure // unused
-           |import org.scalatest.FunSuite
-           |object MainSuite extends FunSuite {
+           |import org.scalatest.funsuite.AnyFunSuite
+           |object MainSuite extends AnyFunSuite {
            |  test("a") {
            |    val condition = Main.message.contains("Hello")
            |    assert(condition)
@@ -69,9 +74,9 @@ class DefinitionLspSuite extends BaseLspSuite("definition") {
            |package a
            |import java.util.concurrent.Future/*Future.java*/ // unused
            |import scala.util.Failure/*Try.scala*/ // unused
-           |import org.scalatest.FunSuite/*FunSuite.scala*/
-           |object MainSuite/*L4*/ extends FunSuite/*FunSuite.scala*/ {
-           |  test/*FunSuiteLike.scala*/("a") {
+           |import org.scalatest.funsuite.AnyFunSuite/*AnyFunSuite.scala*/
+           |object MainSuite/*L4*/ extends AnyFunSuite/*AnyFunSuite.scala*/ {
+           |  test/*AnyFunSuiteLike.scala*/("a") {
            |    val condition/*L6*/ = Main/*Main.scala:3*/.message/*Main.scala:4*/.contains/*String.java*/("Hello")
            |    assert/*Assertions.scala*/(condition/*L6*/)
            |  }
@@ -108,9 +113,9 @@ class DefinitionLspSuite extends BaseLspSuite("definition") {
            |package a
            |import java.util.concurrent.Future/*Future.java*/ // unused
            |import scala.util.Failure/*Try.scala*/ // unused
-           |import org.scalatest.FunSuite/*FunSuite.scala*/
-           |object MainSuite/*L6*/ extends FunSuite/*FunSuite.scala*/ {
-           |  test/*FunSuiteLike.scala*/(testName/*<no symbol>*/) {
+           |import org.scalatest.funsuite.AnyFunSuite/*AnyFunSuite.scala*/
+           |object MainSuite/*L6*/ extends AnyFunSuite/*AnyFunSuite.scala*/ {
+           |  test/*AnyFunSuiteLike.scala*/(testName/*<no symbol>*/) {
            |    val condition/*L8*/ = Main/*Main.scala:5*/.message/*<no symbol>*/.contains/*String.java*/("Hello")
            |    assert/*Assertions.scala*/(condition/*L8*/)
            |  }
@@ -126,7 +131,7 @@ class DefinitionLspSuite extends BaseLspSuite("definition") {
   // https://github.com/scalameta/metals/issues/755
   test("definition-fallback-to-show-usages") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{
@@ -179,7 +184,7 @@ class DefinitionLspSuite extends BaseLspSuite("definition") {
 
   test("stale") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{
@@ -217,30 +222,25 @@ class DefinitionLspSuite extends BaseLspSuite("definition") {
 
   test("annotations") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{
           |  "a": {
-          |    "compilerPlugins": [
-          |      "org.scalamacros:::paradise:2.1.1"
-          |    ],
+          |    "scalacOptions": ["-Ymacro-annotations"],
           |    "libraryDependencies": [
-          |      "io.circe::circe-core:0.9.0",
-          |      "io.circe::circe-derivation:0.9.0-M4"
+          |       "io.github.alexarchambault::data-class:0.2.5"
           |    ]
           |  }
           |}
           |/a/src/main/scala/a/User.scala
           |package a
-          |import io.circe.derivation.JsonCodec
-          |@JsonCodec case class User(name: String)
+          |import dataclass._
+          |@data class User(name: String)
           |/a/src/main/scala/a/Main.scala
           |package a
           |object Main {
-          |  val user = User("John")
-          |  val name = user.name
-          |  val encoder = User.encodeUser
+          |  val user = User.apply("John")
           |}
           |""".stripMargin
       )
@@ -252,9 +252,7 @@ class DefinitionLspSuite extends BaseLspSuite("definition") {
           |/a/src/main/scala/a/Main.scala
           |package a
           |object Main/*L1*/ {
-          |  val user/*L2*/ = User/*User.scala:2*/("John")
-          |  val name/*L3*/ = user/*L2*/.name/*User.scala:2*/
-          |  val encoder/*L4*/ = User/*User.scala:2*/.encodeUser/*User.scala:2*/
+          |  val user/*L2*/ = User/*User.scala:2*/.apply/*User.scala:2*/("John")
           |}
           |""".stripMargin
       )
@@ -264,7 +262,7 @@ class DefinitionLspSuite extends BaseLspSuite("definition") {
   test("fallback-to-presentation-compiler") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{"a":{}}
@@ -295,34 +293,97 @@ class DefinitionLspSuite extends BaseLspSuite("definition") {
     } yield ()
   }
 
-  test("rambo") {
+  test("rambo", withoutVirtualDocs = true) {
     cleanDatabase()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""
            |/metals.json
            |{
            |  "a": {
-           |    "scalaVersion": "${scala.meta.internal.metals.BuildInfo.scala212}"
+           |    "scalaVersion": "${scala.meta.internal.metals.BuildInfo.scala213}"
            |  }
            |}
            |/Main.scala
            |object Main {
            |  println("hello!")
-           |  val arr = Seq("").toArray()
+           |  val arr = Seq("").toArray
            |}
            |""".stripMargin
       )
       _ = client.messageRequests.clear()
       _ <- server.didOpen("Main.scala")
       _ = server.workspaceDefinitions // trigger definition
-      _ <- server.didOpen("scala/Predef.scala")
-      _ <- server.didOpen("scala/collection/TraversableOnce.scala")
+      _ <- server.didOpen("scala/package.scala")
+      _ <- server.didOpen("scala/collection/IterableOnce.scala")
       _ = assertNoDiff(
         client.workspaceMessageRequests,
         ""
       )
       _ = assertNoDiff(client.workspaceDiagnostics, "")
+    } yield ()
+  }
+
+  test("clashing-references") {
+    for {
+      _ <- initialize(
+        s"""
+           |/metals.json
+           |{
+           |  "a": {},
+           |  "b": {}
+           |}
+           |/a/src/main/scala/example/MainA.scala
+           |package a
+           |
+           |class Main {
+           |  val foo = new Foo
+           |}
+           |/a/src/main/scala/example/FooA.scala
+           |package a
+           |
+           |class Foo
+           |/b/src/main/scala/example/MainB.scala
+           |package b
+           |
+           |class Main {
+           |  val foo = new Foo
+           |}
+           |/b/src/main/scala/example/FooB.scala
+           |package b
+           |
+           |class Foo
+           |""".stripMargin
+      )
+      _ = server.didOpen("a/src/main/scala/example/MainA.scala")
+      _ = server.didOpen("a/src/main/scala/example/FooA.scala")
+      _ = server.didOpen("b/src/main/scala/example/MainB.scala")
+      _ = server.didOpen("b/src/main/scala/example/FooB.scala")
+      _ = assertNoDiff(
+        server.workspaceDefinitions,
+        """|/a/src/main/scala/example/FooA.scala
+           |package a
+           |
+           |class Foo/*L2*/
+           |/a/src/main/scala/example/MainA.scala
+           |package a
+           |
+           |class Main/*L2*/ {
+           |  val foo/*L3*/ = new Foo/*FooA.scala:2*/
+           |}
+           |/b/src/main/scala/example/FooB.scala
+           |package b
+           |
+           |class Foo/*L2*/
+           |
+           |/b/src/main/scala/example/MainB.scala
+           |package b
+           |
+           |class Main/*L2*/ {
+           |  val foo/*L3*/ = new Foo/*FooB.scala:2*/
+           |}
+           |""".stripMargin
+      )
     } yield ()
   }
 

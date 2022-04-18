@@ -9,6 +9,7 @@ import java.util.concurrent.ScheduledExecutorService
 import scala.collection.Seq
 import scala.util.control.NonFatal
 
+import scala.meta.dialects
 import scala.meta.internal.jdk.CollectionConverters._
 import scala.meta.internal.metals.ClasspathSearch
 import scala.meta.internal.metals.Docstrings
@@ -18,6 +19,7 @@ import scala.meta.internal.metals.RecursivelyDelete
 import scala.meta.internal.mtags.GlobalSymbolIndex
 import scala.meta.internal.pc.PresentationCompilerConfigImpl
 import scala.meta.internal.pc.ScalaPresentationCompiler
+import scala.meta.internal.semver.SemVer
 import scala.meta.io.AbsolutePath
 import scala.meta.pc.PresentationCompiler
 import scala.meta.pc.PresentationCompilerConfig
@@ -64,7 +66,7 @@ abstract class BasePCSuite extends BaseSuite {
   protected lazy val presentationCompiler: PresentationCompiler = {
     val scalaLibrary =
       if (isScala3Version(scalaVersion))
-        PackageIndex.scalaLibrary ++ PackageIndex.dottyLibrary
+        PackageIndex.scalaLibrary ++ PackageIndex.scala3Library
       else
         PackageIndex.scalaLibrary
 
@@ -79,7 +81,7 @@ abstract class BasePCSuite extends BaseSuite {
     val myclasspath: Seq[Path] = extraLibraries ++ scalaLibrary
 
     if (requiresJdkSources)
-      JdkSources().foreach(jdk => index.addSourceJar(jdk))
+      JdkSources().foreach(jdk => index.addSourceJar(jdk, dialects.Scala213))
     if (requiresScalaLibrarySources)
       indexScalaLibrary(index, scalaVersion)
     val search = new TestingSymbolSearch(
@@ -105,22 +107,26 @@ abstract class BasePCSuite extends BaseSuite {
       snippetAutoIndent = false
     )
 
-  protected def extraDependencies(scalaVersion: String): Seq[Dependency] = Nil
+  protected def extraDependencies(scalaVersion: String): Seq[Dependency] =
+    Seq.empty
 
-  protected def scalacOptions(classpath: Seq[Path]): Seq[String] = Nil
+  protected def scalacOptions(classpath: Seq[Path]): Seq[String] = Seq.empty
 
-  protected def excludedScalaVersions: Set[String] = Set.empty
+  protected def ignoreScalaVersion: Option[IgnoreScalaVersion] = None
 
   protected def requiresJdkSources: Boolean = false
 
   protected def requiresScalaLibrarySources: Boolean = false
 
   protected def isScala3Version(scalaVersion: String): Boolean = {
-    scalaVersion.startsWith("0.") || scalaVersion.startsWith("3.")
+    scalaVersion.startsWith("3.")
   }
 
   protected def createBinaryVersion(scalaVersion: String): String = {
-    scalaVersion.split('.').take(2).mkString(".")
+    if (isScala3Version(scalaVersion))
+      "3"
+    else
+      scalaVersion.split('.').take(2).mkString(".")
   }
 
   private def indexScalaLibrary(
@@ -147,7 +153,9 @@ abstract class BasePCSuite extends BaseSuite {
       )
       .fetch()
       .asScala
-    sources.foreach { jar => index.addSourceJar(AbsolutePath(jar)) }
+    sources.foreach { jar =>
+      index.addSourceJar(AbsolutePath(jar), dialects.Scala213)
+    }
   }
 
   override def afterAll(): Unit = {
@@ -156,7 +164,8 @@ abstract class BasePCSuite extends BaseSuite {
     executorService.shutdown()
   }
 
-  override def munitIgnore: Boolean = excludedScalaVersions(scalaVersion)
+  override def munitIgnore: Boolean =
+    ignoreScalaVersion.exists(_.ignored(scalaVersion))
 
   override def munitTestTransforms: List[TestTransform] =
     super.munitTestTransforms ++ List(
@@ -169,11 +178,12 @@ abstract class BasePCSuite extends BaseSuite {
       new TestTransform(
         "Ignore Scala version",
         { test =>
-          val isIgnoredScalaVersion = test.tags.collect {
-            case IgnoreScalaVersion(versions) => versions
-          }.flatten
+          val isIgnoredScalaVersion = test.tags.exists {
+            case IgnoreScalaVersion(isIgnored) => isIgnored(scalaVersion)
+            case _ => false
+          }
 
-          if (isIgnoredScalaVersion(scalaVersion))
+          if (isIgnoredScalaVersion)
             test.withTags(test.tags + munit.Ignore)
           else test
         }
@@ -182,11 +192,10 @@ abstract class BasePCSuite extends BaseSuite {
         "Run for Scala version",
         { test =>
           test.tags
-            .collectFirst {
-              case RunForScalaVersion(versions) =>
-                if (versions(scalaVersion))
-                  test
-                else test.withTags(test.tags + munit.Ignore)
+            .collectFirst { case RunForScalaVersion(versions) =>
+              if (versions(scalaVersion))
+                test
+              else test.withTags(test.tags + munit.Ignore)
             }
             .getOrElse(test)
 
@@ -200,15 +209,41 @@ abstract class BasePCSuite extends BaseSuite {
     if (offset < 0) {
       fail("missing @@")
     }
+    inspectDialect(filename, code2)
+    (code2, offset)
+  }
+
+  def hoverParams(
+      code: String,
+      filename: String = "test.scala"
+  ): (String, Int, Int) = {
+    val code2 = code.replace("@@", "").replace("%<%", "").replace("%>%", "")
+    val positionOffset =
+      code.replace("%<%", "").replace("%>%", "").indexOf("@@")
+    val startOffset = code.replace("@@", "").indexOf("%<%")
+    val endOffset = code.replace("@@", "").replace("%<%", "").indexOf("%>%")
+    (positionOffset, startOffset, endOffset) match {
+      case (po, so, eo) if po < 0 && so < 0 && eo < 0 =>
+        fail("missing @@ and (%<% and %>%)")
+      case (_, so, eo) if so >= 0 && eo >= 0 =>
+        (code2, so, eo)
+      case (po, _, _) =>
+        inspectDialect(filename, code2)
+        (code2, po, po)
+    }
+  }
+
+  private def inspectDialect(filename: String, code2: String) = {
     val file = tmp.resolve(filename)
     Files.write(file.toNIO, code2.getBytes(StandardCharsets.UTF_8))
-    try index.addSourceFile(file, Some(tmp))
+    val dialect =
+      if (scalaVersion.startsWith("3.")) dialects.Scala3 else dialects.Scala213
+    try index.addSourceFile(file, Some(tmp), dialect)
     catch {
       case NonFatal(e) =>
-        println(s"warn: $e")
+        println(s"warn: ${e.getMessage()}")
     }
-    workspace.inputs(filename) = code2
-    (code2, offset)
+    workspace.inputs(filename) = (code2, dialect)
   }
 
   def doc(e: JEither[String, MarkupContent]): String = {
@@ -225,17 +260,37 @@ abstract class BasePCSuite extends BaseSuite {
     else string.linesIterator.toList.sorted.mkString("\n")
   }
 
-  case class IgnoreScalaVersion(versions: Set[String])
+  case class IgnoreScalaVersion(ignored: String => Boolean)
       extends Tag("NoScalaVersion")
 
   object IgnoreScalaVersion {
-    def apply(versions: Seq[String]): IgnoreScalaVersion =
-      IgnoreScalaVersion(versions.toSet)
-
     def apply(version: String): IgnoreScalaVersion = {
-      IgnoreScalaVersion(Set(version))
+      IgnoreScalaVersion(_ == version)
     }
+
+    def for3LessThan(version: String): IgnoreScalaVersion = {
+      val enableFrom = SemVer.Version.fromString(version)
+      IgnoreScalaVersion { v =>
+        val semver = SemVer.Version.fromString(v)
+        semver.major == 3 && !(semver >= enableFrom)
+      }
+    }
+
+    def forLessThan(version: String): IgnoreScalaVersion = {
+      val enableFrom = SemVer.Version.fromString(version)
+      IgnoreScalaVersion { v =>
+        val semver = SemVer.Version.fromString(v)
+        !(semver >= enableFrom)
+      }
+    }
+
   }
+
+  object IgnoreScala2 extends IgnoreScalaVersion(_.startsWith("2."))
+
+  object IgnoreScala212 extends IgnoreScalaVersion(_.startsWith("2.12"))
+
+  object IgnoreScala3 extends IgnoreScalaVersion(_.startsWith("3."))
 
   case class RunForScalaVersion(versions: Set[String])
       extends Tag("RunScalaVersion")

@@ -3,7 +3,8 @@ package scala.meta.internal.worksheets
 import scala.meta.inputs.Input
 import scala.meta.internal.metals.Buffers
 import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.MetalsLanguageClient
+import scala.meta.internal.metals.clients.language.MetalsLanguageClient
+import scala.meta.internal.parsing.Trees
 import scala.meta.internal.pc.HoverMarkup
 import scala.meta.internal.worksheets.MdocEnrichments.truncatify
 import scala.meta.internal.worksheets.WorkspaceEditWorksheetPublisher._
@@ -20,7 +21,7 @@ import org.eclipse.lsp4j.Range
 import org.eclipse.lsp4j.TextEdit
 import org.eclipse.lsp4j.WorkspaceEdit
 
-class WorkspaceEditWorksheetPublisher(buffers: Buffers)
+class WorkspaceEditWorksheetPublisher(buffers: Buffers, trees: Trees)
     extends WorksheetPublisher {
 
   private var hoverMessages = Map.empty[AbsolutePath, HoverMap]
@@ -39,7 +40,8 @@ class WorkspaceEditWorksheetPublisher(buffers: Buffers)
       messages <- hoverMessages.get(path)
       distance = buffers.tokenEditDistance(
         path,
-        messages.textSnapshot
+        messages.textSnapshot,
+        trees
       )
       snapshotPosition <-
         distance
@@ -74,7 +76,7 @@ class WorkspaceEditWorksheetPublisher(buffers: Buffers)
         ed.details
       )
     )
-    val hoverMap = HoverMap(updateWithEdits(source.text, edits), hovers)
+    val hoverMap = HoverMap(updateWithEdits(source.text, edits), hovers.toSeq)
 
     RenderResult(edits, hoverMap)
   }
@@ -147,16 +149,15 @@ class WorkspaceEditWorksheetPublisher(buffers: Buffers)
     val editsMap = edits.map(e => e.getRange().getStart().getLine() -> e).toMap
 
     text.linesIterator.zipWithIndex
-      .map {
-        case (line, i) =>
-          editsMap.get(i) match {
-            case Some(edit) =>
-              val before =
-                line.substring(0, edit.getRange.getStart.getCharacter)
-              val after = line.substring(edit.getRange.getEnd.getCharacter)
-              before + edit.getNewText() + after
-            case None => line
-          }
+      .map { case (line, i) =>
+        editsMap.get(i) match {
+          case Some(edit) =>
+            val before =
+              line.substring(0, edit.getRange.getStart.getCharacter)
+            val after = line.substring(edit.getRange.getEnd.getCharacter)
+            before + edit.getNewText() + after
+          case None => line
+        }
       }
       .mkString("\n")
   }

@@ -6,15 +6,16 @@ import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.{BuildInfo => V}
 import scala.meta.io.AbsolutePath
 
-class SymlinkedProjectSuite extends BaseLspSuite("symlinked-project") {
+class SymlinkedProjectSuite
+    extends BaseLspSuite("symlinked-project", BloopImportInitializer) {
   test("definitions-from-other-file") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""|/project/build.properties
             |sbt.version=${V.sbtVersion}
             |
             |/build.sbt
-            |scalaVersion := "${V.scala212}"
+            |scalaVersion := "${V.scala213}"
             |
             |/src/main/scala/Foo.scala
             |class Foo
@@ -48,12 +49,12 @@ class SymlinkedProjectSuite extends BaseLspSuite("symlinked-project") {
          |""".stripMargin
     )
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""|/project/build.properties
             |sbt.version=${V.sbtVersion}
             |
             |/build.sbt
-            |scalaVersion := "${V.scala212}"
+            |scalaVersion := "${V.scala213}"
             |
             |lazy val a = (project in file("a"))
             |lazy val b = (project in file("b")).dependsOn(a)

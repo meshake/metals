@@ -3,6 +3,7 @@ package tests.codeactions
 import scala.meta.internal.metals.Messages.NewScalaFile
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.codeactions.CreateNewSymbol
+import scala.meta.internal.metals.codeactions.ExtractRenameMember
 import scala.meta.internal.metals.codeactions.ImportMissingSymbol
 
 import munit.Location
@@ -11,28 +12,25 @@ import org.eclipse.lsp4j.ShowMessageRequestParams
 
 class CreateNewSymbolLspSuite extends BaseCodeActionLspSuite("createNew") {
 
+  val docToolName = "javax.tools.DocumentationTool"
+
   checkNewSymbol(
     "case-class",
     """|package a
        |
        |case class School(name: String, location: <<Location>>)
        |""".stripMargin,
-    s"""|${ImportMissingSymbol.title(
-      "Location",
-      "javax.tools.DocumentationTool"
-    )}
-        |${ImportMissingSymbol.title("Location", "javax.tools.JavaFileManager")}
+    s"""|${ImportMissingSymbol.title("Location", "javax.tools.JavaFileManager")}
+        |${ImportMissingSymbol.title("Location", docToolName)}
         |${ImportMissingSymbol.title("Location", "javax.xml.stream")}
-        |${ImportMissingSymbol.title("Location", "scala.collection.script")}
         |${CreateNewSymbol.title("Location")}""".stripMargin,
-    selectedActionIndex = 4,
-    pickedKind = "case-class",
-    newFile =
-      "a/src/main/scala/a/Location.scala" ->
-        """|package a
-           |
-           |final case class Location()
-           |""".stripMargin
+    selectedActionIndex = 3,
+    pickedKind = "scala-case-class",
+    newFile = "a/src/main/scala/a/Location.scala" ->
+      """|package a
+         |
+         |final case class Location()
+         |""".stripMargin
   )
 
   checkNewSymbol(
@@ -41,24 +39,19 @@ class CreateNewSymbolLspSuite extends BaseCodeActionLspSuite("createNew") {
        |
        |case class School(name: String, location: <<Location>>)
        |""".stripMargin,
-    s"""|${ImportMissingSymbol.title(
-      "Location",
-      "javax.tools.DocumentationTool"
-    )}
-        |${ImportMissingSymbol.title("Location", "javax.tools.JavaFileManager")}
+    s"""|${ImportMissingSymbol.title("Location", "javax.tools.JavaFileManager")}
+        |${ImportMissingSymbol.title("Location", docToolName)}
         |${ImportMissingSymbol.title("Location", "javax.xml.stream")}
-        |${ImportMissingSymbol.title("Location", "scala.collection.script")}
         |${CreateNewSymbol.title("Location")}""".stripMargin,
-    selectedActionIndex = 4,
-    pickedKind = "trait",
-    newFile =
-      "a/src/main/scala/a/Location.scala" ->
-        s"""|package a
-            |
-            |trait Location {
-            |$indent
-            |}
-            |""".stripMargin
+    selectedActionIndex = 3,
+    pickedKind = "scala-trait",
+    newFile = "a/src/main/scala/a/Location.scala" ->
+      s"""|package a
+          |
+          |trait Location {
+          |$indent
+          |}
+          |""".stripMargin
   )
 
   checkNewSymbol(
@@ -67,30 +60,24 @@ class CreateNewSymbolLspSuite extends BaseCodeActionLspSuite("createNew") {
        |
        |<<case class School(name: Missing, location: Location)>>
        |""".stripMargin,
-    s"""|${ImportMissingSymbol.title(
-      "Location",
-      "javax.tools.DocumentationTool"
-    )}
-        |${ImportMissingSymbol.title("Location", "javax.tools.JavaFileManager")}
+    s"""|${ImportMissingSymbol.title("Location", "javax.tools.JavaFileManager")}
+        |${ImportMissingSymbol.title("Location", docToolName)}
         |${ImportMissingSymbol.title("Location", "javax.xml.stream")}
-        |${ImportMissingSymbol.title("Location", "scala.collection.script")}
         |${CreateNewSymbol.title("Missing")}
         |${CreateNewSymbol.title("Location")}
+        |${ExtractRenameMember.renameFileAsClassTitle(fileName = "A.scala", memberName = "School")}
         |""".stripMargin,
-    selectedActionIndex = 4,
-    pickedKind = "class",
-    newFile =
-      "a/src/main/scala/a/Missing.scala" ->
-        s"""|package a
-            |
-            |class Missing {
-            |$indent
-            |}
-            |""".stripMargin,
+    selectedActionIndex = 3,
+    pickedKind = "scala-class",
+    newFile = "a/src/main/scala/a/Missing.scala" ->
+      s"""|package a
+          |
+          |class Missing {
+          |$indent
+          |}
+          |""".stripMargin,
     expectNoDiagnostics = false
   )
-
-  private def indent = "  "
 
   def checkNewSymbol(
       name: TestOptions,
@@ -105,20 +92,15 @@ class CreateNewSymbolLspSuite extends BaseCodeActionLspSuite("createNew") {
     test(name) {
       cleanWorkspace()
       for {
-        _ <- server.initialize(s"""/metals.json
-                                  |{"a":{}}
-                                  |/$path
-                                  |${input
-          .replace("<<", "")
-          .replace(">>", "")}
-                                  |""".stripMargin)
+        _ <- initialize(s"""/metals.json
+                           |{"a":{}}
+                           |/$path
+                           |${input.replace("<<", "").replace(">>", "")}
+                           |""".stripMargin)
         _ <- server.didOpen(path)
         codeActions <-
           server.assertCodeAction(path, input, expectedActions, Nil)
         _ <- {
-          if (selectedActionIndex >= codeActions.length) {
-            fail(s"selectedActionIndex ($selectedActionIndex) is out of bounds")
-          }
           def isSelectTheKindOfFile(params: ShowMessageRequestParams): Boolean =
             params.getMessage() == NewScalaFile.selectTheKindOfFileMessage
           client.showMessageRequestHandler = { params =>
@@ -128,7 +110,7 @@ class CreateNewSymbolLspSuite extends BaseCodeActionLspSuite("createNew") {
               None
             }
           }
-          client.applyCodeAction(codeActions(selectedActionIndex), server)
+          client.applyCodeAction(selectedActionIndex, codeActions, server)
         }
         _ <- server.didSave(path)(identity)
         _ = if (expectNoDiagnostics) assertNoDiagnostics() else ()
@@ -144,5 +126,7 @@ class CreateNewSymbolLspSuite extends BaseCodeActionLspSuite("createNew") {
       } yield ()
     }
   }
+
+  private def indent = "  "
 
 }

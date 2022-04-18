@@ -4,6 +4,7 @@ import java.nio.file.Path
 
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.newScalaFile.NewFileTemplate
+import scala.meta.internal.pc.Identifier
 import scala.meta.io.AbsolutePath
 
 import org.eclipse.lsp4j.Position
@@ -27,12 +28,15 @@ class PackageProvider(private val buildTargets: BuildTargets) {
       val pathList = path.toList
       val packageDeclaration =
         if (pathList.size > 1)
-          s"package ${pathList.dropRight(1).mkString(".")}\n\n"
+          s"package ${pathList.dropRight(1).map(p => wrap(p.toString())).mkString(".")}\n\n"
         else ""
       pathList.lastOption.map { packageObjectName =>
         val indent = "  "
+        val backtickedName = wrap(
+          packageObjectName.toString()
+        )
         NewFileTemplate(
-          s"""|${packageDeclaration}package object $packageObjectName {
+          s"""|${packageDeclaration}package object $backtickedName {
               |${indent}@@
               |}
               |""".stripMargin
@@ -40,7 +44,9 @@ class PackageProvider(private val buildTargets: BuildTargets) {
       }
     }
 
-    if (path.isScala && path.toFile.length() == 0) {
+    if (
+      path.isScalaOrJava && !path.isJarFileSystem && path.toFile.length() == 0
+    ) {
       buildTargets
         .inverseSourceItem(path)
         .map(path.toRelative)
@@ -50,14 +56,23 @@ class PackageProvider(private val buildTargets: BuildTargets) {
           if (path.filename == "package.scala") {
             packageObjectStatement(pathIterator)
           } else {
-            val packageName = parent.iterator().asScala.mkString(".")
-            Some(NewFileTemplate(s"package $packageName\n\n@@"))
+            val packageName = parent
+              .iterator()
+              .asScala
+              .map(p => wrap(p.toString()))
+              .mkString(".")
+            val text =
+              if (path.isScala) s"package $packageName\n\n@@"
+              else s"package $packageName;\n\n@@"
+            Some(NewFileTemplate(text))
           }
         }
     } else {
       None
     }
   }
+
+  private def wrap(str: String) = Identifier.backtickWrap(str)
 
   private def workspaceEdit(
       path: AbsolutePath,

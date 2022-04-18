@@ -9,7 +9,7 @@ class CancelCompileLspSuite extends BaseLspSuite("compile-cancel") {
   test("basic") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """/metals.json
           |{
           |  "a": {},
@@ -27,10 +27,13 @@ class CancelCompileLspSuite extends BaseLspSuite("compile-cancel") {
           |object C { val x: String = b.B.x }
           |""".stripMargin
       )
-      didOpen = server.didOpen("c/src/main/scala/c/C.scala")
-      _ <- server.executeCommand(ServerCommands.CancelCompile.id)
+      _ <- server.server.buildServerPromise.future
+      compile = server.server.compilations.compileFile(
+        workspace.resolve("c/src/main/scala/c/C.scala")
+      )
+      _ <- server.executeCommand(ServerCommands.CancelCompile)
       _ = assertNoDiff(client.workspaceDiagnostics, "")
-      isCancelled <- didOpen.map(_ => false).recover {
+      isCancelled <- compile.map(_ => false).recover {
         case _: CancellationException => true
       }
       _ = Predef.assert(
@@ -41,7 +44,7 @@ class CancelCompileLspSuite extends BaseLspSuite("compile-cancel") {
           "If this happens frequently for unrelated changes, then this may be a flaky test that needs refactoring. " +
           "If this assertion is flaky, feel free to remove it until it's refactored."
       )
-      _ <- server.executeCommand(ServerCommands.CascadeCompile.id)
+      _ <- server.executeCommand(ServerCommands.CascadeCompile)
     } yield ()
   }
 }

@@ -2,9 +2,14 @@ package tests
 
 import scala.concurrent.Future
 
+import scala.meta.internal.metals.InitializationOptions
+
 import org.eclipse.lsp4j.Position
 
 class SuperMethodLspSuite extends BaseLspSuite("gotosupermethod") {
+
+  override protected def initializationOptions: Option[InitializationOptions] =
+    Some(TestingServer.TestDefault)
 
   test("simple") {
     val code =
@@ -208,7 +213,7 @@ class SuperMethodLspSuite extends BaseLspSuite("gotosupermethod") {
     )
   }
 
-  test("jump-to-external-dependency") {
+  test("jump-to-external-dependency", withoutVirtualDocs = true) {
     val code =
       """
         |package a
@@ -241,7 +246,7 @@ class SuperMethodLspSuite extends BaseLspSuite("gotosupermethod") {
 
     cleanWorkspace()
     for {
-      _ <- server.initialize(strip(header))
+      _ <- initialize(strip(header))
       _ <- server.didOpen("a/src/main/scala/a/A.scala")
       _ <- server.didOpen("b/src/main/scala/b/B.scala")
       _ = assertNoDiagnostics()
@@ -274,7 +279,7 @@ class SuperMethodLspSuite extends BaseLspSuite("gotosupermethod") {
 
     cleanWorkspace()
     for {
-      _ <- server.initialize(strip(header + code))
+      _ <- initialize(strip(header + code))
       _ <- server.didOpen("a/src/main/scala/a/A.scala")
       _ = assertNoDiagnostics()
 
@@ -285,7 +290,7 @@ class SuperMethodLspSuite extends BaseLspSuite("gotosupermethod") {
         50 -> (new Position(
           60,
           6
-        ), workspace.toURI.toString + ".metals/readonly/io/circe/Decoder.scala")
+        ), workspace.toURI.toString + ".metals/readonly/dependencies/circe-core_2.13-0.12.0-sources.jar/io/circe/Decoder.scala")
       )
 
       (context, assertions) = parseWithUri(code, path)
@@ -302,7 +307,7 @@ class SuperMethodLspSuite extends BaseLspSuite("gotosupermethod") {
       uri: String
   ): (Map[Int, (Position, String)], Map[Int, Option[Int]]) = {
     val (mapping, asserts) = parse(code)
-    (mapping.mapValues((_, uri)), asserts)
+    (mapping.mapValues((_, uri)).toMap, asserts)
   }
 
   private def parse(

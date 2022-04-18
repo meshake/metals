@@ -4,10 +4,12 @@ import scala.collection.mutable
 
 import scala.meta.internal.builds.BuildTool
 import scala.meta.internal.jdk.CollectionConverters._
+import scala.meta.internal.metals.clients.language.MetalsInputBoxParams
+import scala.meta.internal.metals.clients.language.MetalsSlowTaskParams
+import scala.meta.internal.metals.clients.language.MetalsStatusParams
 import scala.meta.internal.semver.SemVer
 import scala.meta.io.AbsolutePath
 
-import ch.epfl.scala.bsp4j.BspConnectionDetails
 import org.eclipse.lsp4j.MessageActionItem
 import org.eclipse.lsp4j.MessageParams
 import org.eclipse.lsp4j.MessageType
@@ -17,6 +19,81 @@ import org.eclipse.lsp4j.ShowMessageRequestParams
  * Constants for requests/dialogues via LSP window/showMessage and window/showMessageRequest.
  */
 object Messages {
+
+  def errorMessageParams(msg: String) = new MessageParams(
+    MessageType.Error,
+    msg
+  )
+
+  val noRoot = new MessageParams(
+    MessageType.Error,
+    """|No rootUri or rootPath detected.
+       |Metals will not function correctly without either of these set since a workspace is needed.
+       |Try opening your project at the workspace root.""".stripMargin
+  )
+
+  val showTastyFailed = new MessageParams(
+    MessageType.Error,
+    """|Cannot execute show TASTy command because there is no .tasty file for given file.
+       |For now, this command only works with Scala 3.
+       |""".stripMargin
+  )
+
+  object Worksheets {
+    def unsupportedScalaVersion(
+        unsupportedVersion: String,
+        fallback: String,
+        recommended: String
+    ) = new MessageParams(
+      MessageType.Warning,
+      s"Scala ${unsupportedVersion} is not supported in worksheets. Falling back to ${fallback} without your classpath.\n" +
+        s"Consider using ${recommended} instead to fix this."
+    )
+
+    val unableToExport = new MessageParams(
+      MessageType.Warning,
+      "Unable to export worksheet. Please fix any diagnostics, save, and try again."
+    )
+  }
+
+  val NoBspSupport = new MessageParams(
+    MessageType.Warning,
+    "Workspace doesn't support BSP, please see logs."
+  )
+
+  object BspProvider {
+    val noBuildToolFound = new MessageParams(
+      MessageType.Warning,
+      "No build tool found to generate a BSP config."
+    )
+    val genericUnableToCreateConfig = new MessageParams(
+      MessageType.Error,
+      "Unable to create bsp config. Please check your log for more details."
+    )
+
+    def unableToCreateConfigFromMessage(message: String) = new MessageParams(
+      MessageType.Error,
+      message
+    )
+
+    def params(buildTools: List[BuildTool]): ShowMessageRequestParams = {
+      val messageActionItems =
+        buildTools.map(bt => new MessageActionItem(bt.executableName))
+      val params = new ShowMessageRequestParams()
+      params.setMessage(
+        "Multiple build tools found that could be build servers. Which would you like to use?"
+      )
+      params.setType(MessageType.Info)
+      params.setActions(messageActionItems.asJava)
+      params
+    }
+  }
+
+  def unableToStartServer(buildTool: String) = new MessageParams(
+    MessageType.Warning,
+    s"Metals is unable to start ${buildTool}. Please try to connect after starting it manually."
+  )
+
   val ImportProjectFailed = new MessageParams(
     MessageType.Error,
     "Import project failed, no functionality will work. See the logs for more details"
@@ -27,15 +104,32 @@ object Messages {
       "See the logs for more details. "
   )
 
+  val InsertInferredTypeFailed = new MessageParams(
+    MessageType.Error,
+    "Could not insert inferred type, please check the logs for more details or report an issue."
+  )
+
+  val ExtractMemberDefinitionFailed = new MessageParams(
+    MessageType.Error,
+    "Could not extract the given definition, please check the logs for more details or report an issue."
+  )
+
+  val ReloadProjectFailed = new MessageParams(
+    MessageType.Error,
+    "Reloading your project failed, no functionality will work. See the log for more details"
+  )
+
   def bloopInstallProgress(buildToolExecName: String) =
     new MetalsSlowTaskParams(s"$buildToolExecName bloopInstall")
   def dontShowAgain: MessageActionItem =
     new MessageActionItem("Don't show again")
   def notNow: MessageActionItem =
     new MessageActionItem("Not now")
+
   object ImportBuildChanges {
     def yes: MessageActionItem =
       new MessageActionItem("Import changes")
+    def notNow: MessageActionItem = Messages.notNow
     def params(buildToolName: String): ShowMessageRequestParams = {
       val params = new ShowMessageRequestParams()
       params.setMessage(s"$buildToolName build needs to be re-imported")
@@ -53,6 +147,7 @@ object Messages {
 
   object ImportBuild {
     def yes = new MessageActionItem("Import build")
+    def notNow: MessageActionItem = Messages.notNow
     def params(buildToolName: String): ShowMessageRequestParams = {
       val params = new ShowMessageRequestParams()
       params.setMessage(
@@ -68,6 +163,10 @@ object Messages {
       )
       params
     }
+  }
+
+  object MainClass {
+    val message = "Multiple main classes found. Which would you like to run?"
   }
 
   object ChooseBuildTool {
@@ -87,11 +186,9 @@ object Messages {
   def partialNavigation(icons: Icons) =
     new MetalsStatusParams(
       s"${icons.info} Partial navigation",
-      tooltip =
-        "This external library source has compile errors. " +
-          "To fix this problem, update your build settings to use the same compiler plugins and compiler settings as " +
-          "the external library.",
-      command = ClientCommands.FocusDiagnostics.id
+      tooltip = "This external library source has compile errors. " +
+        "To fix this problem, update your build settings to use the same compiler plugins and compiler settings as " +
+        "the external library."
     )
 
   object CheckDoctor {
@@ -108,6 +205,9 @@ object Messages {
       s"Navigation will not work in project '$name' due to mis-configuration." + moreInfo
     def multipleMisconfiguredProjects(count: Int): String =
       s"Code navigation will not work for $count build targets in this workspace due to mis-configuration. " + moreInfo
+    val misconfiguredTestFrameworks: String =
+      "Test Explorer won't work due to mis-configuration." + moreInfo
+
     def isDoctor(params: ShowMessageRequestParams): Boolean =
       params.getActions.asScala.contains(moreInformation)
     def moreInformation: MessageActionItem =
@@ -217,6 +317,14 @@ object Messages {
     }
   }
 
+  def errorFromThrowable(
+      throwable: Throwable
+  ): MessageParams =
+    new MessageParams(
+      MessageType.Error,
+      throwable.getMessage()
+    )
+
   object IncompatibleBloopVersion {
     def manually: MessageActionItem =
       new MessageActionItem("I'll update manually")
@@ -253,68 +361,52 @@ object Messages {
     }
   }
 
-  object SelectBspServer {
+  object BspSwitch {
     case class Request(
         params: ShowMessageRequestParams,
-        details: Map[String, BspConnectionDetails]
+        mapping: Map[String, String]
     )
-    def message: String =
+
+    val message: String =
       "Multiple build servers detected, which one do you want to use?"
-    def isSelectBspServer(params: ShowMessageRequestParams): Boolean =
-      params.getMessage == message
-    def request(
-        candidates: List[BspConnectionDetails]
+
+    def chooseServerRequest(
+        possibleBuildServers: List[String],
+        currentBsp: Option[String]
     ): Request = {
+      val mapping = mutable.Map.empty[String, String]
+      val messageActionItems =
+        possibleBuildServers.map { buildServer =>
+          val title = if (currentBsp.exists(_ == buildServer)) {
+            buildServer + " (currently using)"
+          } else {
+            buildServer
+          }
+          mapping(title) = buildServer
+          new MessageActionItem(title)
+        }
       val params = new ShowMessageRequestParams()
       params.setMessage(message)
-      params.setType(MessageType.Warning)
-      val details = mutable.Map.empty[String, BspConnectionDetails]
-      // The logic for choosing item names is a bit tricky because we want
-      // the following characteristics:
-      // - all options must be unique, we get a title string back from the
-      //   editor for which server the user chose.
-      // - happy path: title is build server name without noisy version number.
-      // - name conflicts: disambiguate conflicting names by version number
-      // - name+version conflicts: append random characters to the title.
-      val items = candidates.map { candidate =>
-        val nameConflicts = candidates.count(_.getName == candidate.getName)
-        val title: String = if (nameConflicts < 2) {
-          candidate.getName
-        } else {
-          val versionConflicts = candidates.count { c =>
-            c.getName == candidate.getName &&
-            c.getVersion == candidate.getVersion
-          }
-          if (versionConflicts < 2) {
-            s"${candidate.getName} v${candidate.getVersion}"
-          } else {
-            val stream = Stream.from(0).map { i =>
-              val ch = ('a'.toInt + i).toChar
-              s"${candidate.getName} v${candidate.getVersion} ($ch)"
-            }
-            stream.find(!details.contains(_)).get
-          }
-        }
-        details(title) = candidate
-        new MessageActionItem(title)
-      }
-      params.setActions(items.asJava)
-      Request(params, details.toMap)
+      params.setType(MessageType.Info)
+      params.setActions(messageActionItems.asJava)
+      Request(params, mapping.toMap)
     }
-  }
 
-  object BspSwitch {
     def noInstalledServer: MessageParams =
       new MessageParams(
         MessageType.Error,
         "Unable to switch build server since there are no installed build servers on this computer. " +
           "To fix this problem, install a build server first."
       )
+
     def onlyOneServer(name: String): MessageParams =
       new MessageParams(
         MessageType.Warning,
-        s"Unable to switch build server since there is only one installed build server '$name' on this computer."
+        s"Unable to switch build server since there is only one supported build server '$name' detected for this workspace."
       )
+
+    def isSelectBspServer(params: ShowMessageRequestParams): Boolean =
+      params.getMessage == message
   }
 
   object MissingScalafmtVersion {
@@ -356,13 +448,15 @@ object Messages {
     }
   }
 
-  val DebugErrorsPresent: MetalsStatusParams = new MetalsStatusParams(
-    "$(error) Errors in workspace",
-    tooltip = "Cannot run or debug due to existing errors in the workspace. " +
-      "Please fix the errors and retry.",
-    command = ClientCommands.FocusDiagnostics.id,
-    show = true
-  )
+  def DebugErrorsPresent(icons: Icons): MetalsStatusParams =
+    new MetalsStatusParams(
+      s"${icons.error} Errors in workspace",
+      tooltip =
+        "Cannot run or debug due to existing errors in the workspace. " +
+          "Please fix the errors and retry.",
+      command = ClientCommands.FocusDiagnostics.id,
+      show = true
+    )
 
   object DebugClassNotFound {
 
@@ -386,6 +480,7 @@ object Messages {
         s"Class '$cls' not found."
       )
     }
+
   }
 
   object MissingScalafmtConf {
@@ -403,7 +498,7 @@ object Messages {
     def createScalafmtConfMessage: String =
       s"Unable to format since this workspace has no .scalafmt.conf file. " +
         s"To fix this problem, create an empty .scalafmt.conf and try again."
-    def params(path: AbsolutePath): ShowMessageRequestParams = {
+    def params(): ShowMessageRequestParams = {
       val params = new ShowMessageRequestParams()
       params.setMessage(createScalafmtConfMessage)
       params.setType(MessageType.Error)
@@ -413,6 +508,35 @@ object Messages {
           notNow,
           dontShowAgain
         ).asJava
+      )
+      params
+    }
+  }
+
+  object UpdateScalafmtConf {
+
+    def letUpdate = new MessageActionItem("Let Metals update .scalafmt.conf")
+
+    def createMessage(dialect: ScalafmtDialect): String = {
+      s"Some source directories can't be formatted by scalafmt " +
+        s"because they require the `runner.dialect = ${dialect.value}` setting." +
+        "[See scalafmt docs](https://scalameta.org/scalafmt/docs/configuration.html#scala-3)" +
+        " and logs for more details"
+    }
+
+    def params(
+        dialect: ScalafmtDialect,
+        canUpdate: Boolean
+    ): ShowMessageRequestParams = {
+      val params = new ShowMessageRequestParams()
+      params.setMessage(createMessage(dialect))
+      params.setType(MessageType.Warning)
+      params.setActions(
+        List(
+          if (canUpdate) Some(letUpdate) else None,
+          if (canUpdate) Some(notNow) else None,
+          Some(dontShowAgain)
+        ).flatten.asJava
       )
       params
     }
@@ -444,6 +568,10 @@ object Messages {
 
   }
 
+  object DisplayBuildTarget {
+    def selectTheBuildTargetMessage = "Select the build target to display"
+  }
+
   private def usingString(usingNow: Iterable[String]): String = {
     if (usingNow.size == 1)
       s"Scala version ${usingNow.head}"
@@ -465,7 +593,7 @@ object Messages {
 
   object DeprecatedScalaVersion {
     def message(
-        usingNow: Iterable[String]
+        usingNow: Set[String]
     ): String = {
       val using = "legacy " + usingString(usingNow)
       val recommended = recommendationString(usingNow)
@@ -476,7 +604,22 @@ object Messages {
 
   object UnsupportedScalaVersion {
     def message(
-        usingNow: Iterable[String]
+        usingNow: Set[String]
+    ): String =
+      message(usingNow, None)
+
+    def fallbackScalaVersionParams(
+        scalaVersion: String
+    ): MessageParams = {
+      new MessageParams(
+        MessageType.Warning,
+        message(Set(scalaVersion), Some("fallback"))
+      )
+    }
+
+    def message(
+        usingNow: Set[String],
+        description: Option[String]
     ): String = {
       val using = usingString(usingNow)
       val recommended = recommendationString(usingNow)
@@ -487,20 +630,44 @@ object Messages {
         if (uses211) s" or alternatively to legacy Scala ${BuildInfo.scala211}"
         else ""
       val isAre = if (usingNow.size == 1) "is" else "are"
-      s"You are using $using, which $isAre not supported in this version of Metals. " +
+      val descriptionString = description.map(s => s"$s ").getOrElse("")
+      s"You are using $descriptionString$using, which $isAre not supported in this version of Metals. " +
         s"Please upgrade to $recommended$deprecatedAleternative."
     }
   }
 
   object FutureScalaVersion {
     def message(
-        usingNow: Iterable[String]
+        usingNow: Set[String]
     ): String = {
       val using = usingString(usingNow)
       val recommended = recommendationString(usingNow)
       val isAre = if (usingNow.size == 1) "is" else "are"
       s"You are using $using, which $isAre not yet supported in this version of Metals. " +
         s"Please downgrade to $recommended for the moment until the new Metals release."
+    }
+  }
+
+  object DeprecatedSbtVersion {
+    def message: String = {
+      val recommended = "1.3.2"
+      s"You are using an old sbt version, navigation for which might not be supported in the future versions of Metals. " +
+        s"Please upgrade to at least sbt $recommended."
+    }
+  }
+
+  object UnsupportedSbtVersion {
+    def message: String = {
+      val recommended = "1.3.2"
+      s"You are using an old sbt version, navigation for which is not supported in this version of Metals. " +
+        s"Please upgrade to at least sbt $recommended."
+    }
+  }
+
+  object FutureSbtVersion {
+    def message: String = {
+      s"You are using an sbt version not yet supported in this version of Metals." +
+        s"Please downgrade to sbt ${BuildInfo.sbtVersion}"
     }
   }
 
@@ -605,6 +772,6 @@ object Messages {
       )
       params
     }
-
   }
+
 }

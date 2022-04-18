@@ -1,11 +1,5 @@
 package scala.meta.internal.metals.codelenses
 
-import java.util.Collections.singletonList
-
-import scala.collection.{mutable => m}
-
-import scala.meta.internal.implementation.ClassHierarchyItem
-import scala.meta.internal.implementation.ImplementationProvider
 import scala.meta.internal.implementation.SuperMethodProvider
 import scala.meta.internal.implementation.TextDocumentWithPath
 import scala.meta.internal.metals.Buffers
@@ -13,18 +7,20 @@ import scala.meta.internal.metals.ClientConfiguration
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.ServerCommands
 import scala.meta.internal.metals.UserConfiguration
-import scala.meta.internal.metals.codelenses.SuperMethodCodeLens.LensGoSuperCache
-import scala.meta.internal.metals.codelenses.SuperMethodCodeLens.emptyLensGoSuperCache
+import scala.meta.internal.parsing.Trees
+import scala.meta.internal.semanticdb.Scala._
 import scala.meta.internal.semanticdb.SymbolInformation
 import scala.meta.internal.semanticdb.SymbolOccurrence
+import scala.meta.internal.semanticdb.TextDocument
+import scala.meta.io.AbsolutePath
 
 import org.eclipse.{lsp4j => l}
 
 final class SuperMethodCodeLens(
-    implementationProvider: ImplementationProvider,
     buffers: Buffers,
     userConfig: () => UserConfiguration,
-    clientConfig: ClientConfiguration
+    clientConfig: ClientConfiguration,
+    trees: Trees
 ) extends CodeLens {
 
   override def isEnabled: Boolean = userConfig().superMethodLensesEnabled
@@ -35,69 +31,71 @@ final class SuperMethodCodeLens(
     val textDocument = textDocumentWithPath.textDocument
     val path = textDocumentWithPath.filePath
 
-    val search = implementationProvider.defaultSymbolSearchMemoize(
-      path,
-      textDocument
-    )
-    val distance = buffers.tokenEditDistance(path, textDocument.text)
+    def search(query: String) = textDocument.symbols.find(_.symbol == query)
+
+    val distance = buffers.tokenEditDistance(path, textDocument.text, trees)
 
     for {
       occurrence <- textDocument.occurrences
       if occurrence.role.isDefinition
       symbol = occurrence.symbol
       gotoSuperMethod <- createSuperMethodCommand(
-        textDocumentWithPath,
         symbol,
-        occurrence.role,
-        emptyLensGoSuperCache(),
-        search
+        search,
+        textDocument,
+        path
       ).toIterable
       range <-
         occurrence.range
-          .flatMap(r => distance.toRevised(r.toLSP))
+          .flatMap(r => distance.toRevisedStrict(r).map(_.toLSP))
           .toList
     } yield new l.CodeLens(range, gotoSuperMethod, null)
   }
 
   private def createSuperMethodCommand(
-      docWithPath: TextDocumentWithPath,
       symbol: String,
-      role: SymbolOccurrence.Role,
-      cache: LensGoSuperCache,
-      findSymbol: String => Option[SymbolInformation]
+      findSymbol: String => Option[SymbolInformation],
+      textDocument: TextDocument,
+      path: AbsolutePath
   ): Option[l.Command] = {
     for {
       symbolInformation <- findSymbol(symbol)
       gotoParentSymbol <- SuperMethodProvider.findSuperForMethodOrField(
-        symbolInformation,
-        docWithPath,
-        role,
-        findSymbol,
-        cache
+        symbolInformation
       )
-    } yield convertToSuperMethodCommand(
-      gotoParentSymbol,
-      symbolInformation.displayName
-    )
+      command <- convertToSuperMethodCommand(
+        gotoParentSymbol,
+        symbolInformation.displayName,
+        textDocument,
+        path
+      )
+    } yield command
   }
 
   private def convertToSuperMethodCommand(
       symbol: String,
-      name: String
-  ): l.Command = {
-    new l.Command(
-      s"${clientConfig.icons.findsuper} ${name}",
-      ServerCommands.GotoSymbol.id,
-      singletonList(symbol)
-    )
+      name: String,
+      textDocument: TextDocument,
+      path: AbsolutePath
+  ): Option[l.Command] = {
+    if (symbol.isLocal)
+      textDocument.occurrences.collectFirst {
+        case SymbolOccurrence(
+              Some(range),
+              `symbol`,
+              SymbolOccurrence.Role.DEFINITION
+            ) =>
+          val location = new l.Location(path.toURI.toString(), range.toLSP)
+          val command = ServerCommands.GotoPosition.toLSP(location)
+          command.setTitle(s"${clientConfig.icons.findsuper} ${name}")
+          command
+      }
+    else
+      Some {
+        val command = ServerCommands.GotoSymbol.toLSP(symbol)
+        command.setTitle(s"${clientConfig.icons.findsuper} ${name}")
+        command
+      }
   }
-
-}
-
-object SuperMethodCodeLens {
-  type LensGoSuperCache =
-    m.Map[String, List[ClassHierarchyItem]]
-
-  def emptyLensGoSuperCache(): LensGoSuperCache = m.Map()
 
 }

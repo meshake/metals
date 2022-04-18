@@ -19,13 +19,14 @@ case class PresentationCompilerConfigImpl(
     isCompletionItemDocumentationEnabled: Boolean = true,
     isHoverDocumentationEnabled: Boolean = true,
     snippetAutoIndent: Boolean = true,
-    isFoldOnlyLines: Boolean = false,
     isSignatureHelpDocumentationEnabled: Boolean = true,
     isCompletionSnippetsEnabled: Boolean = true,
     isCompletionItemResolve: Boolean = true,
     _isStripMarginOnTypeFormattingEnabled: () => Boolean = () => true,
     timeoutDelay: Long = 20,
-    timeoutUnit: TimeUnit = TimeUnit.SECONDS
+    timeoutUnit: TimeUnit = TimeUnit.SECONDS,
+    semanticdbCompilerOptions: util.List[String] =
+      PresentationCompilerConfig.defaultSemanticdbCompilerOptions()
 ) extends PresentationCompilerConfig {
 
   override def isStripMarginOnTypeFormattingEnabled(): Boolean =
@@ -36,6 +37,11 @@ case class PresentationCompilerConfigImpl(
     Optional.ofNullable(_parameterHintsCommand.orNull)
   override def completionCommand: Optional[String] =
     Optional.ofNullable(_completionCommand.orNull)
+
+  override val isDefaultSymbolPrefixes: Boolean =
+    _symbolPrefixes == PresentationCompilerConfig
+      .defaultSymbolPrefixes()
+      .asScala
 
   /**
    * Used to update the compiler config after we recieve the InitializationOptions.

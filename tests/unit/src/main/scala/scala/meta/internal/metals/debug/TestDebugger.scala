@@ -80,17 +80,16 @@ final class TestDebugger(
 
   def restart: Future[Unit] = {
     Debug.printEnclosing()
-    ifNotFailed(debugger.restart).andThen {
-      case _ =>
-        debugger = connect(this)
-        terminated = Promise()
-        output = new DebuggeeOutput
-        breakpoints = new DebuggeeBreakpoints
+    ifNotFailed(debugger.restart).andThen { case _ =>
+      debugger = connect(this)
+      terminated = Promise()
+      output = new DebuggeeOutput
+      breakpoints = new DebuggeeBreakpoints
     }
   }
 
   def disconnect: Future[Unit] = {
-    ifNotFailed(debugger.disconnect)
+    ifNotFailed(debugger.disconnect).map(_ => terminated.trySuccess(()))
   }
 
   /**
@@ -112,10 +111,9 @@ final class TestDebugger(
       output
         .awaitPrefix(prefix.replaceAll("\n", System.lineSeparator()))
         .withTimeout(seconds, TimeUnit.SECONDS)
-        .recoverWith {
-          case timeout: TimeoutException =>
-            val error = s"No prefix [$prefix] in [${output()}]"
-            Future.failed(new Exception(error, timeout))
+        .recoverWith { case timeout: TimeoutException =>
+          val error = s"No prefix [$prefix] in [${output()}]"
+          Future.failed(new Exception(error, timeout))
         }
     }
   }
@@ -150,15 +148,14 @@ final class TestDebugger(
     val nextStep = for {
       frame <- ifNotFailed(debugger.stackFrame(event.getThreadId))
       cause <- findStoppageCause(event, frame)
-      nextStep <- onStoppage(Stoppage(frame, cause))
-    } yield nextStep
+    } yield onStoppage(Stoppage(frame, cause))
 
     nextStep.onComplete {
       case Failure(error) =>
         fail(error)
       case Success(step) =>
-        debugger.step(event.getThreadId, step).recover {
-          case error => fail(error)
+        debugger.step(event.getThreadId, step).recover { case error =>
+          fail(error)
         }
     }
   }

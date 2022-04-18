@@ -1,7 +1,6 @@
 package tests.pc
 
 import tests.BaseSignatureHelpSuite
-import tests.BuildInfoVersions
 
 class SignatureHelpDocSuite extends BaseSignatureHelpSuite {
 
@@ -10,8 +9,8 @@ class SignatureHelpDocSuite extends BaseSignatureHelpSuite {
   override def requiresScalaLibrarySources: Boolean = true
 
   // @tgodzik docs not yet supported for Scala 3
-  override def excludedScalaVersions: Set[String] =
-    BuildInfoVersions.scala3Versions.toSet
+  override def ignoreScalaVersion: Option[IgnoreScalaVersion] =
+    Some(IgnoreScala3)
 
   val foldLatestDocs: String =
     """|Returns the result of applying `f` to this [scala.Option](scala.Option)'s
@@ -290,9 +289,9 @@ class SignatureHelpDocSuite extends BaseSignatureHelpSuite {
       |  "".substring(1@@)
       |}
     """.stripMargin,
-    """|substring(beginIndex: Int, endIndex: Int): String
-       |substring(beginIndex: Int): String
+    """|substring(beginIndex: Int): String
        |          ^^^^^^^^^^^^^^^
+       |substring(beginIndex: Int, endIndex: Int): String
        |""".stripMargin
   )
   check(
@@ -302,11 +301,11 @@ class SignatureHelpDocSuite extends BaseSignatureHelpSuite {
       |  String.valueOf(1@@)
       |}
     """.stripMargin,
-    """|valueOf(d: Double): String
+    """|valueOf(i: Int): String
+       |        ^^^^^^
+       |valueOf(d: Double): String
        |valueOf(f: Float): String
        |valueOf(l: Long): String
-       |valueOf(i: Int): String
-       |        ^^^^^^
        |valueOf(c: Char): String
        |valueOf(b: Boolean): String
        |valueOf(data: Array[Char], offset: Int, count: Int): String

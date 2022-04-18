@@ -2,9 +2,17 @@ package tests
 
 import scala.collection.SortedSet
 
+import scala.meta.internal.metals.InitializationOptions
 import scala.meta.internal.tvp.TreeViewProvider
 
+/**
+ * @note This suite will fail on openjdk8 < 262)
+ *       due to https://mail.openjdk.java.net/pipermail/jdk8u-dev/2020-July/012143.html
+ */
 class TreeViewLspSuite extends BaseLspSuite("tree-view") {
+
+  override protected def initializationOptions: Option[InitializationOptions] =
+    Some(TestingServer.TestDefault)
 
   /**
    * The libraries we expect to find for tests in this file.
@@ -14,32 +22,24 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
    */
   val expectedLibraries: SortedSet[String] = {
     lazy val jdk8Libraries = SortedSet(
-      "charsets",
-      "jce",
-      "jsse",
-      "resources",
-      "rt"
+      "charsets", "jce", "jsse", "resources", "rt"
     )
 
     val otherLibraries = SortedSet(
-      "animal-sniffer-annotations", "cats-core_2.12", "cats-kernel_2.12",
-      "cats-macros_2.12", "checker-qual", "circe-core_2.12",
-      "circe-numbers_2.12", "error_prone_annotations", "failureaccess", "gson",
+      "cats-core_2.13", "cats-kernel_2.13", "checker-qual", "circe-core_2.13",
+      "circe-numbers_2.13", "error_prone_annotations", "failureaccess", "gson",
       "guava", "j2objc-annotations", "jsr305", "listenablefuture",
-      "machinist_2.12", "org.eclipse.lsp4j", "org.eclipse.lsp4j.generator",
+      "org.eclipse.lsp4j", "org.eclipse.lsp4j.generator",
       "org.eclipse.lsp4j.jsonrpc", "org.eclipse.xtend.lib",
       "org.eclipse.xtend.lib.macro", "org.eclipse.xtext.xbase.lib",
-      "scala-library", "scala-reflect", "sourcecode_2.12"
+      "scala-library", "scala-reflect", "semanticdb-javac",
+      "simulacrum-scalafix-annotations_2.13", "sourcecode_2.13"
     )
 
-    (
-      scala.util.Properties.isJavaAtLeast(9.toString),
-      scala.util.Properties.javaVmVendor
-    ) match {
-      case (true, _) => otherLibraries
-      case (false, "Oracle Corporation") =>
-        otherLibraries ++ jdk8Libraries + "jfr"
-      case _ => otherLibraries ++ jdk8Libraries
+    if (scala.util.Properties.isJavaAtLeast(9.toString)) {
+      otherLibraries
+    } else {
+      otherLibraries ++ jdk8Libraries + "jfr"
     }
   }
 
@@ -54,40 +54,40 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
   test("projects") {
     cleanWorkspace()
     for {
-      _ <- server.initialize("""
-                               |/metals.json
-                               |{
-                               |  "a": {},
-                               |  "b": {}
-                               |}
-                               |/a/src/main/scala/a/Zero.scala
-                               |class Zero {
-                               | val a = 1
-                               |}
-                               |/a/src/main/scala/a/First.scala
-                               |package a
-                               |class First {
-                               |  def a = 1
-                               |  val b = 2
-                               |}
-                               |object First
-                               |/a/src/main/scala/a/Second.scala
-                               |package a
-                               |class Second {
-                               |  def a = 1
-                               |  val b = 2
-                               |  var c = 2
-                               |}
-                               |object Second
-                               |/b/src/main/scala/b/Third.scala
-                               |package b
-                               |class Third
-                               |object Third
-                               |/b/src/main/scala/b/Fourth.scala
-                               |package b
-                               |class Fourth
-                               |object Fourth
-                               |""".stripMargin)
+      _ <- initialize("""
+                        |/metals.json
+                        |{
+                        |  "a": {},
+                        |  "b": {}
+                        |}
+                        |/a/src/main/scala/a/Zero.scala
+                        |class Zero {
+                        | val a = 1
+                        |}
+                        |/a/src/main/scala/a/First.scala
+                        |package a
+                        |class First {
+                        |  def a = 1
+                        |  val b = 2
+                        |}
+                        |object First
+                        |/a/src/main/scala/a/Second.scala
+                        |package a
+                        |class Second {
+                        |  def a = 1
+                        |  val b = 2
+                        |  var c = 2
+                        |}
+                        |object Second
+                        |/b/src/main/scala/b/Third.scala
+                        |package b
+                        |class Third
+                        |object Third
+                        |/b/src/main/scala/b/Fourth.scala
+                        |package b
+                        |class Fourth
+                        |object Fourth
+                        |""".stripMargin)
       _ = assertNoDiff(
         client.workspaceTreeViewChanges,
         s"""|${TreeViewProvider.Project} <root>
@@ -141,15 +141,15 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
     } yield ()
   }
 
-  test("libraries") {
+  test("libraries", withoutVirtualDocs = true) {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{
           |  "a": {
           |    "libraryDependencies": [
-          |      "io.circe::circe-core:0.11.1",
+          |      "io.circe::circe-core:0.14.0",
           |      "org.eclipse.lsp4j:org.eclipse.lsp4j:0.5.0",
           |      "com.lihaoyi::sourcecode:0.1.7"
           |    ]
@@ -169,9 +169,7 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
         server.assertTreeViewChildren(
           s"libraries:${server.jar("scala-library")}!/scala/Some#",
           """|value val
-             |isEmpty() method
              |get() method
-             |x() method
              |""".stripMargin
         )
         server.assertTreeViewChildren(
@@ -222,8 +220,8 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
               |  Projects (0)
               |  Libraries (${expectedLibrariesCount})
               |  Libraries (${expectedLibrariesCount})
-              |    sourcecode_2.12-0.1.7.jar
-              |    sourcecode_2.12-0.1.7.jar
+              |    sourcecode_2.13-0.1.7.jar
+              |    sourcecode_2.13-0.1.7.jar
               |      sourcecode/
               |      sourcecode/
               |        Args class
@@ -482,7 +480,7 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
   test(noOp.flaky) {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{
@@ -512,7 +510,7 @@ class TreeViewLspSuite extends BaseLspSuite("tree-view") {
         cancelServer()
         newServer(noOp)
       }
-      _ <- server.initialize("")
+      _ <- initialize("")
 
       // This request triggers a no-op background compilation in the "b" project
       // but immediately returns an empty result since the class directory

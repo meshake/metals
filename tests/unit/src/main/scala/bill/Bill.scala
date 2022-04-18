@@ -32,7 +32,6 @@ import scala.util.control.NonFatal
 import scala.meta.internal.metals.BuildInfo
 import scala.meta.internal.metals.Embedded
 import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.MetalsLogger
 import scala.meta.internal.metals.PositionSyntax._
 import scala.meta.internal.metals.RecursivelyDelete
 import scala.meta.internal.mtags
@@ -71,12 +70,22 @@ import org.eclipse.lsp4j.jsonrpc.Launcher
  * - no incremental compilation, every compilation is a clean compile.
  */
 object Bill {
+
+  val logName = ".bill-metals.log"
+
   class Server() extends BuildServer with ScalaBuildServer {
     val languages: util.List[String] = Collections.singletonList("scala")
     var client: BuildClient = _
     override def onConnectWithClient(server: BuildClient): Unit =
       client = server
     var workspace: Path = Paths.get(".").toAbsolutePath.normalize()
+
+    def billLog: AbsolutePath = {
+      val logFile = AbsolutePath(workspace.resolve(logName))
+      logFile.touch()
+      logFile
+    }
+
     // Returns true if we're tracing shutdown requests, used for testing purposes.
     def isShutdownTrace(): Boolean = {
       Files.isRegularFile(workspace.resolve("shutdown-trace"))
@@ -147,14 +156,24 @@ object Bill {
     ): CompletableFuture[InitializeBuildResult] = {
       Future {
         workspace = Paths.get(URI.create(params.getRootUri))
-        MetalsLogger.setupLspLogger(AbsolutePath(workspace), true)
         if (isShutdownTrace()) {
-          println("trace: initialize")
+          billLog.appendText("trace: initialize\n")
         }
         val capabilities = new BuildServerCapabilities
         capabilities.setCompileProvider(new CompileProvider(languages))
+        capabilities.setCanReload(true)
         new InitializeBuildResult("Bill", "1.0", "2.0.0-M2", capabilities)
       }.logError("initialize").asJava
+    }
+    override def workspaceReload(): CompletableFuture[Object] = {
+      Future {
+        val event = new BuildTargetEvent(target.getId)
+        event.setKind(BuildTargetEventKind.CHANGED)
+        client.onBuildTargetDidChange(
+          new DidChangeBuildTarget(List(event).asJava)
+        )
+        null: Object
+      }.logError("workspaceReload").asJava
     }
     override def onBuildInitialized(): Unit = {}
     override def buildShutdown(): CompletableFuture[AnyRef] = {
@@ -163,7 +182,7 @@ object Bill {
         // waits for the shutdown request to respond before initializing a new build
         // server connection.
         Thread.sleep(1000)
-        println("trace: shutdown")
+        billLog.appendText("trace: shutdown\n")
       }
       CompletableFuture.completedFuture(null)
     }
@@ -247,43 +266,42 @@ object Bill {
         )
       }
       hasError --= fixedErrors
-      byFile.foreach {
-        case (file, infos) =>
-          def toBspPos(pos: r.Position, offset: Int): b.Position = {
-            val line = pos.source.offsetToLine(offset)
-            val column0 = pos.source.lineToOffset(line)
-            val column = offset - column0
-            new b.Position(line, column)
-          }
-          val diagnostics = infos.iterator
-            .filter(_.pos.isDefined)
-            .map { info =>
-              val p = info.pos
-              val start =
-                toBspPos(info.pos, if (p.isRange) p.start else p.point)
-              val end =
-                toBspPos(info.pos, if (p.isRange) p.end else p.point)
-              val severity = info.severity match {
-                case reporter.ERROR => DiagnosticSeverity.ERROR
-                case reporter.WARNING => DiagnosticSeverity.WARNING
-                case reporter.INFO => DiagnosticSeverity.INFORMATION
-                case _ => DiagnosticSeverity.HINT
-              }
-              val diagnostic = new Diagnostic(new b.Range(start, end), info.msg)
-              diagnostic.setSeverity(severity)
-              diagnostic
+      byFile.foreach { case (file, infos) =>
+        def toBspPos(pos: r.Position, offset: Int): b.Position = {
+          val line = pos.source.offsetToLine(offset)
+          val column0 = pos.source.lineToOffset(line)
+          val column = offset - column0
+          new b.Position(line, column)
+        }
+        val diagnostics = infos.iterator
+          .filter(_.pos.isDefined)
+          .map { info =>
+            val p = info.pos
+            val start =
+              toBspPos(info.pos, if (p.isRange) p.start else p.point)
+            val end =
+              toBspPos(info.pos, if (p.isRange) p.end else p.point)
+            val severity = info.severity match {
+              case reporter.ERROR => DiagnosticSeverity.ERROR
+              case reporter.WARNING => DiagnosticSeverity.WARNING
+              case reporter.INFO => DiagnosticSeverity.INFORMATION
+              case _ => DiagnosticSeverity.HINT
             }
-            .toList
-          val uri = file.name
-          val params =
-            new PublishDiagnosticsParams(
-              new TextDocumentIdentifier(uri),
-              target.getId,
-              diagnostics.asJava,
-              true
-            )
-          client.onBuildPublishDiagnostics(params)
-          hasError += file
+            val diagnostic = new Diagnostic(new b.Range(start, end), info.msg)
+            diagnostic.setSeverity(severity)
+            diagnostic
+          }
+          .toList
+        val uri = file.name
+        val params =
+          new PublishDiagnosticsParams(
+            new TextDocumentIdentifier(uri),
+            target.getId,
+            diagnostics.asJava,
+            true
+          )
+        client.onBuildPublishDiagnostics(params)
+        hasError += file
       }
     }
 
@@ -357,6 +375,11 @@ object Bill {
     override def buildTargetScalaMainClasses(
         params: ScalaMainClassesParams
     ): CompletableFuture[ScalaMainClassesResult] = ???
+
+    override def buildTargetDependencyModules(
+        params: DependencyModulesParams
+    ): CompletableFuture[DependencyModulesResult] = ???
+
   }
 
   def myClassLoader: ClassLoader =
@@ -365,6 +388,7 @@ object Bill {
     ClasspathLoader
       .getURLs(myClassLoader)
       .map(url => Paths.get(url.toURI))
+      .toSeq
 
   def cwd: Path = Paths.get(System.getProperty("user.dir"))
 

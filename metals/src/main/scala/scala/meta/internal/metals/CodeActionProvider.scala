@@ -4,7 +4,9 @@ import scala.collection.JavaConverters._
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 
+import scala.meta.internal.metals.clients.language.MetalsLanguageClient
 import scala.meta.internal.metals.codeactions._
+import scala.meta.internal.parsing.Trees
 import scala.meta.pc.CancelToken
 
 import org.eclipse.{lsp4j => l}
@@ -13,14 +15,36 @@ final class CodeActionProvider(
     compilers: Compilers,
     buffers: Buffers,
     buildTargets: BuildTargets,
-    scalafixProvider: ScalafixProvider
-) {
+    scalafixProvider: ScalafixProvider,
+    trees: Trees,
+    diagnostics: Diagnostics,
+    languageClient: MetalsLanguageClient
+)(implicit ec: ExecutionContext) {
+
+  private val extractMemberAction = new ExtractRenameMember(trees)
+
   private val allActions: List[CodeAction] = List(
     new ImplementAbstractMembers(compilers),
     new ImportMissingSymbol(compilers),
     new CreateNewSymbol(),
     new StringActions(buffers),
-    new OrganizeImports(scalafixProvider, buildTargets)
+    extractMemberAction,
+    new SourceOrganizeImports(
+      scalafixProvider,
+      buildTargets,
+      diagnostics,
+      languageClient
+    ),
+    new OrganizeImportsQuickFix(
+      scalafixProvider,
+      buildTargets,
+      diagnostics
+    ),
+    new InsertInferredType(trees),
+    new PatternMatchRefactor(trees),
+    new RewriteBracesParensCodeAction(trees),
+    new ExtractValueCodeAction(trees, buffers),
+    new CreateCompanionObjectCodeAction(trees, buffers)
   )
 
   def codeActions(
@@ -43,4 +67,13 @@ final class CodeActionProvider(
     Future.sequence(actions).map(_.flatten)
   }
 
+  def executeCommands(
+      codeActionCommandData: CodeActionCommandData
+  ): Future[CodeActionCommandResult] = {
+    codeActionCommandData match {
+      case data: ExtractMemberDefinitionData =>
+        extractMemberAction.executeCommand(data)
+      case data => Future.failed(new IllegalArgumentException(data.toString))
+    }
+  }
 }

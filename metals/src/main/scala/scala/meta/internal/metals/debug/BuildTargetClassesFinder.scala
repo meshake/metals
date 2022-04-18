@@ -20,7 +20,7 @@ class BuildTargetClassesFinder(
     index: OnDemandSymbolIndex
 ) {
 
-  //In case of success returns non-empty list
+  // In case of success returns non-empty list
   def findMainClassAndItsBuildTarget(
       className: String,
       buildTarget: Option[String]
@@ -34,33 +34,37 @@ class BuildTargetClassesFinder(
         .mainClasses
         .values,
       { clazz: b.ScalaMainClass => clazz.getClassName }
-    ).recoverWith {
-      case ex =>
-        val found = ex match {
-          // We check whether there is a main in dependencies that is not reported via BSP
-          case ClassNotFoundInBuildTargetException(className, target) =>
-            revertToDependencies(className, Some(target))
-          case _: ClassNotFoundException =>
-            revertToDependencies(className, buildTarget = None)
-        }
-        found match {
-          case Nil => Failure(ex)
-          case deps => Success(deps)
-        }
+    ).recoverWith { case ex =>
+      val found = ex match {
+        // We check whether there is a main in dependencies that is not reported via BSP
+        case ClassNotFoundInBuildTargetException(className, target) =>
+          revertToDependencies(className, Some(target))
+        case _: ClassNotFoundException =>
+          revertToDependencies(className, buildTarget = None)
+      }
+      found match {
+        case Nil => Failure(ex)
+        case deps => Success(deps)
+      }
     }
   }
 
-  //In case of success returns non-empty list
+  // In case of success returns non-empty list
   def findTestClassAndItsBuildTarget(
       className: String,
       buildTarget: Option[String]
   ): Try[List[(String, b.BuildTarget)]] =
-    findClassAndBuildTarget(
+    findClassAndBuildTarget[String](
       className,
       buildTarget,
       buildTargetClasses.findTestClassByName(_),
-      buildTargetClasses.classesOf(_).testClasses.values,
-      { clazz: String => clazz }
+      id =>
+        buildTargetClasses
+          .classesOf(id)
+          .testClasses
+          .values
+          .map(_.fullyQualifiedName),
+      clazz => clazz
     )
 
   private def revertToDependencies(
@@ -97,11 +101,11 @@ class BuildTargetClassesFinder(
     buildTarget.fold {
       val classes =
         findClassesByName(className)
-          .collect {
-            case (clazz, BuildTargetIdOf(buildTarget)) => (clazz, buildTarget)
+          .collect { case (clazz, BuildTargetIdOf(buildTarget)) =>
+            (clazz, buildTarget)
           }
-          .sortBy {
-            case (_, target) => buildTargets.buildTargetsOrder(target.getId())
+          .sortBy { case (_, target) =>
+            buildTargets.buildTargetsOrder(target.getId())
           }
           .reverse
       if (classes.nonEmpty) Success(classes)
@@ -144,9 +148,26 @@ class BuildTargetClassesFinder(
 case class BuildTargetNotFoundException(buildTargetName: String)
     extends Exception(s"Build target not found: $buildTargetName")
 
+case class BuildTargetUndefinedException()
+    extends Exception("Debugger configuration is missing 'buildTarget' param.")
+
 case class ClassNotFoundInBuildTargetException(
     className: String,
     buildTarget: b.BuildTarget
 ) extends Exception(
       s"Class '$className' not found in build target '${buildTarget.getDisplayName()}'"
+    )
+case class BuildTargetNotFoundForPathException(path: AbsolutePath)
+    extends Exception(
+      s"No build target could be found for the path: ${path.toString()}"
+    )
+case class BuildTargetContainsNoMainException(buildTargetName: String)
+    extends Exception(
+      s"No main could be found in build target: $buildTargetName"
+    )
+case class NoTestsFoundException(
+    testType: String,
+    name: String
+) extends Exception(
+      s"No tests could be found in ${testType}: $name"
     )

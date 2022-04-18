@@ -3,6 +3,7 @@ package scala.meta.internal.pc.completions
 import scala.collection.immutable.Nil
 import scala.collection.mutable
 
+import scala.meta.internal.pc.AutoImportPosition
 import scala.meta.internal.pc.CompletionFuzzy
 import scala.meta.internal.pc.Identifier
 import scala.meta.internal.pc.MetalsGlobal
@@ -43,7 +44,6 @@ trait OverrideCompletions { this: MetalsGlobal =>
   ) extends CompletionPosition {
     val prefix: String = name.toString.stripSuffix(CURSOR)
     val typed: Tree = typedTreeAt(t.pos)
-    val isDecl: Set[Symbol] = typed.tpe.decls.toSet
     val range: l.Range = pos.withStart(start).withEnd(pos.point).toLSP
     val lineStart: RunId = pos.source.lineToOffset(pos.line - 1)
 
@@ -189,7 +189,9 @@ trait OverrideCompletions { this: MetalsGlobal =>
         }
 
       val history = new ShortenedNames(
-        lookupSymbol = { name => context.lookupSymbol(name, _ => true) :: Nil },
+        lookupSymbol = { name =>
+          context.lookupSymbol(name, sym => !sym.isStale) :: Nil
+        },
         config = renameConfig,
         renames = re,
         owners = owners
@@ -205,7 +207,8 @@ trait OverrideCompletions { this: MetalsGlobal =>
       )
 
       val overrideKeyword: String =
-        if (!sym.isAbstract || shouldAddOverrideKwd) "override "
+        if ((!sym.isAbstract || shouldAddOverrideKwd) && !sym.isOverride)
+          "override "
         // Don't insert `override` keyword if the supermethod is abstract and the
         // user did not explicitly type starting with o . See:
         // https://github.com/scalameta/metals/issues/565#issuecomment-472761240
@@ -322,36 +325,20 @@ trait OverrideCompletions { this: MetalsGlobal =>
     // make sure the compilation unit is loaded
     typedTreeAt(pos)
 
-    lastVisitedParentTrees match {
-
+    val template = lastVisitedParentTrees.collectFirst {
       // class Foo extends Bar {}
-      // ~~~~~~~~~~~~~~~~~~~~~~~~
-      case (c: ClassDef) :: _ =>
-        val t = c.impl
-        implementAllFor(t)
-
+      case clz: ClassDef => clz.impl
       // object Foo extends Bar {}
-      // ~~~~~~~~~~~~~~~~~~~~~~~~
-      case (m: ModuleDef) :: _ =>
-        val t = m.impl
-        implementAllFor(t)
-
+      case module: ModuleDef => module.impl
       // new Foo {}
-      //     ~~~~~~
-      case (_: Ident) ::
-          (t: Template) :: _ =>
-        implementAllFor(t)
-
-      // new Foo[T] {}
-      //     ~~~~~~~~~
-      case (_: Ident) ::
-          (_: AppliedTypeTree) ::
-          (t: Template) :: _ =>
-        implementAllFor(t)
-
-      case _ =>
-        Nil
+      case t: Template => t
     }
+
+    template match {
+      case Some(t) => implementAllFor(t)
+      case None => Nil
+    }
+
   }
 
   /**

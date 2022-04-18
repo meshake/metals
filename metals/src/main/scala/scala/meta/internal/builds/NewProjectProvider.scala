@@ -10,20 +10,18 @@ import scala.util.matching.Regex
 import scala.meta.internal.metals.ClientCommands
 import scala.meta.internal.metals.ClientConfiguration
 import scala.meta.internal.metals.Icons
-import scala.meta.internal.metals.JsonParser._
 import scala.meta.internal.metals.Messages._
 import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.MetalsInputBoxParams
-import scala.meta.internal.metals.MetalsLanguageClient
-import scala.meta.internal.metals.MetalsOpenWindowParams
-import scala.meta.internal.metals.MetalsQuickPickItem
-import scala.meta.internal.metals.MetalsQuickPickParams
 import scala.meta.internal.metals.StatusBar
+import scala.meta.internal.metals.clients.language.MetalsInputBoxParams
+import scala.meta.internal.metals.clients.language.MetalsLanguageClient
+import scala.meta.internal.metals.clients.language.MetalsOpenWindowParams
+import scala.meta.internal.metals.clients.language.MetalsQuickPickItem
+import scala.meta.internal.metals.clients.language.MetalsQuickPickParams
 import scala.meta.internal.process.ExitCodes
 import scala.meta.io.AbsolutePath
 
 import coursierapi._
-import org.eclipse.lsp4j.ExecuteCommandParams
 
 class NewProjectProvider(
     client: MetalsLanguageClient,
@@ -52,7 +50,7 @@ class NewProjectProvider(
         ) {
           // Matches:
           // - [jimschubert/finatra.g8](https://github.com/jimschubert/finatra.g8)
-          //(A simple Finatra 2.5 template with sbt-revolver and sbt-native-packager)
+          // (A simple Finatra 2.5 template with sbt-revolver and sbt-native-packager)
           val all = for {
             result <- Try(requests.get(templatesUrl)).toOption.toIterable
             _ = if (result.statusCode != 200)
@@ -78,10 +76,9 @@ class NewProjectProvider(
       .flatMapOption { template =>
         askForPath(Some(base)).mapOptionInside { path => (template, path) }
       }
-      .flatMapOption {
-        case (template, path) =>
-          askForName(nameFromPath(template.id), NewScalaProject.enterName)
-            .map { name => Some((template, path, name)) }
+      .flatMapOption { case (template, path) =>
+        askForName(nameFromPath(template.id), NewScalaProject.enterName)
+          .map { name => Some((template, path, name)) }
       }
       .flatMap {
         case Some((template, inputPath, Some(projectName))) =>
@@ -100,7 +97,7 @@ class NewProjectProvider(
       template: String,
       projectName: String
   ): Future[Unit] = {
-    val projectPath = inputPath.resolve(projectName)
+    val projectPath = inputPath.resolve(projectName.toLowerCase())
     val parent = projectPath.parent
     projectPath.createDirectories()
     val command = List(
@@ -131,14 +128,9 @@ class NewProjectProvider(
     def openWindow(newWindow: Boolean) = {
       val params = MetalsOpenWindowParams(
         projectPath.toURI.toString(),
-        new java.lang.Boolean(newWindow)
+        java.lang.Boolean.valueOf(newWindow)
       )
-      val command = new ExecuteCommandParams(
-        ClientCommands.OpenFolder.id,
-        List[Object](
-          params.toJsonObject
-        ).asJava
-      )
+      val command = ClientCommands.OpenFolder.toExecuteCommandParams(params)
       client.metalsExecuteClientCommand(command)
     }
 
@@ -171,7 +163,7 @@ class NewProjectProvider(
         )
       )
       .asScala
-      .flatMap {
+      .flatMapOption {
         case kind if kind.itemId == NewProjectProvider.more.id =>
           askForTemplate(allTemplatesFromWeb)
         case kind if kind.itemId == NewProjectProvider.back.id =>
@@ -185,12 +177,11 @@ class NewProjectProvider(
                 NewProjectProvider.custom.description
               )
             }
-        case kind if !kind.cancelled =>
+        case kind =>
           Future.successful(
             templates
               .find(_.id == kind.itemId)
           )
-        case _ => Future.successful(None)
       }
   }
 
@@ -207,11 +198,9 @@ class NewProjectProvider(
           )
         )
         .asScala
-        .flatMap {
-          case name if !name.cancelled && name.value.nonEmpty =>
+        .flatMapOption {
+          case name if name.value.nonEmpty =>
             Future.successful(Some(name.value))
-          case name if name.cancelled =>
-            Future.successful(None)
           // reask if empty
           case _ => askForName(default, prompt)
         }
@@ -254,9 +243,7 @@ class NewProjectProvider(
         )
       )
       .asScala
-      .flatMap {
-        case path if path.cancelled =>
-          Future.successful(None)
+      .flatMapOption {
         case path if path.itemId == currentDir.id =>
           Future.successful(from)
         case path if path.itemId == parentDir.id =>
@@ -343,9 +330,9 @@ object NewProjectProvider {
         description = "Scala Native"
       ),
       MetalsQuickPickItem(
-        id = "lampepfl/dotty.g8",
-        label = "lampepfl/dotty.g8",
-        description = "A template for trying out Dotty"
+        id = "scala/scala3.g8",
+        label = "scala/scala3.g8",
+        description = "A template for trying out Scala 3"
       ),
       MetalsQuickPickItem(
         id = "http4s/http4s.g8",

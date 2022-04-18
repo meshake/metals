@@ -2,10 +2,12 @@ package tests
 
 import scala.concurrent.Future
 
+import scala.meta.internal.pc.Identifier
+
 import munit.Location
 import munit.TestOptions
 
-class BaseRenameLspSuite(name: String) extends BaseLspSuite(name) {
+abstract class BaseRenameLspSuite(name: String) extends BaseLspSuite(name) {
 
   protected def libraryDependencies: List[String] = Nil
   protected def compilerPlugins: List[String] = Nil
@@ -28,8 +30,10 @@ class BaseRenameLspSuite(name: String) extends BaseLspSuite(name) {
       nonOpened: Set[String] = Set.empty,
       breakingChange: String => String = identity[String],
       fileRenames: Map[String, String] = Map.empty,
-      scalaVersion: Option[String] = None
-  )(implicit loc: Location): Unit =
+      scalaVersion: Option[String] = None,
+      expectedError: Boolean = false,
+      metalsJson: Option[String] = None
+  )(implicit loc: Location): Unit = {
     check(
       name,
       input,
@@ -38,8 +42,11 @@ class BaseRenameLspSuite(name: String) extends BaseLspSuite(name) {
       nonOpened = nonOpened,
       breakingChange,
       fileRenames,
-      scalaVersion
+      scalaVersion,
+      expectedError,
+      metalsJson = metalsJson
     )
+  }
 
   private def check(
       name: TestOptions,
@@ -49,24 +56,26 @@ class BaseRenameLspSuite(name: String) extends BaseLspSuite(name) {
       nonOpened: Set[String] = Set.empty,
       breakingChange: String => String = identity[String],
       fileRenames: Map[String, String] = Map.empty,
-      scalaVersion: Option[String] = None
+      scalaVersion: Option[String] = None,
+      expectedError: Boolean = false,
+      metalsJson: Option[String] = None
   )(implicit loc: Location): Unit = {
     test(name) {
       cleanWorkspace()
       val allMarkersRegex = "(<<|>>|@@|##.*##)"
       val files = FileLayout.mapFromString(input)
-      val expectedFiles = files.map {
-        case (file, code) =>
-          fileRenames.getOrElse(file, file) -> {
-            val expected = if (!notRenamed) {
-              code
-                .replaceAll("\\<\\<\\S*\\>\\>", newName)
-                .replaceAll("(##|@@)", "")
-            } else {
-              code.replaceAll(allMarkersRegex, "")
-            }
-            "\n" + breakingChange(expected)
+      val expectedName = Identifier.backtickWrap(newName)
+      val expectedFiles = files.map { case (file, code) =>
+        fileRenames.getOrElse(file, file) -> {
+          val expected = if (!notRenamed) {
+            code
+              .replaceAll("\\<\\<\\S*\\>\\>", expectedName)
+              .replaceAll("(##|@@)", "")
+          } else {
+            code.replaceAll(allMarkersRegex, "")
           }
+          "\n" + breakingChange(expected)
+        }
       }
 
       val (filename, edit) = files
@@ -79,21 +88,10 @@ class BaseRenameLspSuite(name: String) extends BaseLspSuite(name) {
 
       val openedFiles = files.keySet.diff(nonOpened)
       val fullInput = input.replaceAll(allMarkersRegex, "")
-      val actualScalaVersion = scalaVersion.getOrElse(BuildInfo.scalaVersion)
       for {
-        _ <- server.initialize(
+        _ <- initialize(
           s"""/metals.json
-             |{
-             |  "a" : {
-             |    "scalaVersion": "$actualScalaVersion",
-             |    "compilerPlugins": ${toJsonArray(compilerPlugins)},
-             |    "libraryDependencies": ${toJsonArray(libraryDependencies)}
-             |  },
-             |  "b" : {
-             |    "scalaVersion": "$actualScalaVersion",
-             |    "dependsOn": [ "a" ]
-             |  }
-             |}
+             |${metalsJson.getOrElse(defaultMetalsJson(scalaVersion))}
              |$fullInput""".stripMargin
         )
         _ <- Future.sequence {
@@ -105,6 +103,7 @@ class BaseRenameLspSuite(name: String) extends BaseLspSuite(name) {
             server.didSave(file) { code => breakingChange(code) }
           }
         }
+        _ = if (!expectedError) assertNoDiagnostics()
         // change the code to make sure edit distance is being used
         _ <- Future.sequence {
           openedFiles.map { file =>
@@ -120,5 +119,20 @@ class BaseRenameLspSuite(name: String) extends BaseLspSuite(name) {
         )
       } yield ()
     }
+  }
+
+  private def defaultMetalsJson(scalaVersion: Option[String]): String = {
+    val actualScalaVersion = scalaVersion.getOrElse(BuildInfo.scalaVersion)
+    s"""|{
+        |  "a" : {
+        |    "scalaVersion": "$actualScalaVersion",
+        |    "compilerPlugins": ${toJsonArray(compilerPlugins)},
+        |    "libraryDependencies": ${toJsonArray(libraryDependencies)}
+        |  },
+        |  "b" : {
+        |    "scalaVersion": "$actualScalaVersion",
+        |    "dependsOn": [ "a" ]
+        |  }
+        |}""".stripMargin
   }
 }

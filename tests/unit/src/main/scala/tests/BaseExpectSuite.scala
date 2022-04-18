@@ -11,7 +11,7 @@ import scala.meta.io.Classpath
  * Exposes useful methods to lookup metadata about the input project.
  */
 abstract class BaseExpectSuite(val suiteName: String) extends BaseSuite {
-  lazy val input: InputProperties = InputProperties.default()
+  lazy val input: InputProperties = InputProperties.scala2()
 
   lazy val symtab: GlobalSymbolTable = {
     val bootClasspath =
@@ -27,7 +27,8 @@ abstract class BaseExpectSuite(val suiteName: String) extends BaseSuite {
   }
   final lazy val sourceroot: AbsolutePath =
     AbsolutePath(BuildInfo.sourceroot)
-  final lazy val classpath =
+  final lazy val classpath: SemanticdbClasspath = {
     new SemanticdbClasspath(sourceroot, input.classpath)
+  }
   def saveExpect(): Unit
 }

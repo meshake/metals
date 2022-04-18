@@ -7,14 +7,19 @@ import scala.util.Failure
 import scala.util.Success
 import scala.util.Try
 
-import scala.meta.RelativePath
 import scala.meta.internal.jdk.CollectionConverters._
 import scala.meta.internal.mtags.Symbol
+import scala.meta.io.AbsolutePath
 import scala.meta.pc.PresentationCompilerConfig
 
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonPrimitive
+
+case class JavaFormatConfig(
+    eclipseFormatConfigPath: AbsolutePath,
+    eclipseFormatProfile: Option[String]
+)
 
 /**
  * Configuration that the user can override via workspace/didChangeConfiguration.
@@ -25,8 +30,8 @@ case class UserConfiguration(
     gradleScript: Option[String] = None,
     mavenScript: Option[String] = None,
     millScript: Option[String] = None,
-    scalafmtConfigPath: RelativePath = RelativePath(".scalafmt.conf"),
-    scalafixConfigPath: RelativePath = RelativePath(".scalafix.conf"),
+    scalafmtConfigPath: Option[AbsolutePath] = None,
+    scalafixConfigPath: Option[AbsolutePath] = None,
     symbolPrefixes: Map[String, String] =
       PresentationCompilerConfig.defaultSymbolPrefixes().asScala.toMap,
     worksheetScreenWidth: Int = 120,
@@ -35,9 +40,16 @@ case class UserConfiguration(
     bloopVersion: Option[String] = None,
     ammoniteJvmProperties: Option[List[String]] = None,
     superMethodLensesEnabled: Boolean = false,
+    showInferredType: Boolean = false,
+    showImplicitArguments: Boolean = false,
+    showImplicitConversionsAndClasses: Boolean = false,
     remoteLanguageServer: Option[String] = None,
     enableStripMarginOnTypeFormatting: Boolean = true,
-    excludedPackages: Option[List[String]] = None
+    enableIndentOnPaste: Boolean = false,
+    excludedPackages: Option[List[String]] = None,
+    fallbackScalaVersion: Option[String] = None,
+    testUserInterface: TestUserInterfaceKind = TestUserInterfaceKind.CodeLenses,
+    javaFormatConfig: Option[JavaFormatConfig] = None
 ) {
 
   def currentBloopVersion: String =
@@ -77,7 +89,7 @@ object UserConfiguration {
         "gradle-script",
         """empty string `""`.""",
         """"/usr/local/bin/gradle"""",
-        "gradle script",
+        "Gradle script",
         """Optional absolute path to a `gradle` executable to use for running `gradle bloopInstall`.
           |By default, Metals uses gradlew with 5.3.1 gradle version. Update this setting if your `gradle` script requires more customizations
           |like using environment variables.
@@ -87,7 +99,7 @@ object UserConfiguration {
         "maven-script",
         """empty string `""`.""",
         """"/usr/local/bin/mvn"""",
-        "maven script",
+        "Maven script",
         """Optional absolute path to a `maven` executable to use for generating bloop config.
           |By default, Metals uses mvnw maven wrapper with 3.6.1 maven version. Update this setting if your `maven` script requires more customizations
           |""".stripMargin
@@ -96,7 +108,7 @@ object UserConfiguration {
         "mill-script",
         """empty string `""`.""",
         """"/usr/local/bin/mill"""",
-        "mill script",
+        "Mill script",
         """Optional absolute path to a `mill` executable to use for running `mill mill.contrib.Bloop/install`.
           |By default, Metals uses mill wrapper script with 0.5.0 mill version. Update this setting if your `mill` script requires more customizations
           |like using environment variables.
@@ -104,12 +116,20 @@ object UserConfiguration {
       ),
       UserConfigurationOption(
         "scalafmt-config-path",
-        default.scalafmtConfigPath.toString,
+        """empty string `""`.""",
         """"project/.scalafmt.conf"""",
         "Scalafmt config path",
         """Optional custom path to the .scalafmt.conf file.
-          |Should be relative to the workspace root directory and use forward slashes / for file
-          |separators (even on Windows).
+          |Should be an absolute path and use forward slashes `/` for file separators (even on Windows).
+          |""".stripMargin
+      ),
+      UserConfigurationOption(
+        "scalafix-config-path",
+        """empty string `""`.""",
+        """"project/.scalafix.conf"""",
+        "Scalafix config path",
+        """Optional custom path to the .scalafix.conf file.
+          |Should be an absolute path and use forward slashes `/` for file separators (even on Windows).
           |""".stripMargin
       ),
       UserConfigurationOption(
@@ -145,9 +165,7 @@ object UserConfiguration {
             |""".stripMargin
       ),
       UserConfigurationOption(
-        "bloop-sbt-already-installed",
-        "false",
-        "false",
+        "bloop-sbt-already-installed", "false", "false",
         "Don't generate Bloop plugin file for sbt",
         "If true, Metals will not generate `metals.sbt` files under the assumption that sbt-bloop is already manually installed in the sbt build. Build import will fail with a 'not valid command bloopInstall' error in case Bloop is not manually installed in the build when using this option."
       ),
@@ -170,6 +188,45 @@ object UserConfiguration {
            |""".stripMargin
       ),
       UserConfigurationOption(
+        "show-inferred-type",
+        "false",
+        "false",
+        "Should display type annotations for inferred types",
+        """|When this option is enabled, each method that can have inferred types has them
+           |displayed either as additional decorations if they are supported by the editor or
+           |shown in the hover.
+           |""".stripMargin
+      ),
+      UserConfigurationOption(
+        "show-implicit-arguments",
+        "false",
+        "false",
+        "Should display implicit parameter at usage sites",
+        """|When this option is enabled, each method that has implicit arguments has them 
+           |displayed either as additional decorations if they are supported by the editor or 
+           |shown in the hover.
+           |""".stripMargin
+      ),
+      UserConfigurationOption(
+        "show-implicit-conversions-and-classes",
+        "false",
+        "false",
+        "Should display implicit conversion at usage sites",
+        """|When this option is enabled, each place where an implicit method or class is used has it 
+           |displayed either as additional decorations if they are supported by the editor or 
+           |shown in the hover.
+           |""".stripMargin
+      ),
+      UserConfigurationOption(
+        "enable-indent-on-paste",
+        "false",
+        "false",
+        "Should try adjust indentation on range formatting.",
+        """|When this option is enabled, when user pastes any snippet into a Scala file, Metals
+           |will try to adjust the indentation to that of the current cursor.
+           |""".stripMargin
+      ),
+      UserConfigurationOption(
         "remote-language-server",
         """empty string `""`.""",
         """"https://language-server.company.com/message"""",
@@ -179,32 +236,90 @@ object UserConfiguration {
           |See https://scalameta.org/metals/docs/contributors/remote-language-server.html for
           |documentation on remote language servers.
           |""".stripMargin
+      ),
+      UserConfigurationOption(
+        "fallback-scala-version",
+        BuildInfo.scala3,
+        BuildInfo.scala3,
+        "Default fallback Scala version",
+        """|The Scala compiler version that is used as the default or fallback in case a file 
+           |doesn't belong to any build target or the specified Scala version isn't supported by Metals.
+           |This applies to standalone Scala files, worksheets, and Ammonite scripts.
+        """.stripMargin
+      ),
+      UserConfigurationOption(
+        "test-user-interface", "Code Lenses", "test explorer",
+        "Test UI used for tests and test suites",
+        "Default way of handling tests and test suites."
+      ),
+      UserConfigurationOption(
+        "java-format.eclipse-config-path",
+        """empty string `""`.""",
+        """"formatters/eclipse-formatter.xml"""",
+        "Eclipse Java formatter config path",
+        """Optional custom path to the eclipse-formatter.xml file.
+          |Should be an absolute path and use forward slashes `/` for file separators (even on Windows).
+          |""".stripMargin
+      ),
+      UserConfigurationOption(
+        "java-format.eclipse-profile",
+        """empty string `""`.""",
+        """"GoogleStyle"""",
+        "Eclipse Java formatting profile",
+        """|If the Eclipse formatter file contains more than one profile then specify the required profile name.
+           |""".stripMargin
       )
     )
 
   def fromJson(
       json: JsonObject,
+      clientConfiguration: ClientConfiguration,
       properties: Properties = System.getProperties
   ): Either[List[String], UserConfiguration] = {
     val errors = ListBuffer.empty[String]
     val base: JsonObject =
       Option(json.getAsJsonObject("metals")).getOrElse(new JsonObject)
 
-    def getKey[A](key: String, f: JsonElement => Option[A]): Option[A] = {
+    def getKey[A](
+        key: String,
+        currentObject: JsonObject,
+        f: JsonElement => Option[A]
+    ): Option[A] = {
       def option[T](fn: String => T): Option[T] =
         Option(fn(key)).orElse(Option(fn(StringCase.kebabToCamel(key))))
       for {
         jsonValue <- option(k => properties.getProperty(s"metals.$k"))
           .filterNot(_.isEmpty())
           .map(prop => new JsonPrimitive(prop))
-          .orElse(option(base.get))
+          .orElse(option(currentObject.get))
         value <- f(jsonValue)
       } yield value
     }
-
-    def getStringKey(key: String): Option[String] =
+    def getSubKey(key: String): Option[JsonObject] =
       getKey(
         key,
+        base,
+        { value =>
+          Try(value.getAsJsonObject())
+            .fold(
+              _ => {
+                errors += s"json error: key '$key' should have value of type object but obtained $value"
+                None
+              },
+              Some(_)
+            )
+        }
+      )
+    def getStringKey(key: String): Option[String] =
+      getStringKeyOnObj(key, base)
+
+    def getStringKeyOnObj(
+        key: String,
+        currentObject: JsonObject
+    ): Option[String] =
+      getKey(
+        key,
+        currentObject,
         { value =>
           Try(value.getAsString)
             .fold(
@@ -221,6 +336,7 @@ object UserConfiguration {
     def getBooleanKey(key: String): Option[Boolean] =
       getKey(
         key,
+        base,
         { value =>
           Try(value.getAsBoolean())
             .fold(
@@ -246,6 +362,7 @@ object UserConfiguration {
     def getStringListKey(key: String): Option[List[String]] =
       getKey[List[String]](
         key,
+        base,
         { elem =>
           if (elem.isJsonArray()) {
             val parsed = elem.getAsJsonArray().asScala.flatMap { value =>
@@ -268,6 +385,7 @@ object UserConfiguration {
     def getStringMap(key: String): Option[Map[String, String]] =
       getKey(
         key,
+        base,
         { value =>
           Try {
             for {
@@ -291,12 +409,10 @@ object UserConfiguration {
       getStringKey("java-home")
     val scalafmtConfigPath =
       getStringKey("scalafmt-config-path")
-        .map(RelativePath(_))
-        .getOrElse(default.scalafmtConfigPath)
+        .map(AbsolutePath(_))
     val scalafixConfigPath =
       getStringKey("scalafix-config-path")
-        .map(RelativePath(_))
-        .getOrElse(default.scalafixConfigPath)
+        .map(AbsolutePath(_))
     val sbtScript =
       getStringKey("sbt-script")
     val gradleScript =
@@ -324,12 +440,43 @@ object UserConfiguration {
       getStringKey("bloop-version")
     val superMethodLensesEnabled =
       getBooleanKey("super-method-lenses-enabled").getOrElse(false)
+    val showInferredType =
+      getBooleanKey("show-inferred-type").getOrElse(false)
+    val showImplicitArguments =
+      getBooleanKey("show-implicit-arguments").getOrElse(false)
+    val showImplicitConversionsAndClasses =
+      getBooleanKey("show-implicit-conversions-and-classes").getOrElse(false)
     val remoteLanguageServer =
       getStringKey("remote-language-server")
     val enableStripMarginOnTypeFormatting =
       getBooleanKey("enable-strip-margin-on-type-formatting").getOrElse(true)
+    val enableIndentOnPaste =
+      getBooleanKey("enable-indent-on-paste").getOrElse(true)
     val excludedPackages =
       getStringListKey("excluded-packages")
+    // `automatic` should be treated as None
+    // It was added only to have a meaningful option value in vscode
+    val defaultScalaVersion =
+      getStringKey("fallback-scala-version").filter(_ != "automatic")
+    val disableTestCodeLenses = {
+      val isTestExplorerEnabled = clientConfiguration.isTestExplorerProvider()
+      getStringKey("test-user-interface").map(_.toLowerCase()) match {
+        case Some("test explorer") if isTestExplorerEnabled =>
+          TestUserInterfaceKind.TestExplorer
+        case _ =>
+          TestUserInterfaceKind.CodeLenses
+      }
+    }
+    val javaFormatConfig =
+      getSubKey("java-format").flatMap(subKey =>
+        getStringKeyOnObj("eclipse-config-path", subKey).map(f =>
+          JavaFormatConfig(
+            AbsolutePath(f),
+            getStringKeyOnObj("eclipse-profile", subKey)
+          )
+        )
+      )
+
     if (errors.isEmpty) {
       Right(
         UserConfiguration(
@@ -347,9 +494,16 @@ object UserConfiguration {
           bloopVersion,
           ammoniteProperties,
           superMethodLensesEnabled,
+          showInferredType,
+          showImplicitArguments,
+          showImplicitConversionsAndClasses,
           remoteLanguageServer,
           enableStripMarginOnTypeFormatting,
-          excludedPackages
+          enableIndentOnPaste,
+          excludedPackages,
+          defaultScalaVersion,
+          disableTestCodeLenses,
+          javaFormatConfig
         )
       )
     } else {
@@ -362,4 +516,10 @@ object UserConfiguration {
     s"""{"metals": $config}""".parseJson.getAsJsonObject
   }
 
+}
+
+sealed trait TestUserInterfaceKind
+object TestUserInterfaceKind {
+  object CodeLenses extends TestUserInterfaceKind
+  object TestExplorer extends TestUserInterfaceKind
 }

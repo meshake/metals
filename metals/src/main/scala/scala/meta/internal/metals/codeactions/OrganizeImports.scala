@@ -1,98 +1,159 @@
 package scala.meta.internal.metals.codeactions
 
-import java.nio.file.Path
-import java.util.{List => JList}
-
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 
 import scala.meta.internal.metals.BuildTargets
 import scala.meta.internal.metals.CodeAction
+import scala.meta.internal.metals.Diagnostics
 import scala.meta.internal.metals.MetalsEnrichments.XtensionString
 import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.ScalaVersions
+import scala.meta.internal.metals.ScalaTarget
+import scala.meta.internal.metals.ScalacDiagnostic
 import scala.meta.internal.metals.ScalafixProvider
+import scala.meta.internal.metals.clients.language.MetalsLanguageClient
 import scala.meta.io.AbsolutePath
 import scala.meta.pc.CancelToken
 
 import org.eclipse.lsp4j.CodeActionParams
 import org.eclipse.{lsp4j => l}
 
-final class OrganizeImports(
+sealed abstract class OrganizeImports(
     scalafixProvider: ScalafixProvider,
     buildTargets: BuildTargets
-) extends CodeAction {
-  import OrganizeImports._
+)(implicit ec: ExecutionContext)
+    extends CodeAction {
 
-  override def kind: String = OrganizeImports.kind
-
+  protected def title: String
+  protected def isCallAllowed(
+      file: AbsolutePath,
+      params: CodeActionParams
+  ): Boolean
   override def contribute(params: CodeActionParams, token: CancelToken)(implicit
       ec: ExecutionContext
   ): Future[Seq[l.CodeAction]] = {
     val uri = params.getTextDocument.getUri
     val file = uri.toAbsolutePath
-    if (isSourceOrganizeImportCalled(params) && isScalaOrSbt(file)) {
-      ScalafixProvider.scalaVersionAndClasspath(file, buildTargets) match {
-        case Some((scalaVersion, scalaBinaryVersion, classpath))
-            if !ScalaVersions.isScala3Version(scalaVersion) =>
-          organizeImportsEdits(
-            file,
-            scalaVersion,
-            scalaBinaryVersion,
-            classpath
-          )
-        case Some((scalaVersion, _, _))
-            if ScalaVersions.isScala3Version(scalaVersion) =>
-          scribe.info(s"Organize import doesn't work on $scalaVersion files")
-          Future.successful(Seq())
+
+    if (isCallAllowed(file, params)) {
+      val scalaTarget = for {
+        buildId <- buildTargets.inverseSources(file)
+        target <- buildTargets.scalaTarget(buildId)
+      } yield target
+      scalaTarget match {
+        case Some(target) =>
+          organizeImportsEdits(file, target)
         case _ => Future.successful(Seq())
       }
     } else Future.successful(Seq())
-
   }
 
   private def organizeImportsEdits(
       path: AbsolutePath,
-      scalaVersion: ScalaVersion,
-      scalaBinaryVersion: ScalaBinaryVersion,
-      classpath: JList[Path]
+      scalaVersion: ScalaTarget
   ): Future[Seq[l.CodeAction]] = {
-    val edits = scalafixProvider.organizeImports(
-      path,
-      scalaVersion,
-      scalaBinaryVersion,
-      classpath
-    )
-    val codeAction = new l.CodeAction()
-    codeAction.setTitle(OrganizeImports.title)
-    codeAction.setKind(l.CodeActionKind.SourceOrganizeImports)
-    codeAction.setEdit(
-      new l.WorkspaceEdit(
-        Map(path.toURI.toString -> edits.asJava).asJava
-      )
-    )
-    Future.successful {
-      Seq(codeAction)
-    }
-
+    scalafixProvider
+      .organizeImports(path, scalaVersion)
+      .map { edits =>
+        val codeAction = new l.CodeAction()
+        codeAction.setTitle(this.title)
+        codeAction.setKind(this.kind)
+        codeAction.setEdit(
+          new l.WorkspaceEdit(
+            Map(path.toURI.toString -> edits.asJava).asJava
+          )
+        )
+        Seq(codeAction)
+      }
   }
 
-  private def isSourceOrganizeImportCalled(
+  protected def isScalaOrSbt(file: AbsolutePath): Boolean =
+    Seq("scala", "sbt").contains(file.extension)
+}
+
+object OrganizeImports {}
+
+class SourceOrganizeImports(
+    scalafixProvider: ScalafixProvider,
+    buildTargets: BuildTargets,
+    diagnostics: Diagnostics,
+    languageClient: MetalsLanguageClient
+)(implicit ec: ExecutionContext)
+    extends OrganizeImports(
+      scalafixProvider,
+      buildTargets
+    ) {
+
+  override val kind: String = SourceOrganizeImports.kind
+  override protected val title: String = SourceOrganizeImports.title
+
+  override protected def isCallAllowed(
+      file: AbsolutePath,
+      params: CodeActionParams
+  ): Boolean = {
+    val validCall = isScalaOrSbt(file) && isSourceOrganizeImportCalled(params)
+    if (validCall) {
+      if (diagnostics.hasDiagnosticError(file)) {
+        languageClient.showMessage(
+          l.MessageType.Warning,
+          s"Fix ${file.toNIO.getFileName} before trying to organize your imports"
+        )
+        scribe.info("Can not organize imports if file has error")
+        false
+      } else {
+        true
+      }
+    } else {
+      false
+    }
+  }
+
+  protected def isSourceOrganizeImportCalled(
       params: CodeActionParams
   ): Boolean =
     Option(params.getContext.getOnly)
       .map(_.asScala.toList.contains(kind))
       .isDefined
+}
 
-  private def isScalaOrSbt(file: AbsolutePath): Boolean =
-    Seq("scala", "sbt").contains(file.extension)
+object SourceOrganizeImports {
+  final val kind: String = l.CodeActionKind.SourceOrganizeImports
+  final val title: String = "Organize imports"
+}
+
+class OrganizeImportsQuickFix(
+    scalafixProvider: ScalafixProvider,
+    buildTargets: BuildTargets,
+    diagnostics: Diagnostics
+)(implicit ec: ExecutionContext)
+    extends OrganizeImports(
+      scalafixProvider,
+      buildTargets
+    ) {
+
+  override val kind: String = OrganizeImportsQuickFix.kind
+  override protected val title: String = OrganizeImportsQuickFix.title
+  override protected def isCallAllowed(
+      file: AbsolutePath,
+      params: CodeActionParams
+  ): Boolean = {
+    val hasUnused = params
+      .getContext()
+      .getDiagnostics()
+      .asScala
+      .collect { case ScalacDiagnostic.UnusedImport(name) => name }
+      .nonEmpty
+
+    if (hasUnused && !diagnostics.hasDiagnosticError(file)) {
+      true
+    } else {
+      false
+    }
+  }
 
 }
-object OrganizeImports {
-  def title: String = "Organize imports"
-  def kind: String = l.CodeActionKind.SourceOrganizeImports
 
-  type ScalaBinaryVersion = String
-  type ScalaVersion = String
-
+object OrganizeImportsQuickFix {
+  final val kind: String = l.CodeActionKind.QuickFix
+  final val title: String = "Fix imports"
 }

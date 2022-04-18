@@ -13,6 +13,8 @@ import scala.meta.internal.mtags.Mtags
 import scala.meta.internal.mtags.Semanticdbs
 import scala.meta.internal.mtags.Symbol
 import scala.meta.internal.mtags.SymbolDefinition
+import scala.meta.internal.parsing.TokenEditDistance
+import scala.meta.internal.parsing.Trees
 import scala.meta.internal.remotels.RemoteLanguageServer
 import scala.meta.internal.semanticdb.Scala._
 import scala.meta.internal.semanticdb.SymbolOccurrence
@@ -20,6 +22,7 @@ import scala.meta.internal.semanticdb.TextDocument
 import scala.meta.io.AbsolutePath
 import scala.meta.pc.CancelToken
 
+import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import org.eclipse.lsp4j.Location
 import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.TextDocumentPositionParams
@@ -47,7 +50,11 @@ final class DefinitionProvider(
     semanticdbs: Semanticdbs,
     warnings: Warnings,
     compilers: () => Compilers,
-    remote: RemoteLanguageServer
+    remote: RemoteLanguageServer,
+    trees: Trees,
+    buildTargets: BuildTargets,
+    scalaVersionSelector: ScalaVersionSelector,
+    saveDefFileToDisk: Boolean
 )(implicit ec: ExecutionContext) {
 
   val destinationProvider = new DestinationProvider(
@@ -55,7 +62,10 @@ final class DefinitionProvider(
     buffers,
     mtags,
     workspace,
-    Some(semanticdbs)
+    Some(semanticdbs),
+    trees,
+    buildTargets,
+    saveDefFileToDisk
   )
 
   def definition(
@@ -78,7 +88,7 @@ final class DefinitionProvider(
         Future.successful(fromSnapshot)
       }
     fromIndex.flatMap { result =>
-      if (result.isEmpty) {
+      if (result.isEmpty && path.isScalaFilename) {
         compilers().definition(params, token)
       } else {
         if (fromSemanticdb.isEmpty) {
@@ -89,21 +99,54 @@ final class DefinitionProvider(
     }
   }
 
-  def fromSymbol(sym: String): ju.List[Location] =
-    destinationProvider.fromSymbol(sym).flatMap(_.toResult) match {
+  def fromSymbol(
+      sym: String,
+      source: Option[AbsolutePath]
+  ): ju.List[Location] = {
+    destinationProvider.fromSymbol(sym, source).flatMap(_.toResult) match {
       case None => ju.Collections.emptyList()
       case Some(destination) => destination.locations
     }
+  }
+
+  def fromSymbol(
+      sym: String,
+      targets: List[BuildTargetIdentifier]
+  ): ju.List[Location] = {
+    destinationProvider
+      .fromSymbol(sym, targets.toSet)
+      .flatMap(_.toResult) match {
+      case None => ju.Collections.emptyList()
+      case Some(destination) => destination.locations
+    }
+  }
+
+  def toLocation(
+      symbol: String,
+      targets: List[BuildTargetIdentifier]
+  ): Option[Location] =
+    for {
+      definitionDestination <- destinationProvider.fromSymbol(
+        symbol,
+        targets.toSet
+      )
+      if (symbol == definitionDestination.symbol)
+      definitionResult <- definitionDestination.toResult
+      location <- definitionResult.locations.asScala.toList
+        .filter(_.getUri == definitionDestination.uri)
+        .headOption
+    } yield location
 
   /**
    * Returns VirtualFile that contains the definition of
    * the given symbol (of semanticdb).
    */
   def definitionPathInputFromSymbol(
-      sym: String
+      sym: String,
+      source: Option[AbsolutePath]
   ): Option[Input.VirtualFile] =
-    index
-      .definition(Symbol(sym))
+    destinationProvider
+      .definition(sym, source)
       .map(symDef => symDef.path.toInputFromBuffers(buffers))
 
   def symbolOccurrence(
@@ -128,29 +171,66 @@ final class DefinitionProvider(
     } yield (symbolOccurrence, currentDocument)
   }
 
+  /** Convert dirty buffer position to snapshot position in "source" */
+  private def positionOccurrenceQuery(
+      source: AbsolutePath,
+      dirtyPosition: Position,
+      snapshot: TextDocument
+  ): (TokenEditDistance, Option[Position]) = {
+    val sourceDistance = buffers.tokenEditDistance(source, snapshot.text, trees)
+    val snapshotPosition = sourceDistance.toOriginal(
+      dirtyPosition.getLine,
+      dirtyPosition.getCharacter
+    )
+    (sourceDistance, snapshotPosition.toPosition(dirtyPosition))
+  }
+
   def positionOccurrence(
       source: AbsolutePath,
       dirtyPosition: Position,
       snapshot: TextDocument
   ): ResolvedSymbolOccurrence = {
-    // Convert dirty buffer position to snapshot position in "source"
-    val sourceDistance = buffers.tokenEditDistance(source, snapshot.text)
-    val snapshotPosition = sourceDistance.toOriginal(
-      dirtyPosition.getLine,
-      dirtyPosition.getCharacter
-    )
+    val (sourceDistance, queryPositionOpt) =
+      positionOccurrenceQuery(source, dirtyPosition, snapshot)
 
-    // Find matching symbol occurrence in SemanticDB snapshot
     val occurrence = for {
-      queryPosition <- snapshotPosition.toPosition(dirtyPosition)
+      queryPosition <- queryPositionOpt
       occurrence <-
         snapshot.occurrences
           .find(_.encloses(queryPosition, true))
           // In case of macros we might need to get the postion from the presentation compiler
           .orElse(fromMtags(source, queryPosition))
     } yield occurrence
-
     ResolvedSymbolOccurrence(sourceDistance, occurrence)
+  }
+
+  /**
+   * Find all SymbolOccurrences for the given position.
+   * Multiple symbols might be attached, for example
+   * extension parameter. see: https://github.com/scalameta/metals/issues/3133
+   */
+  def positionOccurrences(
+      source: AbsolutePath,
+      dirtyPosition: Position,
+      snapshot: TextDocument
+  ): List[ResolvedSymbolOccurrence] = {
+    val (sourceDistance, queryPositionOpt) =
+      positionOccurrenceQuery(source, dirtyPosition, snapshot)
+    // Find matching symbol occurrences in SemanticDB snapshot
+    val occurrence = (for {
+      queryPosition <- queryPositionOpt
+    } yield {
+      val occs = snapshot.occurrences
+        .filter(_.encloses(queryPosition, true))
+      // In case of macros we might need to get the postion from the presentation compiler
+      if (occs.isEmpty)
+        fromMtags(source, queryPosition).toList
+      else occs
+    }).getOrElse(Nil)
+
+    occurrence.map { occ =>
+      ResolvedSymbolOccurrence(sourceDistance, Some(occ))
+    }.toList
   }
 
   private def definitionFromSnapshot(
@@ -160,6 +240,7 @@ final class DefinitionProvider(
   ): DefinitionResult = {
     val ResolvedSymbolOccurrence(sourceDistance, occurrence) =
       positionOccurrence(source, dirtyPosition.getPosition, snapshot)
+
     // Find symbol definition location.
     val result: Option[DefinitionResult] = occurrence.flatMap { occ =>
       val isLocal = occ.symbol.isLocal || snapshot.definesSymbol(occ.symbol)
@@ -174,7 +255,9 @@ final class DefinitionProvider(
         ).toResult
       } else {
         // symbol is global so it is defined in an external destination buffer.
-        destinationProvider.fromSymbol(occ.symbol).flatMap(_.toResult)
+        destinationProvider
+          .fromSymbol(occ.symbol, Some(source))
+          .flatMap(_.toResult)
       }
     }
 
@@ -183,7 +266,7 @@ final class DefinitionProvider(
 
   private def fromMtags(source: AbsolutePath, dirtyPos: Position) = {
     Mtags
-      .allToplevels(source.toInput)
+      .allToplevels(source.toInput, scalaVersionSelector.getDialect(source))
       .occurrences
       .find(_.encloses(dirtyPos))
   }
@@ -203,7 +286,7 @@ case class DefinitionDestination(
    */
   def toResult: Option[DefinitionResult] =
     for {
-      location <- snapshot.definition(uri, symbol)
+      location <- snapshot.toLocation(uri, symbol)
       revisedPosition = distance.toRevised(
         location.getRange.getStart.getLine,
         location.getRange.getStart.getCharacter
@@ -224,7 +307,10 @@ class DestinationProvider(
     buffers: Buffers,
     mtags: Mtags,
     workspace: AbsolutePath,
-    semanticdbsFallback: Option[Semanticdbs]
+    semanticdbsFallback: Option[Semanticdbs],
+    trees: Trees,
+    buildTargets: BuildTargets,
+    saveSymbolFileToDisk: Boolean
 ) {
 
   private def bestTextDocument(
@@ -234,7 +320,11 @@ class DestinationProvider(
     // Read text file from disk instead of editor buffers because the file
     // on disk is more likely to parse.
     lazy val parsed =
-      mtags.index(symbolDefinition.path.toLanguage, defnRevisedInput)
+      mtags.index(
+        symbolDefinition.path.toLanguage,
+        defnRevisedInput,
+        symbolDefinition.dialect
+      )
 
     if (symbolDefinition.path.isAmmoniteScript || parsed.occurrences.isEmpty) {
       // Fall back to SemanticDB on disk, if any
@@ -248,22 +338,87 @@ class DestinationProvider(
     }
   }
 
-  def fromSymbol(symbol: String): Option[DefinitionDestination] = {
-    for {
-      symbolDefinition <- index.definition(Symbol(symbol))
-      if symbolDefinition.path.exists
-      destinationDoc = bestTextDocument(symbolDefinition)
-      destinationPath = symbolDefinition.path.toFileOnDisk(workspace)
-      destinationDistance =
-        buffers.tokenEditDistance(destinationPath, destinationDoc.text)
-    } yield {
+  def definition(
+      symbol: String,
+      source: Option[AbsolutePath]
+  ): Option[SymbolDefinition] = {
+    val targets = source.map(sourceToAllowedBuildTargets).getOrElse(Set.empty)
+    definition(symbol, targets)
+  }
+
+  def definition(
+      symbol: String,
+      allowedBuildTargets: Set[BuildTargetIdentifier]
+  ): Option[SymbolDefinition] = {
+    val definitions = index.definitions(Symbol(symbol)).filter(_.path.exists)
+    if (allowedBuildTargets.isEmpty)
+      definitions.headOption
+    else {
+      val matched = definitions.find { defn =>
+        sourceBuildTargets(defn.path).exists(id =>
+          allowedBuildTargets.contains(id)
+        )
+      }
+      // Fallback to any definition - it's needed for worksheets
+      // They might have dynamic `import $dep` and these sources jars
+      // aren't registered in buildTargets
+      matched.orElse(definitions.headOption)
+    }
+  }
+
+  private def sourceBuildTargets(
+      source: AbsolutePath
+  ): List[BuildTargetIdentifier] = {
+    def trivialSource: Option[List[BuildTargetIdentifier]] =
+      buildTargets.sourceBuildTargets(source).map(_.toList).filter(_.nonEmpty)
+
+    def dependencySource: Option[List[BuildTargetIdentifier]] = {
+      source.jarPath
+        .map(path => buildTargets.inverseDependencySource(path).toList)
+        .filter(_.nonEmpty)
+    }
+
+    trivialSource
+      .orElse(dependencySource)
+      .orElse(buildTargets.sbtBuildScalaTarget(source).map(List(_)))
+      .getOrElse(List.empty)
+  }
+
+  def fromSymbol(
+      symbol: String,
+      allowedBuildTargets: Set[BuildTargetIdentifier]
+  ): Option[DefinitionDestination] = {
+    definition(symbol, allowedBuildTargets).map { defn =>
+      val destinationDoc = bestTextDocument(defn)
+      val destinationPath =
+        if (saveSymbolFileToDisk) defn.path.toFileOnDisk(workspace)
+        else defn.path
+      val destinationDistance =
+        buffers.tokenEditDistance(destinationPath, destinationDoc.text, trees)
       DefinitionDestination(
         destinationDoc,
         destinationDistance,
-        symbolDefinition.definitionSymbol.value,
+        defn.definitionSymbol.value,
         Some(destinationPath),
         destinationPath.toURI.toString
       )
+    }
+  }
+
+  def fromSymbol(
+      symbol: String,
+      source: Option[AbsolutePath]
+  ): Option[DefinitionDestination] = {
+    val targets = source.map(sourceToAllowedBuildTargets).getOrElse(Set.empty)
+    fromSymbol(symbol, targets)
+  }
+
+  private def sourceToAllowedBuildTargets(
+      source: AbsolutePath
+  ): Set[BuildTargetIdentifier] = {
+    buildTargets.inverseSources(source) match {
+      case None => Set.empty
+      case Some(id) => buildTargets.buildTargetTransitiveDependencies(id).toSet
     }
   }
 }

@@ -40,8 +40,8 @@ final class GlobalClassTable(
     synchronized {
       for {
         buildTargetId <- buildTargets.inverseSources(source)
-        scalaTarget <- buildTargets.scalaTarget(buildTargetId)
-        classpath = new Classpath(scalaTarget.jarClasspath)
+        jarClasspath <- buildTargets.targetJarClasspath(buildTargetId)
+        classpath = new Classpath(jarClasspath)
       } yield {
         buildTargetsIndexes.getOrElseUpdate(
           buildTargetId,
@@ -90,9 +90,8 @@ final class GlobalClassTable(
       infos = (allParents.map(_._1) -- calculated).flatMap(symTab.safeInfo)
     }
 
-    val inheritance = results.groupBy(_._1).map {
-      case (symbol, locations) =>
-        symbol -> locations.map(_._2).toSet
+    val inheritance = results.groupBy(_._1).map { case (symbol, locations) =>
+      symbol -> locations.map(_._2).toSet
     }
     context.withClasspathContext(inheritance)
   }

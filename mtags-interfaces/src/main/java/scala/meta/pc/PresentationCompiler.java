@@ -8,11 +8,12 @@ import org.eclipse.lsp4j.SignatureHelp;
 import org.eclipse.lsp4j.TextEdit;
 
 import org.eclipse.lsp4j.Diagnostic;
+import org.eclipse.lsp4j.ExecuteCommandParams;
 import org.eclipse.lsp4j.DocumentSymbol;
 import org.eclipse.lsp4j.DocumentRangeFormattingParams;
 import org.eclipse.lsp4j.TextEdit;
 import org.eclipse.lsp4j.DocumentOnTypeFormattingParams;
-import org.eclipse.lsp4j.FoldingRange;
+import org.eclipse.lsp4j.SelectionRange;
 
 import java.net.URI;
 import java.nio.file.Path;
@@ -74,6 +75,12 @@ public abstract class PresentationCompiler {
     public abstract CompletableFuture<DefinitionResult> definition(OffsetParams params);
 
     /**
+     * Return decoded and pretty printed TASTy content for .scala or .tasty file.
+
+     */
+    public abstract CompletableFuture<String> getTasty(URI targetUri, boolean isHttpEnabled);
+
+    /**
      * Return the necessary imports for a symbol at the given position.
      */
     public abstract CompletableFuture<List<AutoImportsResult>> autoImports(String name, OffsetParams params);
@@ -82,6 +89,11 @@ public abstract class PresentationCompiler {
      * Return the missing implements and imports for the symbol at the given position.
      */
     public abstract CompletableFuture<List<TextEdit>> implementAbstractMembers(OffsetParams params);
+
+    /**
+     * Return the missing implements and imports for the symbol at the given position.
+     */
+    public abstract CompletableFuture<List<TextEdit>> insertInferredType(OffsetParams params);
 
     /**
      * The text contents of the fiven file changed.
@@ -94,29 +106,14 @@ public abstract class PresentationCompiler {
     public abstract void didClose(URI uri);
 
     /**
-     * Ranges where the document can be collapsed.
-     */
-    public abstract CompletableFuture<List<FoldingRange>> foldingRange(VirtualFileParams params);
-
-    /**
-     * Formatting changes after pressing specified keys
-     */
-    public abstract CompletableFuture<List<TextEdit>> onTypeFormatting(DocumentOnTypeFormattingParams params, String source);
-    
-    /**
-     * Formatting changes after pasting a part of a file
-     */
-    public abstract CompletableFuture<List<TextEdit>> rangeFormatting(DocumentRangeFormattingParams params, String source);
-
-    /**
-     * All symbols inside a text document
-     */
-    public abstract CompletableFuture<List<DocumentSymbol>> documentSymbols(VirtualFileParams params);
-    
-    /**
      * Returns the Protobuf byte array representation of a SemanticDB <code>TextDocument</code> for the given source.
      */
-    public abstract CompletableFuture<byte[]> semanticdbTextDocument(String filename, String code);
+    public abstract CompletableFuture<byte[]> semanticdbTextDocument(URI filename, String code);
+
+    /**
+     * Return the selections ranges for the given positions. 
+     */
+    public abstract CompletableFuture<List<SelectionRange>> selectionRange(List<OffsetParams> params);
 
     // =================================
     // Configuration and lifecycle APIs.
@@ -212,8 +209,4 @@ public abstract class PresentationCompiler {
      */
     public abstract String scalaVersion();
 
-    /**
-     * Returns enclosing class or object for a cursor position
-     */
-    public abstract CompletableFuture<Optional<String>> enclosingClass(OffsetParams params);
 }

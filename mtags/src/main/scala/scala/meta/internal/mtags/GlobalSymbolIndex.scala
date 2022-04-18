@@ -1,6 +1,8 @@
 package scala.meta.internal.mtags
 
+import scala.meta.Dialect
 import scala.meta.internal.mtags
+import scala.meta.internal.{semanticdb => s}
 import scala.meta.io.AbsolutePath
 
 /**
@@ -33,6 +35,8 @@ trait GlobalSymbolIndex {
    */
   def definition(symbol: mtags.Symbol): Option[SymbolDefinition]
 
+  def definitions(symbol: mtags.Symbol): List[SymbolDefinition]
+
   /**
    * Add an individual Java or Scala source file to the index.
    *
@@ -49,8 +53,9 @@ trait GlobalSymbolIndex {
    */
   def addSourceFile(
       file: AbsolutePath,
-      sourceDirectory: Option[AbsolutePath]
-  ): Unit
+      sourceDirectory: Option[AbsolutePath],
+      dialect: Dialect
+  ): List[String]
 
   /**
    * Index a jar or zip file containing Scala and Java source files.
@@ -80,17 +85,25 @@ trait GlobalSymbolIndex {
    *                   such as tokenization failure due to an unclosed
    *                   literal.
    */
-  def addSourceJar(jar: AbsolutePath): Unit
+  def addSourceJar(
+      jar: AbsolutePath,
+      dialect: Dialect
+  ): List[(String, AbsolutePath)]
 
   /**
    * The same as `addSourceJar` except for directories
    */
-  def addSourceDirectory(dir: AbsolutePath): Unit
+  def addSourceDirectory(
+      dir: AbsolutePath,
+      dialect: Dialect
+  ): List[(String, AbsolutePath)]
 
 }
 
 case class SymbolDefinition(
     querySymbol: Symbol,
     definitionSymbol: Symbol,
-    path: AbsolutePath
+    path: AbsolutePath,
+    dialect: Dialect,
+    range: Option[s.Range]
 )

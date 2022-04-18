@@ -5,15 +5,18 @@ import java.util.concurrent.Executors
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.ExecutionContextExecutorService
+import scala.concurrent.Future
 import scala.util.control.NonFatal
 
 import scala.meta.internal.io.PathIO
 import scala.meta.internal.metals.Buffers
+import scala.meta.internal.metals.Debug
 import scala.meta.internal.metals.ExecuteClientCommandConfig
 import scala.meta.internal.metals.Icons
 import scala.meta.internal.metals.InitializationOptions
 import scala.meta.internal.metals.MetalsLogger
 import scala.meta.internal.metals.MetalsServerConfig
+import scala.meta.internal.metals.MtagsResolver
 import scala.meta.internal.metals.RecursivelyDelete
 import scala.meta.internal.metals.SlowTaskConfig
 import scala.meta.internal.metals.Time
@@ -22,11 +25,15 @@ import scala.meta.io.AbsolutePath
 
 import munit.Ignore
 import munit.Location
+import munit.TestOptions
 
 /**
  * Full end to end integration tests against a full metals language server.
  */
-abstract class BaseLspSuite(suiteName: String) extends BaseSuite {
+abstract class BaseLspSuite(
+    suiteName: String,
+    initializer: BuildServerInitializer = QuickBuildInitializer
+) extends BaseSuite {
   MetalsLogger.updateDefaultFormat()
   def icons: Icons = Icons.default
   def userConfig: UserConfiguration = UserConfiguration()
@@ -40,8 +47,16 @@ abstract class BaseLspSuite(suiteName: String) extends BaseSuite {
   var server: TestingServer = _
   var client: TestingClient = _
   var workspace: AbsolutePath = _
+  var onStartCompilation: () => Unit = () => ()
 
   protected def initializationOptions: Option[InitializationOptions] = None
+
+  private var useVirtualDocs = false
+
+  protected def useVirtualDocuments = useVirtualDocs
+
+  protected def mtagsResolver: MtagsResolver =
+    new TestMtagsResolver
 
   override def afterAll(): Unit = {
     if (server != null) {
@@ -51,11 +66,36 @@ abstract class BaseLspSuite(suiteName: String) extends BaseSuite {
     sh.shutdown()
   }
 
+  def writeLayout(layout: String): Unit = {
+    FileLayout.fromString(layout, workspace)
+  }
+
+  def initialize(layout: String, expectError: Boolean = false): Future[Unit] = {
+    Debug.printEnclosing()
+    writeLayout(layout)
+    initializer.initialize(workspace, server, client, layout, expectError)
+  }
+
   def assertConnectedToBuildServer(
       expectedName: String
   )(implicit loc: Location): Unit = {
     val obtained = server.server.bspSession.get.mainConnection.name
     assertNoDiff(obtained, expectedName)
+  }
+
+  def test(testOpts: TestOptions, withoutVirtualDocs: Boolean)(
+      fn: => Future[Unit]
+  )(implicit loc: Location) {
+    if (withoutVirtualDocs) {
+      test(testOpts.withName(s"${testOpts.name}-readonly")) { fn }
+      test(
+        testOpts
+          .withName(s"${testOpts.name}-virtualdoc")
+          .withTags(Set(TestingServer.virtualDocTag))
+      ) { fn }
+    } else {
+      test(testOpts)(fn)
+    }
   }
 
   def newServer(workspaceName: String): Unit = {
@@ -66,6 +106,9 @@ abstract class BaseLspSuite(suiteName: String) extends BaseSuite {
       icons = this.icons
     )
 
+    val initOptions = initializationOptions.map {
+      _.copy(isVirtualDocumentSupported = Some(useVirtualDocs))
+    }
     client = new TestingClient(workspace, buffers)
     server = new TestingServer(
       workspace,
@@ -75,7 +118,9 @@ abstract class BaseLspSuite(suiteName: String) extends BaseSuite {
       bspGlobalDirectories,
       sh,
       time,
-      initializationOptions
+      initOptions,
+      mtagsResolver,
+      onStartCompilation
     )(ex)
     server.server.userConfig = this.userConfig
   }
@@ -89,6 +134,7 @@ abstract class BaseLspSuite(suiteName: String) extends BaseSuite {
   override def beforeEach(context: BeforeEach): Unit = {
     cancelServer()
     if (context.test.tags.contains(Ignore)) return
+    useVirtualDocs = context.test.tags.contains(TestingServer.virtualDocTag)
     newServer(context.test.name)
   }
 

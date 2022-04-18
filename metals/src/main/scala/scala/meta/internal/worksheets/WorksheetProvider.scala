@@ -13,35 +13,41 @@ import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 
 import scala.meta._
+import scala.meta.inputs.Input.VirtualFile
 import scala.meta.internal.metals.AdjustLspData
 import scala.meta.internal.metals.AdjustedLspData
 import scala.meta.internal.metals.Buffers
 import scala.meta.internal.metals.BuildInfo
 import scala.meta.internal.metals.BuildTargets
 import scala.meta.internal.metals.Cancelable
+import scala.meta.internal.metals.Compilations
 import scala.meta.internal.metals.Compilers
 import scala.meta.internal.metals.Diagnostics
 import scala.meta.internal.metals.Embedded
+import scala.meta.internal.metals.Messages
 import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.MetalsLanguageClient
-import scala.meta.internal.metals.MetalsSlowTaskParams
 import scala.meta.internal.metals.MutableCancelable
+import scala.meta.internal.metals.ScalaVersionSelector
 import scala.meta.internal.metals.ScalaVersions
 import scala.meta.internal.metals.StatusBar
 import scala.meta.internal.metals.Time
 import scala.meta.internal.metals.Timer
 import scala.meta.internal.metals.UserConfiguration
+import scala.meta.internal.metals.clients.language.MetalsLanguageClient
+import scala.meta.internal.metals.clients.language.MetalsSlowTaskParams
 import scala.meta.internal.mtags.MD5
 import scala.meta.internal.pc.CompilerJobQueue
 import scala.meta.internal.pc.InterruptException
-import scala.meta.internal.semver.SemVer
 import scala.meta.internal.worksheets.MdocEnrichments._
+import scala.meta.internal.worksheets.WorksheetProvider.MdocKey
+import scala.meta.internal.worksheets.WorksheetProvider.MdocRef
 import scala.meta.io.AbsolutePath
 import scala.meta.pc.CancelToken
 
 import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import coursierapi.Dependency
 import coursierapi.Fetch
+import coursierapi.error.SimpleResolutionError
 import mdoc.interfaces.EvaluatedWorksheet
 import mdoc.interfaces.Mdoc
 import org.eclipse.lsp4j.Hover
@@ -62,7 +68,9 @@ class WorksheetProvider(
     diagnostics: Diagnostics,
     embedded: Embedded,
     publisher: WorksheetPublisher,
-    compilers: Compilers
+    compilers: Compilers,
+    compilations: Compilations,
+    scalaVersionSelector: ScalaVersionSelector
 )(implicit ec: ExecutionContext)
     extends Cancelable {
 
@@ -76,21 +84,42 @@ class WorksheetProvider(
   private lazy val threadStopper: ScheduledExecutorService =
     Executors.newSingleThreadScheduledExecutor()
   private val cancelables = new MutableCancelable()
-  private val mdocs = new TrieMap[BuildTargetIdentifier, Mdoc]()
+  private val mdocs = new TrieMap[MdocKey, MdocRef]()
   private val worksheetsDigests = new TrieMap[AbsolutePath, String]()
-  private val currentScalaVersion =
-    scala.meta.internal.mtags.BuildInfo.scalaCompilerVersion
-  private val currentBinaryVersion =
-    ScalaVersions.scalaBinaryVersionFromFullVersion(currentScalaVersion)
-  private lazy val ramboMdoc =
-    embedded.mdoc(currentScalaVersion, currentBinaryVersion)
+  private val exportableEvaluations =
+    new TrieMap[VirtualFile, EvaluatedWorksheet]()
 
-  def onBuildTargetDidCompile(target: BuildTargetIdentifier): Unit = {
-    clearBuildTarget(target)
+  private def fallabackMdoc: Mdoc = {
+    val scalaVersion =
+      scalaVersionSelector.fallbackScalaVersion(isAmmonite = false)
+    mdocs
+      .get(MdocKey.Default)
+      .flatMap(ref =>
+        if (ref.scalaVersion == scalaVersion) Some(ref.value)
+        else {
+          ref.value.shutdown()
+          None
+        }
+      )
+      .getOrElse {
+        val binary =
+          ScalaVersions.scalaBinaryVersionFromFullVersion(scalaVersion)
+        val mdoc =
+          embedded
+            .mdoc(binary)
+            .withClasspath(Embedded.scalaLibrary(scalaVersion).asJava)
+        val ref = MdocRef(scalaVersion, mdoc)
+        mdocs.update(MdocKey.Default, ref)
+        ref.value
+      }
   }
 
-  private def clearBuildTarget(target: BuildTargetIdentifier): Unit = {
-    mdocs.remove(target).foreach(_.shutdown())
+  def onBuildTargetDidCompile(target: BuildTargetIdentifier): Unit = {
+    clearBuildTarget(MdocKey.BuildTarget(target))
+  }
+
+  private def clearBuildTarget(key: MdocKey): Unit = {
+    mdocs.remove(key).foreach(_.value.shutdown())
   }
 
   def reset(): Unit = {
@@ -104,12 +133,36 @@ class WorksheetProvider(
     reset()
   }
 
+  def onDidFocus(path: AbsolutePath): Future[Unit] = Future {
+    if (path.isWorksheet) {
+      val input = path.toInputFromBuffers(buffers)
+      exportableEvaluations.get(input) match {
+        case Some(evaluatedWorksheet) =>
+          publisher.publish(languageClient, path, evaluatedWorksheet)
+        case None =>
+      }
+    }
+  }
+
   def evaluateAndPublish(
       path: AbsolutePath,
       token: CancelToken
   ): Future[Unit] = {
-    evaluateAsync(path, token).map(
-      _.foreach(publisher.publish(languageClient, path, _))
+    val possibleBuildTarget = buildTargets.inverseSources(path)
+    val previouslyCompiled = compilations.previouslyCompiled.toSeq
+
+    (possibleBuildTarget match {
+      case Some(bdi)
+          if (previouslyCompiled.isEmpty || !previouslyCompiled.contains(
+            bdi
+          )) =>
+        compilations.compileTarget(bdi).ignoreValue
+      case _ =>
+        Future.successful(())
+    }).flatMap(_ =>
+      evaluateAsync(path, token).map(
+        _.foreach(publisher.publish(languageClient, path, _))
+      )
     )
   }
 
@@ -120,6 +173,48 @@ class WorksheetProvider(
    */
   def hover(path: AbsolutePath, position: Position): Option[Hover] = {
     publisher.hover(path, position)
+  }
+
+  /**
+   * Check to see for a given path if there is an evaluated worksheet that
+   * matches thie exact input.
+   *
+   * @param path to the input used to search previous evaluations.
+   * @return possible evaluated output.
+   */
+  def copyWorksheetOutput(path: AbsolutePath): Option[String] = {
+    val input = path.toInputFromBuffers(buffers)
+    exportableEvaluations.get(input) match {
+      case None => None
+      case Some(evalutatedWorksheet) =>
+        val toExport = new StringBuilder
+        val originalLines = input.value.split("\n").toBuffer.zipWithIndex
+
+        originalLines.foreach { case (lineContent, lineNumber) =>
+          val lineHasOutput = evalutatedWorksheet
+            .statements()
+            .asScala
+            .find(_.position.endLine() == lineNumber)
+
+          lineHasOutput match {
+            case Some(statement) =>
+              val detailLines = statement
+                .details()
+                .split("\n")
+                .map { line =>
+                  // println in worksheets already come with //
+                  if (line.trim().startsWith("//")) line
+                  else s"// ${line}"
+                }
+                .mkString("\n")
+
+              toExport.append(s"\n${lineContent}\n${detailLines}")
+            case None => toExport.append(s"\n${lineContent}")
+          }
+        }
+
+        Some(toExport.result())
+    }
   }
 
   private def evaluateAsync(
@@ -136,6 +231,12 @@ class WorksheetProvider(
     val onError: PartialFunction[Throwable, Option[EvaluatedWorksheet]] = {
       case InterruptException() =>
         None
+      case e: SimpleResolutionError =>
+        scribe.error(e.getMessage())
+        languageClient.showMessage(
+          Messages.errorMessageParams(e.getMessage().takeWhile(_ != '\n'))
+        )
+        None
       case e: Throwable =>
         // NOTE(olafur): we catch all exceptions because of https://github.com/scalameta/metals/issues/1456
         scribe.error(s"worksheet: $path", e)
@@ -145,7 +246,9 @@ class WorksheetProvider(
       cancelables.cancel() // Cancel previous worksheet evaluations.
       val timer = new Timer(Time.system)
       result.asScala.foreach { _ =>
-        scribe.info(s"time: evaluated worksheet '${path.filename}' in $timer")
+        scribe.info(
+          s"time: evaluated worksheet '${path.filename}' in $timer"
+        )
       }
       cancelables.add(Cancelable(() => completeEmptyResult()))
       statusBar.trackFuture(
@@ -161,7 +264,7 @@ class WorksheetProvider(
       val thread = new Thread(s"Evaluating Worksheet ${path.filename}") {
         override def run(): Unit = {
           result.complete(
-            try Some(evaluateWorksheet(path, token))
+            try Some(evaluateWorksheet(path))
             catch onError
           )
         }
@@ -174,7 +277,11 @@ class WorksheetProvider(
       result,
       () => {
         try runEvaluation()
-        catch onError
+        catch {
+          case e: Throwable =>
+            onError(e)
+            ()
+        }
       }
     )
     result.asScala.recover(onError)
@@ -250,20 +357,27 @@ class WorksheetProvider(
   }
 
   private def evaluateWorksheet(
-      path: AbsolutePath,
-      token: CancelToken
+      path: AbsolutePath
   ): EvaluatedWorksheet = {
     val mdoc = getMdoc(path)
     val input = path.toInputFromBuffers(buffers)
     val relativePath = path.toRelative(workspace)
-    val worksheet = mdoc.evaluateWorksheet(relativePath.toString(), input.value)
-    val classpath = worksheet.classpath().asScala.toList
+    val evaluatedWorksheet =
+      mdoc.evaluateWorksheet(relativePath.toString(), input.value)
+    val classpath = evaluatedWorksheet.classpath().asScala.toList
     val previousDigest = worksheetsDigests.getOrElse(path, "")
     val newDigest = calculateDigest(classpath)
 
+    exportableEvaluations.update(
+      input,
+      evaluatedWorksheet
+    )
+
     if (newDigest != previousDigest) {
       worksheetsDigests.put(path, newDigest)
-      val sourceDeps = fetchDependencySources(worksheet.dependencies().asScala)
+      val sourceDeps = fetchDependencySources(
+        evaluatedWorksheet.dependencies().asScala.toSeq
+      )
       compilers.restartWorksheetPresentationCompiler(
         path,
         classpath,
@@ -271,7 +385,7 @@ class WorksheetProvider(
       )
     }
 
-    val toPublish = worksheet
+    val toPublish = evaluatedWorksheet
       .diagnostics()
       .iterator()
       .asScala
@@ -282,7 +396,7 @@ class WorksheetProvider(
       toPublish,
       isReset = true
     )
-    worksheet
+    evaluatedWorksheet
   }
 
   private def getMdoc(path: AbsolutePath): Mdoc = {
@@ -290,37 +404,32 @@ class WorksheetProvider(
       target <- buildTargets.inverseSources(path)
       mdoc <- getMdoc(target)
     } yield mdoc
-    mdoc.getOrElse(ramboMdoc)
+    mdoc.getOrElse(fallabackMdoc)
   }
 
   private def getMdoc(target: BuildTargetIdentifier): Option[Mdoc] = {
 
-    def isSupportedScala3Version(scalaVersion: String) = {
-      // Worksheet support for Scala 3 started with 0.26.0-RC1
-      ScalaVersions.isScala3Version(scalaVersion) && SemVer.isCompatibleVersion(
-        "0.26.0",
-        scalaVersion
-      )
-    }
-
     def isSupportedScala2Version(scalaVersion: String) = {
       !ScalaVersions.isScala3Version(scalaVersion) && ScalaVersions
-        .isSupportedScalaVersion(scalaVersion)
+        .isSupportedAtReleaseMomentScalaVersion(scalaVersion)
     }
 
-    mdocs.get(target).orElse {
+    val key = MdocKey.BuildTarget(target)
+    mdocs.get(key).map(_.value).orElse {
       for {
         info <- buildTargets.scalaTarget(target)
         scalaVersion = info.scalaVersion
-        isSupported = isSupportedScala2Version(
-          scalaVersion
-        ) || isSupportedScala3Version(scalaVersion)
+        isSupported = isSupportedScala2Version(scalaVersion) ||
+          ScalaVersions.isScala3Version(scalaVersion)
         _ = {
           if (!isSupported) {
-            scribe.warn(
-              s"worksheet: unsupported Scala version '${scalaVersion}', using Scala version '${BuildInfo.scala212}' without classpath instead.\n" +
-                s"worksheet: to fix this problem use Scala version '${ScalaVersions.recommendedVersion(scalaVersion)}'."
+            val message = Messages.Worksheets.unsupportedScalaVersion(
+              scalaVersion,
+              BuildInfo.scala212,
+              ScalaVersions.recommendedVersion(scalaVersion)
             )
+            languageClient.showMessage(message)
+            scribe.warn(message.getMessage())
           }
         }
         if isSupported
@@ -329,10 +438,12 @@ class WorksheetProvider(
           .filterNot(_.contains("semanticdb"))
           .asJava
         val mdoc = embedded
-          .mdoc(info.scalaVersion, info.scalaBinaryVersion)
-          .withClasspath(info.fullClasspath.asScala.distinct.asJava)
+          .mdoc(
+            ScalaVersions.scalaBinaryVersionFromFullVersion(info.scalaVersion)
+          )
+          .withClasspath(info.fullClasspath.distinct.asJava)
           .withScalacOptions(scalacOptions)
-        mdocs(target) = mdoc
+        mdocs(key) = MdocRef(scalaVersion, mdoc)
         mdoc
       }
     }
@@ -349,9 +460,15 @@ class WorksheetProvider(
 
 object WorksheetProvider {
 
-  def worksheetScala3Adjustments(
-      originInput: Input.VirtualFile,
-      path: AbsolutePath
+  sealed trait MdocKey
+  object MdocKey {
+    final case class BuildTarget(id: BuildTargetIdentifier) extends MdocKey
+    case object Default extends MdocKey
+  }
+  final case class MdocRef(scalaVersion: String, value: Mdoc)
+
+  def worksheetScala3AdjustmentsForPC(
+      originInput: Input.VirtualFile
   ): Option[(Input.VirtualFile, AdjustLspData)] = {
     val ident = "  "
     val withOuter = s"""|object worksheet{
@@ -369,17 +486,14 @@ object WorksheetProvider {
   }
 
   def worksheetScala3Adjustments(
-      originInput: Input.VirtualFile,
-      uri: String,
-      position: Position
-  ): Option[(Input.VirtualFile, Position, AdjustLspData)] = {
-    worksheetScala3Adjustments(originInput, uri.toAbsolutePath).map {
-      case (input, adjust) =>
-        val pos = new Position(
-          position.getLine() + 1,
-          position.getCharacter() + 2
-        )
-        (input, pos, adjust)
+      originInput: Input.VirtualFile
+  ): Option[(Input.VirtualFile, Position => Position, AdjustLspData)] = {
+    worksheetScala3AdjustmentsForPC(originInput).map { case (input, adjust) =>
+      def adjustRequest(position: Position) = new Position(
+        position.getLine() + 1,
+        position.getCharacter() + 2
+      )
+      (input, adjustRequest, adjust)
 
     }
   }

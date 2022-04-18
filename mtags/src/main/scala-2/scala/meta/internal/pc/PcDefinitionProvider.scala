@@ -20,13 +20,13 @@ class PcDefinitionProvider(val compiler: MetalsGlobal, params: OffsetParams) {
         params.uri().toString(),
         None
       )
+      typeCheck(unit)
       val pos = unit.position(params.offset())
       val tree = definitionTypedTreeAt(pos)
       if (
         tree.symbol == null ||
         tree.symbol == NoSymbol ||
-        tree.symbol.isErroneous ||
-        tree.symbol.isSynthetic
+        tree.symbol.isErroneous
       ) {
         DefinitionResultImpl.empty
       } else if (tree.symbol.hasPackageFlag) {
@@ -42,17 +42,19 @@ class PcDefinitionProvider(val compiler: MetalsGlobal, params: OffsetParams) {
         DefinitionResultImpl(
           semanticdbSymbol(tree.symbol),
           ju.Collections.singletonList(
-            new Location(params.uri().toString(), tree.symbol.pos.toLSP)
+            new Location(params.uri().toString(), tree.symbol.pos.focus.toLSP)
           )
         )
       } else {
         val res = new ju.ArrayList[Location]()
-        tree.symbol.alternatives.foreach { alternative =>
-          val sym = semanticdbSymbol(alternative)
-          if (sym.isGlobal) {
-            res.addAll(search.definition(sym))
+        tree.symbol.alternatives
+          .map(semanticdbSymbol)
+          .sorted
+          .foreach { sym =>
+            if (sym.isGlobal) {
+              res.addAll(search.definition(sym, params.uri()))
+            }
           }
-        }
         DefinitionResultImpl(
           semanticdbSymbol(tree.symbol),
           res
@@ -93,7 +95,7 @@ class PcDefinitionProvider(val compiler: MetalsGlobal, params: OffsetParams) {
         case _ => tree
       }
     }
-    val typedTree = typedTreeAt(pos)
+    val typedTree = locateTree(pos)
     val tree0 = typedTree match {
       case sel @ Select(qual, _) if sel.tpe == ErrorType => qual
       case Import(expr, _) => expr
@@ -131,4 +133,5 @@ class PcDefinitionProvider(val compiler: MetalsGlobal, params: OffsetParams) {
         loop(tree)
     }
   }
+
 }

@@ -23,7 +23,7 @@ final class FileSystemSemanticdbs(
 
   override def textDocument(file: AbsolutePath): TextDocumentLookup = {
     if (
-      !file.toLanguage.isScala ||
+      (!file.toLanguage.isScala && !file.toLanguage.isJava) ||
       file.toNIO.getFileSystem != mainWorkspace.toNIO.getFileSystem
     ) {
       TextDocumentLookup.NotFound(file)
@@ -31,11 +31,12 @@ final class FileSystemSemanticdbs(
 
       val paths = for {
         buildTarget <- buildTargets.inverseSources(file)
-        scalaInfo <- buildTargets.scalaInfo(buildTarget)
         workspace <- buildTargets.workspaceDirectory(buildTarget)
-        scalacOptions <- buildTargets.scalacOptions(buildTarget)
+        targetroot <-
+          if (file.toLanguage.isScala) buildTargets.scalaTargetRoot(buildTarget)
+          else buildTargets.javaTargetRoot(buildTarget)
       } yield {
-        (workspace, scalacOptions.targetroot(scalaInfo.getScalaVersion))
+        (workspace, targetroot)
       }
 
       paths match {
@@ -46,7 +47,8 @@ final class FileSystemSemanticdbs(
             charset,
             fingerprints,
             semanticdbRelativePath =>
-              findSemanticDb(semanticdbRelativePath, targetroot, file, ws)
+              findSemanticDb(semanticdbRelativePath, targetroot, file, ws),
+            (warn: String) => scribe.warn(warn)
           )
         case None =>
           TextDocumentLookup.NotFound(file)
@@ -54,7 +56,7 @@ final class FileSystemSemanticdbs(
     }
   }
 
-  private def findSemanticDb(
+  def findSemanticDb(
       semanticdbRelativePath: RelativePath,
       targetroot: AbsolutePath,
       file: AbsolutePath,
@@ -69,7 +71,7 @@ final class FileSystemSemanticdbs(
         relativeSourceRoot = sourceRoot.toRelative(workspace)
         relativeFile = file.toRelative(sourceRoot.dealias)
         fullRelativePath = relativeSourceRoot.resolve(relativeFile)
-        alternativeRelativePath = SemanticdbClasspath.fromScala(
+        alternativeRelativePath = SemanticdbClasspath.fromScalaOrJava(
           fullRelativePath
         )
         alternativeSemanticdbPath = targetroot.resolve(

@@ -25,7 +25,7 @@ final class AutoImportsProvider(
     // make sure the compilation unit is loaded
     typedTreeAt(pos)
     val importPosition = autoImportPosition(pos, params.text())
-    val context = doLocateImportContext(pos, importPosition)
+    val context = doLocateImportContext(pos)
     val isSeen = mutable.Set.empty[String]
     val symbols = List.newBuilder[Symbol]
 
@@ -39,14 +39,14 @@ final class AutoImportsProvider(
       false
     }
 
-    val visitor = new CompilerSearchVisitor(name, context, visit)
+    val visitor = new CompilerSearchVisitor(context, visit)
 
     search.search(name, buildTargetIdentifier, visitor)
 
     def isExactMatch(sym: Symbol, name: String): Boolean =
       sym.name.dropLocal.decoded == name
 
-    symbols.result.collect {
+    symbols.result().collect {
       case sym if isExactMatch(sym, name) =>
         val pkg = sym.owner.fullName
         val edits = importPosition match {

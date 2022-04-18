@@ -19,12 +19,12 @@ class MillLspSuite extends BaseImportSuite("mill-import") {
   test("basic") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""
            |/build.sc
            |import mill._, scalalib._
            |object foo extends ScalaModule {
-           |  def scalaVersion = "${V.scala212}"
+           |  def scalaVersion = "${V.scala213}"
            |}
         """.stripMargin
       )
@@ -47,11 +47,12 @@ class MillLspSuite extends BaseImportSuite("mill-import") {
         text +
           s"""|
               |object bar extends ScalaModule {
-              |  def scalaVersion = "${V.scala212}"
+              |  def scalaVersion = "${V.scala213}"
               |}
               |""".stripMargin
       }
       _ = assertNoDiff(client.workspaceMessageRequests, "")
+      _ = client.importBuildChanges = ImportBuildChanges.yes
       _ <- server.didSave("build.sc")(identity)
     } yield {
       assertNoDiff(
@@ -68,12 +69,12 @@ class MillLspSuite extends BaseImportSuite("mill-import") {
   test("new-dependency") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""
            |/build.sc
            |import mill._, scalalib._
            |object foo extends ScalaModule {
-           |  def scalaVersion = "${V.scala212}"
+           |  def scalaVersion = "${V.scala213}"
            |  /*DEPS*/
            |}
            |/foo/src/reload/Main.scala
@@ -85,10 +86,11 @@ class MillLspSuite extends BaseImportSuite("mill-import") {
       )
       _ <- server.didOpen("foo/src/reload/Main.scala")
       _ = assertNoDiff(client.workspaceDiagnostics, "")
+      _ = client.importBuildChanges = ImportBuildChanges.yes
       _ <- server.didSave("build.sc") { text =>
         text.replace(
           "/*DEPS*/",
-          "def ivyDeps = Agg(ivy\"com.lihaoyi::sourcecode::0.1.4\")"
+          "def ivyDeps = Agg(ivy\"com.lihaoyi::sourcecode::0.1.9\")"
         )
       }
       _ <-
@@ -104,7 +106,7 @@ class MillLspSuite extends BaseImportSuite("mill-import") {
   test("error") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """|/build.sc
            |, syntax error
            |""".stripMargin,
@@ -127,9 +129,9 @@ class MillLspSuite extends BaseImportSuite("mill-import") {
         s"""
            |import mill._, scalalib._
            |object foo extends ScalaModule {
-           |  def scalaVersion = "${V.scala212}"
+           |  def scalaVersion = "${V.scala213}"
            |}
-        """.stripMargin,
+        """.stripMargin
       }
       _ = assertNoDiff(
         client.workspaceMessageRequests,
@@ -145,12 +147,12 @@ class MillLspSuite extends BaseImportSuite("mill-import") {
   test("fatal-warnings") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""
            |/build.sc
            |import mill._, scalalib._
            |object foo extends ScalaModule {
-           |  def scalaVersion = "${V.scala212}"
+           |  def scalaVersion = "${V.scala213}"
            |  def scalacOptions = Seq("-Xfatal-warnings", "-Ywarn-unused")
            |}
            |/foo/src/Warning.scala

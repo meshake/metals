@@ -14,8 +14,8 @@ class ImportMissingSymbolLspSuite
        |  val f = <<Future>>.successful(2)
        |}
        |""".stripMargin,
-    s"""|${ImportMissingSymbol.title("Future", "java.util.concurrent")}
-        |${ImportMissingSymbol.title("Future", "scala.concurrent")}
+    s"""|${ImportMissingSymbol.title("Future", "scala.concurrent")}
+        |${ImportMissingSymbol.title("Future", "java.util.concurrent")}
         |${CreateNewSymbol.title("Future")}
         |""".stripMargin,
     """|package a
@@ -25,8 +25,7 @@ class ImportMissingSymbolLspSuite
        |object A {
        |  val f = Future.successful(2)
        |}
-       |""".stripMargin,
-    selectedActionIndex = 1
+       |""".stripMargin
   )
 
   check(
@@ -37,8 +36,8 @@ class ImportMissingSymbolLspSuite
        |  val f = Fu<<tu>>re.successful(2)
        |}
        |""".stripMargin,
-    s"""|${ImportMissingSymbol.title("Future", "java.util.concurrent")}
-        |${ImportMissingSymbol.title("Future", "scala.concurrent")}
+    s"""|${ImportMissingSymbol.title("Future", "scala.concurrent")}
+        |${ImportMissingSymbol.title("Future", "java.util.concurrent")}
         |${CreateNewSymbol.title("Future")}
         |""".stripMargin,
     """|package a
@@ -48,8 +47,7 @@ class ImportMissingSymbolLspSuite
        |object A {
        |  val f = Future.successful(2)
        |}
-       |""".stripMargin,
-    selectedActionIndex = 1
+       |""".stripMargin
   )
 
   check(
@@ -84,9 +82,8 @@ class ImportMissingSymbolLspSuite
        |  val b = ListBuffer.newBuilder[Int]
        |}
        |""".stripMargin,
-    s"""|
+    s"""|${ImportMissingSymbol.title("Future", "scala.concurrent")}
         |${ImportMissingSymbol.title("Future", "java.util.concurrent")}
-        |${ImportMissingSymbol.title("Future", "scala.concurrent")}
         |${ImportMissingSymbol.title("Instant", "java.time")}
         |${CreateNewSymbol.title("Future")}
         |${CreateNewSymbol.title("Instant")}
@@ -100,8 +97,7 @@ class ImportMissingSymbolLspSuite
        |  val b = ListBuffer.newBuilder[Int]
        |}
        |""".stripMargin,
-    expectNoDiagnostics = false,
-    selectedActionIndex = 1
+    expectNoDiagnostics = false
   )
 
   check(
@@ -125,11 +121,11 @@ class ImportMissingSymbolLspSuite
        |
        |import scala.concurrent.Future
        |import java.time.Instant
-       |import scala.collection.mutable
+       |import scala.collection.mutable.ListBuffer
        |
        |object A {
        |  val f = Future.successful(Instant.now)
-       |  val b = mutable.ListBuffer.newBuilder[Int]
+       |  val b = ListBuffer.newBuilder[Int]
        |}
        |""".stripMargin,
     expectNoDiagnostics = false
@@ -145,8 +141,8 @@ class ImportMissingSymbolLspSuite
        |}
        |""".stripMargin,
     s"""|${ImportMissingSymbol.allSymbolsTitle}
-        |${ImportMissingSymbol.title("Future", "java.util.concurrent")}
         |${ImportMissingSymbol.title("Future", "scala.concurrent")}
+        |${ImportMissingSymbol.title("Future", "java.util.concurrent")}
         |${ImportMissingSymbol.title("Instant", "java.time")}
         |${ImportMissingSymbol.title("ListBuffer", "scala.collection.mutable")}
         |${CreateNewSymbol.title("Future")}
@@ -156,11 +152,11 @@ class ImportMissingSymbolLspSuite
     """|package a
        |
        |import java.time.Instant
-       |import scala.collection.mutable
+       |import scala.collection.mutable.ListBuffer
        |
        |object A {
        |  val f = Future.successful(Instant.now)
-       |  val b = mutable.ListBuffer.newBuilder[Int]
+       |  val b = ListBuffer.newBuilder[Int]
        |}
        |""".stripMargin,
     expectNoDiagnostics = false
@@ -177,8 +173,8 @@ class ImportMissingSymbolLspSuite
        |}
        |""".stripMargin,
     s"""|${ImportMissingSymbol.allSymbolsTitle}
-        |${ImportMissingSymbol.title("Future", "java.util.concurrent")}
         |${ImportMissingSymbol.title("Future", "scala.concurrent")}
+        |${ImportMissingSymbol.title("Future", "java.util.concurrent")}
         |${ImportMissingSymbol.title("Instant", "java.time")}
         |${ImportMissingSymbol.title("ListBuffer", "scala.collection.mutable")}
         |${CreateNewSymbol.title("Future")}
@@ -188,12 +184,12 @@ class ImportMissingSymbolLspSuite
     """|package a
        |
        |import java.time.Instant
-       |import scala.collection.mutable
+       |import scala.collection.mutable.ListBuffer
        |
        |object A {
        |  val f = Future.successful(Instant.now)
-       |  val b = mutable.ListBuffer.newBuilder[Int]
-       |  val t = Future.successful(mutable.ListBuffer.empty)
+       |  val b = ListBuffer.newBuilder[Int]
+       |  val t = Future.successful(ListBuffer.empty)
        |}
        |""".stripMargin,
     expectNoDiagnostics = false

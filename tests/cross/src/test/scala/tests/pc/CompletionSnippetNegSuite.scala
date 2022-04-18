@@ -4,7 +4,6 @@ import scala.meta.internal.pc.PresentationCompilerConfigImpl
 import scala.meta.pc.PresentationCompilerConfig
 
 import tests.BaseCompletionSuite
-import tests.BuildInfoVersions
 
 class CompletionSnippetNegSuite extends BaseCompletionSuite {
 
@@ -30,12 +29,12 @@ class CompletionSnippetNegSuite extends BaseCompletionSuite {
            |unapplySeq
            |apply
            |""".stripMargin,
-      "0." -> "apply"
+      "3" -> "apply"
     )
   )
 
   checkSnippet(
-    "scope".tag(IgnoreScalaVersion("0.27.0-RC1")),
+    "scope",
     """
       |object Main {
       |  printl@@
@@ -46,7 +45,10 @@ class CompletionSnippetNegSuite extends BaseCompletionSuite {
        |println
        |""".stripMargin,
     compat = Map(
-      "0.26" -> "println"
+      "3" ->
+        """|println
+           |println
+           |""".stripMargin
     )
   )
 
@@ -66,12 +68,12 @@ class CompletionSnippetNegSuite extends BaseCompletionSuite {
     """|toString()
        |""".stripMargin,
     compat = Map(
-      "0." -> "toString"
+      "3" -> "toString"
     )
   )
 
   checkSnippet(
-    "type".tag(IgnoreScalaVersion(BuildInfoVersions.scala3Versions)),
+    "type".tag(IgnoreScala3),
     s"""|object Main {
         |  val x: scala.IndexedSe@@
         |}

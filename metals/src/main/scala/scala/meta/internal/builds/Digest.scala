@@ -10,8 +10,8 @@ import scala.xml.Node
 import scala.meta.internal.builds.Digest.Status
 import scala.meta.internal.io.PathIO
 import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.Trees
 import scala.meta.internal.mtags.MD5
+import scala.meta.internal.parsing.Trees
 import scala.meta.io.AbsolutePath
 
 case class Digest(
@@ -84,7 +84,7 @@ object Digest {
     val ext = PathIO.extension(path.toNIO)
     val isScala = Set("sbt", "scala", "sc")(ext)
     // we can have both gradle and gradle.kts and build plugins can be written in any of three languages
-    val isGradle =
+    val isGeneralJVM =
       Set("gradle", "groovy", "gradle.kts", "java", "kts").exists(
         path.toString().endsWith(_)
       )
@@ -92,7 +92,7 @@ object Digest {
 
     if (isScala && path.isFile) {
       digestScala(path, digest)
-    } else if (isGradle && path.isFile) {
+    } else if (isGeneralJVM && path.isFile) {
       digestGeneralJvm(path, digest)
     } else if (isXml) {
       digestXml(path, digest)
@@ -116,9 +116,9 @@ object Digest {
         value <- attr.value
       } digest.update(value.toString().getBytes())
 
-      val chldrenSuccessful: Seq[Boolean] = for {
+      val chldrenSuccessful: Seq[Boolean] = (for {
         child <- node.child
-      } yield digestElement(child)
+      } yield digestElement(child)).toSeq
       chldrenSuccessful.forall(p => p)
     }
     try {
@@ -157,7 +157,7 @@ object Digest {
   ): Boolean = {
     try {
       val input = file.toInput
-      val tokens = Trees.defaultDialect(input).tokenize.get
+      val tokens = Trees.defaultTokenizerDialect(input).tokenize.get
       tokens.foreach {
         case token if token.isWhiteSpaceOrComment => // Do nothing
         case token =>

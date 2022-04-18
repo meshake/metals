@@ -69,7 +69,7 @@ class SignatureHelpProvider(val compiler: MetalsGlobal) {
       paramsIndex == i && {
         paramIndex == j ||
         (param.tpe != null && paramIndex > j &&
-        definitions.isRepeatedParamType(param.tpe))
+          definitions.isRepeatedParamType(param.tpe))
       }
   }
 
@@ -89,6 +89,12 @@ class SignatureHelpProvider(val compiler: MetalsGlobal) {
         case tpe => tpe
       }
     }
+    val isUnapplyMethod: Boolean = tree match {
+      case _: UnApply => true
+      // in some case we will get an Apply tree, but in that case position indicates unapply
+      case _ =>
+        symbol.name == termNames.unapply && (symbol.pos == NoPosition || !symbol.pos.isRange)
+    }
     val qualTpe: Type = symbol.name match {
       case termNames.unapply =>
         symbol.paramLists match {
@@ -96,9 +102,10 @@ class SignatureHelpProvider(val compiler: MetalsGlobal) {
             symbol.info.finalResultType match {
               case TypeRef(
                     _,
-                    definitions.OptionClass,
+                    cls,
                     tpe @ TypeRef(_, _, args) :: Nil
-                  ) =>
+                  )
+                  if cls == definitions.OptionClass || cls == definitions.SomeClass =>
                 val ctor = head.tpe.typeSymbol.primaryConstructor
                 val params = ctor.paramLists.headOption.getOrElse(Nil)
                 val toZip = args match {
@@ -106,10 +113,9 @@ class SignatureHelpProvider(val compiler: MetalsGlobal) {
                   case _ => args
                 }
                 val isAlignedTypes = toZip.lengthCompare(params.length) == 0 &&
-                  toZip.zip(params).forall {
-                    case (a, b) =>
-                      a == b.tpe ||
-                        b.tpe.typeSymbol.isTypeParameter
+                  toZip.zip(params).forall { case (a, b) =>
+                    a == b.tpe ||
+                    b.tpe.typeSymbol.isTypeParameter
                   }
                 if (isAlignedTypes) {
                   ctor.info
@@ -155,7 +161,7 @@ class SignatureHelpProvider(val compiler: MetalsGlobal) {
       else nonOverload.typeParams :: nonOverload.paramLists
     }
     def all: List[List[Tree]] =
-      if (qualTpe.typeParams.isEmpty) argss
+      if (qualTpe.typeParams.isEmpty || tparams.isEmpty) argss
       else tparams :: argss
     def paramTree(i: Int, j: Int): List[Tree] =
       all.lift(i).flatMap(_.lift(j)).toList
@@ -432,10 +438,10 @@ class SignatureHelpProvider(val compiler: MetalsGlobal) {
           else method.info
         val paramss: List[List[Symbol]] =
           if (!isActiveSignature) {
-            mparamss(tpe)
+            mparamss(tpe, t.call.isUnapplyMethod)
           } else {
             activeSignature = i
-            val paramss = this.mparamss(tpe)
+            val paramss = this.mparamss(tpe, t.call.isUnapplyMethod)
             val gparamss = for {
               (params, i) <- paramss.zipWithIndex
               (param, j) <- params.zipWithIndex
@@ -461,12 +467,39 @@ class SignatureHelpProvider(val compiler: MetalsGlobal) {
           shortenedNames
         )
     }
-    new SignatureHelp(infos.asJava, activeSignature, activeParameter)
+    val mainSignature = infos(activeSignature)
+    val deduplicated = infos
+      .filter { sig =>
+        sig != mainSignature && sig.getLabel() != mainSignature.getLabel()
+      }
+      .distinctBy(_.getLabel())
+
+    new SignatureHelp(
+      (mainSignature :: deduplicated).asJava,
+      0,
+      activeParameter
+    )
   }
 
-  def mparamss(method: Type): List[List[compiler.Symbol]] = {
-    if (method.typeParams.isEmpty) method.paramLists
-    else method.typeParams :: method.paramLists
+  def mparamss(
+      method: Type,
+      isUnapplyMethod: Boolean
+  ): List[List[compiler.Symbol]] = {
+    method.finalResultType match {
+      case TypeRef(
+            _,
+            cls,
+            TypeRef(_, _, args) :: Nil
+          )
+          if isUnapplyMethod &&
+            (cls == definitions.OptionClass || cls == definitions.SomeClass) &&
+            args.nonEmpty =>
+        List(args.map(_.typeSymbol))
+      case _ =>
+        if (method.typeParams.isEmpty) method.paramLists
+        else method.typeParams :: method.paramLists
+
+    }
   }
 
   def toSignatureInformation(
@@ -486,76 +519,81 @@ class SignatureHelpProvider(val compiler: MetalsGlobal) {
       methodType,
       includeDocs = true
     )
-    val paramLabels = mparamss.zipWithIndex.flatMap {
-      case (params, i) =>
-        val byName: Map[Name, Int] =
-          if (isActiveSignature) {
-            (for {
-              args <- t.call.all.lift(i).toList
-              (AssignOrNamedArg(Ident(arg), _), argIndex) <- args.zipWithIndex
-            } yield arg -> argIndex).toMap
-          } else {
-            Map.empty[Name, Int]
-          }
-        def byNamedArgumentPosition(symbol: Symbol): Int = {
-          byName.getOrElse(symbol.name, Int.MaxValue)
+    val paramLabels = mparamss.zipWithIndex.flatMap { case (params, i) =>
+      val byName: Map[Name, Int] =
+        if (isActiveSignature) {
+          (for {
+            args <- t.call.all.lift(i).toList
+            (AssignOrNamedArg(Ident(arg), _), argIndex) <- args.zipWithIndex
+          } yield arg -> argIndex).toMap
+        } else {
+          Map.empty[Name, Int]
         }
-        val sortedByName = params.zipWithIndex
-          .sortBy {
-            case (sym, pos) =>
-              (byNamedArgumentPosition(sym), pos)
-          }
-          .map {
-            case (sym, _) => sym
-          }
-        val isByNamedOrdered = sortedByName.zip(params).exists {
-          case (a, b) => a != b
+      def byNamedArgumentPosition(symbol: Symbol): Int = {
+        byName.getOrElse(symbol.name, Int.MaxValue)
+      }
+      val sortedByName = params.zipWithIndex
+        .sortBy { case (sym, pos) =>
+          (byNamedArgumentPosition(sym), pos)
         }
-        val labels = sortedByName.zipWithIndex.flatMap {
-          case (param, j) =>
-            if (param.name.startsWith(termNames.EVIDENCE_PARAM_PREFIX)) {
-              Nil
-            } else {
-              val index = k
-              k += 1
-              val label = printer.paramLabel(param, index)
-              val docstring = printer.paramDocstring(index)
-              val byNameLabel =
-                if (isByNamedOrdered) s"<$label>"
-                else label
-              val lparam = new ParameterInformation(byNameLabel)
-              if (metalsConfig.isSignatureHelpDocumentationEnabled) {
-                lparam.setDocumentation(docstring.toMarkupContent)
-              }
-              if (isActiveSignature && t.activeArg.matches(param, i, j)) {
-                arg(i, j) match {
-                  case Some(a) if a.tpe != null && !a.tpe.isErroneous =>
-                    val tpe = metalsToLongString(a.tpe.widen, shortenedNames)
-                    if (
-                      lparam.getLabel() != null &&
-                      lparam.getLabel().isLeft() &&
-                      !lparam.getLabel().getLeft().endsWith(tpe) &&
-                      metalsConfig.isSignatureHelpDocumentationEnabled
-                    ) {
-                      lparam.setDocumentation(
-                        ("```scala\n" + tpe + "\n```\n" + docstring).toMarkupContent
-                      )
-                    }
-                  case _ =>
+        .map { case (sym, _) =>
+          sym
+        }
+      val isByNamedOrdered = sortedByName.zip(params).exists { case (a, b) =>
+        a != b
+      }
+      val labels = sortedByName.zipWithIndex.flatMap { case (param, j) =>
+        if (param.name.startsWith(termNames.EVIDENCE_PARAM_PREFIX)) {
+          Nil
+        } else {
+          val index = k
+          k += 1
+          val label =
+            /* For unapply methods we translate return value, which contains only types
+             * and not parameters.
+             */
+            if (param.isParameter)
+              printer.paramLabel(param, index)
+            else
+              printer.printType(param.tpe)
+          val docstring = printer.paramDocstring(index)
+          val byNameLabel =
+            if (isByNamedOrdered) s"<$label>"
+            else label
+          val lparam = new ParameterInformation(byNameLabel)
+          if (metalsConfig.isSignatureHelpDocumentationEnabled) {
+            lparam.setDocumentation(docstring.toMarkupContent)
+          }
+          if (isActiveSignature && t.activeArg.matches(param, i, j)) {
+            arg(i, j) match {
+              case Some(a) if a.tpe != null && !a.tpe.isErroneous =>
+                val tpe = metalsToLongString(a.tpe.widen, shortenedNames)
+                if (
+                  lparam.getLabel() != null &&
+                  lparam.getLabel().isLeft() &&
+                  !lparam.getLabel().getLeft().endsWith(tpe) &&
+                  metalsConfig.isSignatureHelpDocumentationEnabled
+                ) {
+                  lparam.setDocumentation(
+                    ("```scala\n" + tpe + "\n```\n" + docstring).toMarkupContent
+                  )
                 }
-              }
-              lparam :: Nil
+              case _ =>
             }
+          }
+          lparam :: Nil
         }
-        if (labels.isEmpty && sortedByName.nonEmpty) Nil
-        else labels :: Nil
+      }
+      if (labels.isEmpty && sortedByName.nonEmpty) Nil
+      else labels :: Nil
     }
     val signatureInformation = new SignatureInformation(
       printer.methodSignature(
         paramLabels.iterator.map(_.iterator.collect {
           case i if i.getLabel() != null && i.getLabel().isLeft() =>
             i.getLabel().getLeft()
-        })
+        }),
+        printUnapply = !t.call.isUnapplyMethod
       )
     )
     if (metalsConfig.isSignatureHelpDocumentationEnabled) {

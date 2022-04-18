@@ -9,20 +9,21 @@ import scala.meta.internal.builds.NewProjectProvider
 import scala.meta.internal.metals.InitializationOptions
 import scala.meta.internal.metals.Messages
 import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.MetalsInputBoxParams
-import scala.meta.internal.metals.MetalsInputBoxResult
-import scala.meta.internal.metals.MetalsQuickPickItem
 import scala.meta.internal.metals.RecursivelyDelete
 import scala.meta.internal.metals.ServerCommands
+import scala.meta.internal.metals.clients.language.MetalsInputBoxParams
+import scala.meta.internal.metals.clients.language.MetalsQuickPickItem
+import scala.meta.internal.metals.clients.language.RawMetalsInputBoxResult
 import scala.meta.io.AbsolutePath
 
+import munit.Location
 import munit.TestOptions
 import org.eclipse.lsp4j.MessageActionItem
 import org.eclipse.lsp4j.ShowMessageRequestParams
 
 class NewProjectLspSuite extends BaseLspSuite("new-project") {
 
-  override def initializationOptions: Option[InitializationOptions] =
+  override protected def initializationOptions: Option[InitializationOptions] =
     Some(
       InitializationOptions.Default
         .copy(inputBoxProvider = Some(true), openNewWindowProvider = Some(true))
@@ -34,16 +35,16 @@ class NewProjectLspSuite extends BaseLspSuite("new-project") {
         |  settings(
         |    inThisBuild(List(
         |      organization := "com.example",
-        |      scalaVersion := "2.13.1"
+        |      scalaVersion := "2.13.8"
         |    )),
         |    name := "scalatest-example"
         |  )
         |
-        |libraryDependencies += "org.scalatest" %% "scalatest" % "3.1.0" % Test
+        |libraryDependencies += "org.scalatest" %% "scalatest" % "3.2.4" % Test
         |
         |
         |/$name/project/build.properties
-        |sbt.version=1.3.10
+        |sbt.version=1.6.2
         |
         |
         |/$name/src/main/scala/CubeCalculator.scala
@@ -76,7 +77,7 @@ class NewProjectLspSuite extends BaseLspSuite("new-project") {
 
   check("custom-template")(
     pickedProject = None,
-    name = Some("my-custom-name"),
+    name = Some("My-Custom-Name"),
     customTemplate = Some("scala/scalatest-example.g8"),
     expectedContent = scalatestTemplate("my-custom-name")
   )
@@ -176,7 +177,7 @@ class NewProjectLspSuite extends BaseLspSuite("new-project") {
       expectedContent: String,
       customTemplate: Option[String] = None,
       templateFromg8Site: Option[String] = None
-  ): Unit =
+  )(implicit loc: Location): Unit =
     test(testName) {
 
       val tmpDirectory =
@@ -246,15 +247,11 @@ class NewProjectLspSuite extends BaseLspSuite("new-project") {
 
       client.inputBoxHandler = { params =>
         if (isChooseName(params)) {
-          Some(
-            new MetalsInputBoxResult(value = name.getOrElse(params.value))
-          )
+          RawMetalsInputBoxResult(value = name.getOrElse(params.value))
         } else if (isEnterTemplate(params)) {
-          Some(
-            new MetalsInputBoxResult(value = customTemplate.get)
-          )
+          RawMetalsInputBoxResult(value = customTemplate.get)
         } else {
-          None
+          RawMetalsInputBoxResult()
         }
       }
 
@@ -267,9 +264,9 @@ class NewProjectLspSuite extends BaseLspSuite("new-project") {
           .collect {
             case file if (file.isFile) =>
               s"""|/${file
-                .toRelative(tmpDirectory)
-                .toString()
-                .replace('\\', '/')}
+                   .toRelative(tmpDirectory)
+                   .toString()
+                   .replace('\\', '/')}
                   |${file.readText}
                   |""".stripMargin
           }
@@ -277,28 +274,33 @@ class NewProjectLspSuite extends BaseLspSuite("new-project") {
       }
 
       val testFuture = for {
-        _ <- server.initialize(s"""
-                                  |/metals.json
-                                  |{
-                                  |  "a": { }
-                                  |}
-                                  |""".stripMargin)
+        _ <- initialize(s"""
+                           |/metals.json
+                           |{
+                           |  "a": { }
+                           |}
+                           |""".stripMargin)
         _ <-
           server
             .executeCommand(
-              ServerCommands.NewScalaProject.id
+              ServerCommands.NewScalaProject
             )
         output = directoryOutput(tmpDirectory)
-      } yield assertDiffEqual(
-        ignoreVersions(output),
-        ignoreVersions(expectedContent),
-        // note(@tgodzik) The template is pretty stable for last couple of years except for versions.
-        "This test is based on https://github.com/scala/scalatest-example.g8, it might have changed."
-      )
+      } yield {
+        if (name.nonEmpty) {
+          val newProjectDirectory = tmpDirectory.list.toList.map(_.filename)
+          assertDiffEqual(newProjectDirectory, name.toList.map(_.toLowerCase()))
+        }
+        assertDiffEqual(
+          ignoreVersions(output),
+          ignoreVersions(expectedContent),
+          // note(@tgodzik) The template is pretty stable for last couple of years except for versions.
+          "This test is based on https://github.com/scala/scalatest-example.g8, it might have changed."
+        )
+      }
 
-      testFuture.onComplete {
-        case _ =>
-          RecursivelyDelete(tmpDirectory)
+      testFuture.onComplete { case _ =>
+        RecursivelyDelete(tmpDirectory)
       }
       testFuture
     }

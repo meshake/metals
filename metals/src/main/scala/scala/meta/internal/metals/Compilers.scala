@@ -12,10 +12,9 @@ import scala.util.Try
 
 import scala.meta.inputs.Input
 import scala.meta.inputs.Position
-import scala.meta.internal.builds.SbtBuildTool
+import scala.meta.internal.metals.Compilers.PresentationCompilerKey
 import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.ammonite.Ammonite
-import scala.meta.internal.mtags
+import scala.meta.internal.parsing.Trees
 import scala.meta.internal.pc.EmptySymbolSearch
 import scala.meta.internal.pc.LogMessages
 import scala.meta.internal.pc.ScalaPresentationCompiler
@@ -23,27 +22,27 @@ import scala.meta.internal.worksheets.WorksheetProvider
 import scala.meta.io.AbsolutePath
 import scala.meta.pc.AutoImportsResult
 import scala.meta.pc.CancelToken
+import scala.meta.pc.OffsetParams
 import scala.meta.pc.PresentationCompiler
 import scala.meta.pc.SymbolSearch
 
 import ch.epfl.scala.bsp4j.BuildTargetIdentifier
 import ch.epfl.scala.bsp4j.CompileReport
-import ch.epfl.scala.bsp4j.ScalacOptionsItem
 import org.eclipse.lsp4j.CompletionItem
+import org.eclipse.lsp4j.CompletionItemKind
 import org.eclipse.lsp4j.CompletionList
 import org.eclipse.lsp4j.CompletionParams
-import org.eclipse.lsp4j.DocumentOnTypeFormattingParams
-import org.eclipse.lsp4j.DocumentRangeFormattingParams
-import org.eclipse.lsp4j.DocumentSymbol
-import org.eclipse.lsp4j.DocumentSymbolParams
-import org.eclipse.lsp4j.FoldingRange
-import org.eclipse.lsp4j.FoldingRangeRequestParams
+import org.eclipse.lsp4j.Diagnostic
 import org.eclipse.lsp4j.Hover
 import org.eclipse.lsp4j.InitializeParams
+import org.eclipse.lsp4j.SelectionRange
+import org.eclipse.lsp4j.SelectionRangeParams
 import org.eclipse.lsp4j.SignatureHelp
 import org.eclipse.lsp4j.TextDocumentPositionParams
 import org.eclipse.lsp4j.TextEdit
 import org.eclipse.lsp4j.{Position => LspPosition}
+import org.eclipse.lsp4j.{Range => LspRange}
+import org.eclipse.lsp4j.{debug => d}
 
 /**
  * Manages lifecycle for presentation compilers in all build targets.
@@ -55,7 +54,6 @@ class Compilers(
     workspace: AbsolutePath,
     config: ClientConfiguration,
     userConfig: () => UserConfiguration,
-    ammonite: () => Ammonite,
     buildTargets: BuildTargets,
     buffers: Buffers,
     search: SymbolSearch,
@@ -63,8 +61,11 @@ class Compilers(
     statusBar: StatusBar,
     sh: ScheduledExecutorService,
     initializeParams: Option[InitializeParams],
-    diagnostics: Diagnostics,
-    isExcludedPackage: String => Boolean
+    isExcludedPackage: String => Boolean,
+    scalaVersionSelector: ScalaVersionSelector,
+    trees: Trees,
+    mtagsResolver: MtagsResolver,
+    sourceMapper: SourceMapper
 )(implicit ec: ExecutionContextExecutorService)
     extends Cancelable {
   val plugins = new CompilerPlugins()
@@ -72,9 +73,9 @@ class Compilers(
   // Not a TrieMap because we want to avoid loading duplicate compilers for the same build target.
   // Not a `j.u.c.ConcurrentHashMap` because it can deadlock in `computeIfAbsent` when the absent
   // function is expensive, which is the case here.
-  val jcache: ju.Map[BuildTargetIdentifier, PresentationCompiler] =
+  val jcache: ju.Map[PresentationCompilerKey, PresentationCompiler] =
     Collections.synchronizedMap(
-      new java.util.HashMap[BuildTargetIdentifier, PresentationCompiler]
+      new java.util.HashMap[PresentationCompilerKey, PresentationCompiler]
     )
   private val jworksheetsCache: ju.Map[AbsolutePath, PresentationCompiler] =
     Collections.synchronizedMap(
@@ -82,45 +83,86 @@ class Compilers(
     )
 
   private val cache = jcache.asScala
+  private def buildTargetPCFromCache(
+      id: BuildTargetIdentifier
+  ): Option[PresentationCompiler] =
+    cache.get(PresentationCompilerKey.BuildTarget(id))
 
   private val worksheetsCache = jworksheetsCache.asScala
 
-  // The "rambo" compiler is used for source files that don't belong to a build target.
-  lazy val ramboCompiler: PresentationCompiler = createStandaloneCompiler(
-    PackageIndex.scalaLibrary,
-    Try(StandaloneSymbolSearch(workspace, buffers, isExcludedPackage))
-      .getOrElse(EmptySymbolSearch),
-    "metals-default"
-  )
-
   private def createStandaloneCompiler(
+      scalaVersion: String,
       classpath: Seq[Path],
       standaloneSearch: SymbolSearch,
-      name: String
+      name: String,
+      path: AbsolutePath
   ): PresentationCompiler = {
-    scribe.info(
-      "no build target: using presentation compiler with only scala-library"
+    val mtags =
+      mtagsResolver.resolve(scalaVersion).getOrElse(MtagsBinaries.BuildIn)
+
+    val tmpDirectory = workspace.resolve(Directories.tmp)
+    if (!path.toNIO.startsWith(tmpDirectory.toNIO))
+      scribe.info(
+        s"no build target found for $path. Using presentation compiler with project's scala-library version: ${mtags.scalaVersion}"
+      )
+    newCompiler(
+      mtags,
+      List.empty,
+      classpath ++ Embedded.scalaLibrary(scalaVersion),
+      standaloneSearch,
+      name
     )
-    val compiler =
-      configure(new ScalaPresentationCompiler(), standaloneSearch)
-        .newInstance(
-          s"$name-${mtags.BuildInfo.scalaCompilerVersion}",
-          classpath.asJava,
-          Nil.asJava
-        )
-    ramboCancelable = Cancelable(() => compiler.shutdown())
-    compiler
   }
 
-  var ramboCancelable = Cancelable.empty
+  // The "fallback" compiler is used for source files that don't belong to a build target.
+  def fallbackCompiler(path: AbsolutePath): PresentationCompiler = {
+    jcache.compute(
+      PresentationCompilerKey.Default,
+      (_, value) => {
+        val scalaVersion =
+          scalaVersionSelector.fallbackScalaVersion(isAmmonite = false)
+        val existingPc = Option(value).flatMap { pc =>
+          if (pc.scalaVersion == scalaVersion) {
+            Some(pc)
+          } else {
+            pc.shutdown()
+            None
+          }
+        }
+        existingPc match {
+          case Some(pc) => pc
+          case None =>
+            createStandaloneCompiler(
+              scalaVersion,
+              List.empty,
+              Try(
+                StandaloneSymbolSearch(
+                  scalaVersion,
+                  workspace,
+                  buffers,
+                  isExcludedPackage,
+                  userConfig,
+                  trees,
+                  buildTargets,
+                  saveSymbolFileToDisk = !config.isVirtualDocumentSupported()
+                )
+              ).getOrElse(EmptySymbolSearch),
+              "default",
+              path
+            )
+        }
+      }
+    )
+  }
 
   def loadedPresentationCompilerCount(): Int = cache.values.count(_.isLoaded())
 
   override def cancel(): Unit = {
     Cancelable.cancelEach(cache.values)(_.shutdown())
+    Cancelable.cancelEach(worksheetsCache.values)(_.shutdown())
     cache.clear()
-    ramboCancelable.cancel()
   }
+
   def restartAll(): Unit = {
     val count = cache.size
     cancel()
@@ -150,64 +192,23 @@ class Compilers(
       }
     }
 
-  def foldingRange(
-      params: FoldingRangeRequestParams,
-      token: CancelToken
-  ): Future[ju.List[FoldingRange]] = {
-    val path = params.getTextDocument.getUri.toAbsolutePath
-    val pc = loadCompiler(path, None).getOrElse(ramboCompiler)
-    val input = path.toInputFromBuffers(buffers)
-    pc.foldingRange(
-      CompilerVirtualFileParams(path.toNIO.toUri, input.value)
-    ).asScala
-  }
-
-  def onTypeFormatting(
-      params: DocumentOnTypeFormattingParams
-  ): Future[ju.List[TextEdit]] = {
-    val path = params.getTextDocument.getUri.toAbsolutePath
-    val pc = loadCompiler(path, None).getOrElse(ramboCompiler)
-    val input = path.toInputFromBuffers(buffers)
-    pc.onTypeFormatting(params, input.value).asScala
-  }
-
-  def rangeFormatting(
-      params: DocumentRangeFormattingParams
-  ): Future[ju.List[TextEdit]] = {
-    val path = params.getTextDocument.getUri.toAbsolutePath
-    val pc = loadCompiler(path, None).getOrElse(ramboCompiler)
-    val input = path.toInputFromBuffers(buffers)
-    pc.rangeFormatting(params, input.value).asScala
-  }
-
-  def documentSymbol(
-      params: DocumentSymbolParams
-  ): Future[ju.List[DocumentSymbol]] = {
-    val path = params.getTextDocument.getUri.toAbsolutePath
-    val pc = loadCompiler(path, None).getOrElse(ramboCompiler)
-    val input = path.toInputFromBuffers(buffers)
-    pc.documentSymbols(
-      CompilerVirtualFileParams(path.toNIO.toUri, input.value)
-    ).asScala
-  }
-
   def didClose(path: AbsolutePath): Unit = {
-    val pc = loadCompiler(path, None).getOrElse(ramboCompiler)
+    val pc = loadCompiler(path).getOrElse(fallbackCompiler(path))
     pc.didClose(path.toNIO.toUri())
   }
 
-  def didChange(path: AbsolutePath): Future[Unit] = {
+  def didChange(path: AbsolutePath): Future[List[Diagnostic]] = {
 
     def originInput =
       path
         .toInputFromBuffers(buffers)
 
-    val pc = loadCompiler(path, None).getOrElse(ramboCompiler)
+    val pc = loadCompiler(path).getOrElse(fallbackCompiler(path))
     val inputAndAdjust =
       if (
         path.isWorksheet && ScalaVersions.isScala3Version(pc.scalaVersion())
       ) {
-        WorksheetProvider.worksheetScala3Adjustments(originInput, path)
+        WorksheetProvider.worksheetScala3AdjustmentsForPC(originInput)
       } else {
         None
       }
@@ -223,24 +224,19 @@ class Compilers(
           .didChange(CompilerVirtualFileParams(path.toNIO.toUri(), input.value))
           .asScala
     } yield {
-      ds.asScala.headOption match {
-        case None =>
-          diagnostics.onNoSyntaxError(path)
-        case Some(diagnostic) =>
-          diagnostics.onSyntaxError(path, adjust.adjustDiagnostic(diagnostic))
-      }
+      ds.asScala.map(adjust.adjustDiagnostic).toList
     }
   }
 
   def didCompile(report: CompileReport): Unit = {
     if (report.getErrors > 0) {
-      cache.get(report.getTarget).foreach(_.restart())
+      buildTargetPCFromCache(report.getTarget).foreach(_.restart())
     } else {
       // Restart PC for all build targets that depend on this target since the classfiles
       // may have changed.
       for {
         target <- buildTargets.allInverseDependencies(report.getTarget)
-        compiler <- cache.get(target)
+        compiler <- buildTargetPCFromCache(target)
       } {
         compiler.restart()
       }
@@ -248,12 +244,11 @@ class Compilers(
   }
 
   def completionItemResolve(
-      item: CompletionItem,
-      token: CancelToken
+      item: CompletionItem
   ): Future[CompletionItem] = {
     for {
       data <- item.data
-      compiler <- cache.get(new BuildTargetIdentifier(data.target))
+      compiler <- buildTargetPCFromCache(new BuildTargetIdentifier(data.target))
     } yield compiler.completionItemResolve(item, data.symbol).asScala
   }.getOrElse(Future.successful(item))
 
@@ -269,12 +264,57 @@ class Compilers(
       Nil
     }
 
+  def debugCompletions(
+      path: AbsolutePath,
+      breakpointPosition: LspPosition,
+      token: CancelToken,
+      expression: d.CompletionsArguments
+  ): Future[Seq[d.CompletionItem]] = {
+
+    val compiler = loadCompiler(path).getOrElse(fallbackCompiler(path))
+
+    val input = path.toInputFromBuffers(buffers)
+    val metaPos = breakpointPosition.toMeta(input)
+    val oldText = metaPos.input.text
+    val lineStart = oldText.indexWhere(
+      c => c != ' ' && c != '\t',
+      metaPos.start + 1
+    )
+
+    val indentation = lineStart - metaPos.start
+    // insert expression at the start of breakpoint's line and move the lines one down
+    val modified =
+      s"${oldText.substring(0, lineStart)};${expression
+          .getText()}\n${" " * indentation}${oldText.substring(lineStart)}"
+
+    val offsetParams = CompilerOffsetParams(
+      path.toURI,
+      modified,
+      lineStart + expression.getColumn(),
+      token
+    )
+    compiler
+      .complete(offsetParams)
+      .asScala
+      .map(list =>
+        list.getItems.asScala.toSeq
+          .map(
+            toDebugCompletionItem(
+              _,
+              indentation + 1
+            )
+          )
+      )
+  }
+
   def completions(
       params: CompletionParams,
       token: CancelToken
   ): Future[CompletionList] =
-    withPCAndAdjustLsp(params, None) { (pc, pos, adjust) =>
-      pc.complete(CompilerOffsetParams.fromPos(pos, token))
+    withPCAndAdjustLsp(params) { (pc, pos, adjust) =>
+      val offsetParams =
+        CompilerOffsetParams.fromPos(pos, token)
+      pc.complete(offsetParams)
         .asScala
         .map { list =>
           adjust.adjustCompletionListInPlace(list)
@@ -287,7 +327,7 @@ class Compilers(
       name: String,
       token: CancelToken
   ): Future[ju.List[AutoImportsResult]] = {
-    withPCAndAdjustLsp(params, None) { (pc, pos, adjust) =>
+    withPCAndAdjustLsp(params) { (pc, pos, adjust) =>
       pc.autoImports(name, CompilerOffsetParams.fromPos(pos, token))
         .asScala
         .map { list =>
@@ -297,11 +337,24 @@ class Compilers(
     }
   }
 
+  def insertInferredType(
+      params: TextDocumentPositionParams,
+      token: CancelToken
+  ): Future[ju.List[TextEdit]] = {
+    withPCAndAdjustLsp(params) { (pc, pos, adjust) =>
+      pc.insertInferredType(CompilerOffsetParams.fromPos(pos, token))
+        .asScala
+        .map { edits =>
+          adjust.adjustTextEdits(edits)
+        }
+    }
+  }
+
   def implementAbstractMembers(
       params: TextDocumentPositionParams,
       token: CancelToken
   ): Future[ju.List[TextEdit]] = {
-    withPCAndAdjustLsp(params, None) { (pc, pos, adjust) =>
+    withPCAndAdjustLsp(params) { (pc, pos, adjust) =>
       pc.implementAbstractMembers(CompilerOffsetParams.fromPos(pos, token))
         .asScala
         .map { edits =>
@@ -311,30 +364,42 @@ class Compilers(
   }
 
   def hover(
-      params: TextDocumentPositionParams,
-      token: CancelToken,
-      interactiveSemanticdbs: InteractiveSemanticdbs
-  ): Future[Option[Hover]] =
-    withPCAndAdjustLsp(params, Some(interactiveSemanticdbs)) {
-      (pc, pos, adjust) =>
-        pc.hover(CompilerOffsetParams.fromPos(pos, token))
-          .asScala
-          .map(_.asScala.map { hover => adjust.adjustHoverResp(hover) })
+      params: HoverExtParams,
+      token: CancelToken
+  ): Future[Option[Hover]] = {
+    withPCAndAdjustLsp(params) { (pc, pos, adjust) =>
+      pc.hover(CompilerRangeParams.offsetOrRange(pos, token))
+        .asScala
+        .map(_.asScala.map { hover => adjust.adjustHoverResp(hover) })
     }
+  }
 
   def definition(
       params: TextDocumentPositionParams,
       token: CancelToken
   ): Future[DefinitionResult] =
-    withPCAndAdjustLsp(params, None) { (pc, pos, adjust) =>
+    withPCAndAdjustLsp(params) { (pc, pos, adjust) =>
       pc.definition(CompilerOffsetParams.fromPos(pos, token))
         .asScala
         .map { c =>
           adjust.adjustLocations(c.locations())
+          val definitionPaths = c
+            .locations()
+            .map { loc =>
+              loc.getUri().toAbsolutePath
+            }
+            .asScala
+            .toSet
+
+          val definitionPath = if (definitionPaths.size == 1) {
+            Some(definitionPaths.head)
+          } else {
+            None
+          }
           DefinitionResult(
             c.locations(),
             c.symbol(),
-            None,
+            definitionPath,
             None
           )
         }
@@ -342,41 +407,33 @@ class Compilers(
 
   def signatureHelp(
       params: TextDocumentPositionParams,
-      token: CancelToken,
-      interactiveSemanticdbs: InteractiveSemanticdbs
+      token: CancelToken
   ): Future[SignatureHelp] =
-    withPCAndAdjustLsp(params, Some(interactiveSemanticdbs)) {
-      (pc, pos, adjust) =>
-        pc.signatureHelp(CompilerOffsetParams.fromPos(pos, token)).asScala
+    withPCAndAdjustLsp(params) { (pc, pos, _) =>
+      pc.signatureHelp(CompilerOffsetParams.fromPos(pos, token)).asScala
     }
 
-  def enclosingClass(
-      pos: LspPosition,
-      path: AbsolutePath,
-      token: CancelToken = EmptyCancelToken
-  ): Future[Option[String]] = {
-    val input = path.toInputFromBuffers(buffers)
-    val offset = pos.toMeta(input).start
-    val params = CompilerOffsetParams(path.toURI, input.text, offset, token)
-    loadCompiler(path, None) match {
-      case Some(pc) =>
-        pc.enclosingClass(params).asScala.map(_.asScala)
-      case None => Future.successful(None)
+  def selectionRange(
+      params: SelectionRangeParams,
+      token: CancelToken
+  ): Future[ju.List[SelectionRange]] = {
+    withPCAndAdjustLsp(params) { (pc, positions) =>
+      val offsetPositions: ju.List[OffsetParams] =
+        positions.map(CompilerOffsetParams.fromPos(_, token))
+      pc.selectionRange(offsetPositions).asScala
     }
   }
 
   def loadCompiler(
-      path: AbsolutePath,
-      interactiveSemanticdbs: Option[InteractiveSemanticdbs]
+      path: AbsolutePath
   ): Option[PresentationCompiler] = {
 
     def fromBuildTarget: Option[PresentationCompiler] = {
       val target = buildTargets
         .inverseSources(path)
-        .orElse(interactiveSemanticdbs.flatMap(_.getBuildTarget(path)))
       target match {
         case None =>
-          if (path.isScalaFilename) Some(ramboCompiler)
+          if (path.isScalaFilename) Some(fallbackCompiler(path))
           else None
         case Some(value) => loadCompiler(value)
       }
@@ -400,15 +457,14 @@ class Compilers(
     val created: Option[Unit] = for {
       targetId <- buildTargets.inverseSources(path)
       scalaTarget <- buildTargets.scalaTarget(targetId)
-      isSupported =
-        ScalaVersions.isSupportedScalaVersion(scalaTarget.scalaVersion)
-      _ = {
-        if (!isSupported) {
-          scribe.warn(s"unsupported Scala ${scalaTarget.scalaVersion}")
+      scalaVersion = scalaTarget.scalaVersion
+      mtags <- {
+        val result = mtagsResolver.resolve(scalaVersion)
+        if (result.isEmpty) {
+          scribe.warn(s"unsupported Scala ${scalaVersion}")
         }
+        result
       }
-      if isSupported
-      scalac <- buildTargets.scalacOptions(targetId)
     } yield {
       jworksheetsCache.put(
         path,
@@ -421,131 +477,166 @@ class Compilers(
             sources.map(AbsolutePath(_)),
             buffers,
             isExcludedPackage,
+            trees,
+            buildTargets,
+            saveSymbolFileToDisk = !config.isVirtualDocumentSupported(),
             workspaceFallback = Some(search)
           )
-          newCompiler(scalac, scalaTarget, classpath, worksheetSearch)
+          newCompiler(
+            scalaTarget,
+            mtags,
+            classpath,
+            worksheetSearch
+          )
         }
       )
     }
 
     created.getOrElse {
       jworksheetsCache.put(
-        path,
-        createStandaloneCompiler(
-          classpath,
-          StandaloneSymbolSearch(
-            workspace,
-            buffers,
-            sources,
+        path, {
+          val scalaVersion =
+            scalaVersionSelector.fallbackScalaVersion(isAmmonite = false)
+          createStandaloneCompiler(
+            scalaVersion,
             classpath,
-            isExcludedPackage
-          ),
-          path.toString()
-        )
+            StandaloneSymbolSearch(
+              scalaVersion,
+              workspace,
+              buffers,
+              sources,
+              classpath,
+              isExcludedPackage,
+              userConfig,
+              trees,
+              buildTargets,
+              saveSymbolFileToDisk = !config.isVirtualDocumentSupported()
+            ),
+            path.toString(),
+            path
+          )
+        }
       )
     }
   }
 
   def loadCompiler(
-      target: BuildTargetIdentifier
-  ): Option[PresentationCompiler] =
-    buildTargets.scalaTarget(target).flatMap(loadCompilerForTarget)
+      targetId: BuildTargetIdentifier
+  ): Option[PresentationCompiler] = {
+    val target = buildTargets.scalaTarget(targetId)
+    target.flatMap(loadCompilerForTarget)
+  }
 
   def loadCompilerForTarget(
       scalaTarget: ScalaTarget
   ): Option[PresentationCompiler] = {
-    val isSupported =
-      ScalaVersions.isSupportedScalaVersion(scalaTarget.scalaVersion)
-    if (!isSupported) {
-      scribe.warn(s"unsupported Scala ${scalaTarget.scalaVersion}")
-      None
-    } else {
-      val out = jcache.computeIfAbsent(
-        scalaTarget.info.getId,
-        { _ =>
-          statusBar.trackBlockingTask(
-            s"${config.icons.sync}Loading presentation compiler"
-          ) {
-            newCompiler(scalaTarget.scalac, scalaTarget, search)
+    val scalaVersion = scalaTarget.scalaVersion
+    mtagsResolver.resolve(scalaVersion) match {
+      case Some(mtags) =>
+        val out = jcache.computeIfAbsent(
+          PresentationCompilerKey.BuildTarget(scalaTarget.info.getId),
+          { _ =>
+            statusBar.trackBlockingTask(
+              s"${config.icons.sync}Loading presentation compiler"
+            ) {
+              newCompiler(scalaTarget, mtags, search)
+            }
           }
-        }
-      )
-      Some(out)
+        )
+        Option(out)
+      case None =>
+        scribe.warn(s"unsupported Scala ${scalaTarget.scalaVersion}")
+        None
     }
   }
 
-  private def ammoniteInputPosOpt(
-      path: AbsolutePath,
-      position: LspPosition,
-      interactiveSemanticdbs: Option[InteractiveSemanticdbs]
-  ): Option[(Input.VirtualFile, LspPosition)] =
-    if (path.isAmmoniteScript)
-      for {
-        target <-
-          buildTargets
-            .inverseSources(path)
-            .orElse(interactiveSemanticdbs.flatMap(_.getBuildTarget(path)))
-        res <- ammonite().generatedScalaInputForPc(
-          target,
-          path,
-          position
-        )
-      } yield res
-    else
-      None
-
   private def withPCAndAdjustLsp[T](
-      params: TextDocumentPositionParams,
-      interactiveSemanticdbs: Option[InteractiveSemanticdbs]
-  )(fn: (PresentationCompiler, Position, AdjustLspData) => T): T = {
+      params: SelectionRangeParams
+  )(fn: (PresentationCompiler, ju.List[Position]) => T): T = {
     val path = params.getTextDocument.getUri.toAbsolutePath
     val compiler =
-      loadCompiler(path, interactiveSemanticdbs).getOrElse(ramboCompiler)
+      loadCompiler(path).getOrElse(fallbackCompiler(path))
+
+    val input = path
+      .toInputFromBuffers(buffers)
+      .copy(path = params.getTextDocument.getUri)
+
+    val positions = params.getPositions().map(_.toMeta(input))
+
+    fn(compiler, positions)
+  }
+
+  private def withPCAndAdjustLsp[T](
+      params: TextDocumentPositionParams
+  )(fn: (PresentationCompiler, Position, AdjustLspData) => T): T = {
+    val path = params.getTextDocument.getUri.toAbsolutePath
+    val compiler = loadCompiler(path).getOrElse(fallbackCompiler(path))
 
     val (input, pos, adjust) =
       sourceAdjustments(
         params,
-        interactiveSemanticdbs,
         compiler.scalaVersion()
       )
     val metaPos = pos.toMeta(input)
     fn(compiler, metaPos, adjust)
+  }
 
+  private def withPCAndAdjustLsp[T](
+      params: HoverExtParams
+  )(fn: (PresentationCompiler, Position, AdjustLspData) => T): T = {
+
+    val path = params.textDocument.getUri.toAbsolutePath
+    val compiler = loadCompiler(path).getOrElse(fallbackCompiler(path))
+
+    if (params.range != null) {
+      val (input, range, adjust) = sourceAdjustments(
+        params,
+        compiler.scalaVersion()
+      )
+      fn(compiler, range.toMeta(input), adjust)
+
+    } else {
+      val positionParams =
+        new TextDocumentPositionParams(params.textDocument, params.getPosition)
+      val (input, pos, adjust) = sourceAdjustments(
+        positionParams,
+        compiler.scalaVersion()
+      )
+      fn(compiler, pos.toMeta(input), adjust)
+    }
   }
 
   private def sourceAdjustments(
       params: TextDocumentPositionParams,
-      interactiveSemanticdbs: Option[InteractiveSemanticdbs],
       scalaVersion: String
   ): (Input.VirtualFile, LspPosition, AdjustLspData) = {
+    val (input, adjustRequest, adjustResponse) = sourceAdjustments(
+      params.getTextDocument().getUri(),
+      scalaVersion
+    )
+    (input, adjustRequest(params.getPosition()), adjustResponse)
+  }
 
-    val uri = params.getTextDocument.getUri
+  private def sourceAdjustments(
+      params: HoverExtParams,
+      scalaVersion: String
+  ): (Input.VirtualFile, LspRange, AdjustLspData) = {
+    val (input, adjustRequest, adjustResponse) = sourceAdjustments(
+      params.textDocument.getUri(),
+      scalaVersion
+    )
+    val start = params.range.getStart()
+    val end = params.range.getEnd()
+    val newRange = new LspRange(adjustRequest(start), adjustRequest(end))
+    (input, newRange, adjustResponse)
+  }
+
+  private def sourceAdjustments(
+      uri: String,
+      scalaVersion: String
+  ): (Input.VirtualFile, LspPosition => LspPosition, AdjustLspData) = {
     val path = uri.toAbsolutePath
-    val position = params.getPosition
-
-    def input = path.toInputFromBuffers(buffers)
-    def default = (input, position, AdjustedLspData.default)
-
-    val forScripts =
-      if (path.isAmmoniteScript) {
-        ammoniteInputPosOpt(path, position, interactiveSemanticdbs)
-          .map {
-            case (input, pos) =>
-              (input, pos, Ammonite.adjustLspData(input.text))
-          }
-      } else if (path.isSbt) {
-        buildTargets
-          .sbtAutoImports(path)
-          .map(
-            SbtBuildTool.sbtInputPosAdjustment(input, _, uri, position)
-          )
-      } else if (
-        path.isWorksheet && ScalaVersions.isScala3Version(scalaVersion)
-      ) {
-        WorksheetProvider.worksheetScala3Adjustments(input, uri, position)
-      } else None
-
-    forScripts.getOrElse(default)
+    sourceMapper.pcMapping(path, scalaVersion)
   }
 
   private def configure(
@@ -567,46 +658,134 @@ class Compilers(
             _symbolPrefixes = userConfig().symbolPrefixes,
             isCompletionSnippetsEnabled =
               initializeParams.supportsCompletionSnippets,
-            isFoldOnlyLines = initializeParams.foldOnlyLines,
             _isStripMarginOnTypeFormattingEnabled =
               () => userConfig().enableStripMarginOnTypeFormatting
           )
       )
 
   def newCompiler(
-      scalac: ScalacOptionsItem,
       target: ScalaTarget,
+      mtags: MtagsBinaries,
       search: SymbolSearch
   ): PresentationCompiler = {
-    val classpath = scalac.classpath.map(_.toNIO).toSeq
-    newCompiler(scalac, target, classpath, search)
+    val classpath =
+      target.scalac.classpath.toAbsoluteClasspath.map(_.toNIO).toSeq
+    newCompiler(target, mtags, classpath, search)
   }
 
   def newCompiler(
-      scalac: ScalacOptionsItem,
       target: ScalaTarget,
+      mtags: MtagsBinaries,
       classpath: Seq[Path],
       search: SymbolSearch
   ): PresentationCompiler = {
-    // The metals_2.12 artifact depends on mtags_2.12.x where "x" matches
-    // `mtags.BuildInfo.scalaCompilerVersion`. In the case when
-    // `info.getScalaVersion == mtags.BuildInfo.scalaCompilerVersion` then we
-    // skip fetching the mtags module from Maven.
-    val pc: PresentationCompiler =
-      if (
-        ScalaVersions.isCurrentScalaCompilerVersion(
-          target.scalaInfo.getScalaVersion()
-        )
-      ) {
-        new ScalaPresentationCompiler()
-      } else {
-        embedded.presentationCompiler(target.scalaInfo, scalac)
-      }
-    val options = plugins.filterSupportedOptions(scalac.getOptions.asScala)
-    configure(pc, search).newInstance(
-      scalac.getTarget.getUri,
-      classpath.asJava,
-      (log ++ options).asJava
+    newCompiler(
+      mtags,
+      target.scalac.getOptions().asScala.toSeq,
+      classpath,
+      search,
+      target.scalac.getTarget.getUri
     )
+  }
+
+  def newCompiler(
+      mtags: MtagsBinaries,
+      options: Seq[String],
+      classpath: Seq[Path],
+      search: SymbolSearch,
+      name: String
+  ): PresentationCompiler = {
+    val pc: PresentationCompiler =
+      mtags match {
+        case MtagsBinaries.BuildIn => new ScalaPresentationCompiler()
+        case artifacts: MtagsBinaries.Artifacts =>
+          embedded.presentationCompiler(artifacts, classpath)
+
+      }
+
+    val filteredOptions = plugins.filterSupportedOptions(options)
+    configure(pc, search).newInstance(
+      name,
+      classpath.asJava,
+      (log ++ filteredOptions).asJava
+    )
+  }
+
+  private def toDebugCompletionType(
+      kind: CompletionItemKind
+  ): d.CompletionItemType = {
+    kind match {
+      case CompletionItemKind.Constant => d.CompletionItemType.VALUE
+      case CompletionItemKind.Value => d.CompletionItemType.VALUE
+      case CompletionItemKind.Keyword => d.CompletionItemType.KEYWORD
+      case CompletionItemKind.Class => d.CompletionItemType.CLASS
+      case CompletionItemKind.TypeParameter => d.CompletionItemType.CLASS
+      case CompletionItemKind.Operator => d.CompletionItemType.FUNCTION
+      case CompletionItemKind.Field => d.CompletionItemType.FIELD
+      case CompletionItemKind.Method => d.CompletionItemType.METHOD
+      case CompletionItemKind.Unit => d.CompletionItemType.UNIT
+      case CompletionItemKind.Enum => d.CompletionItemType.ENUM
+      case CompletionItemKind.Interface => d.CompletionItemType.INTERFACE
+      case CompletionItemKind.Constructor => d.CompletionItemType.CONSTRUCTOR
+      case CompletionItemKind.Folder => d.CompletionItemType.FILE
+      case CompletionItemKind.Module => d.CompletionItemType.MODULE
+      case CompletionItemKind.EnumMember => d.CompletionItemType.ENUM
+      case CompletionItemKind.Snippet => d.CompletionItemType.SNIPPET
+      case CompletionItemKind.Function => d.CompletionItemType.FUNCTION
+      case CompletionItemKind.Color => d.CompletionItemType.COLOR
+      case CompletionItemKind.Text => d.CompletionItemType.TEXT
+      case CompletionItemKind.Property => d.CompletionItemType.PROPERTY
+      case CompletionItemKind.Reference => d.CompletionItemType.REFERENCE
+      case CompletionItemKind.Variable => d.CompletionItemType.VARIABLE
+      case CompletionItemKind.Struct => d.CompletionItemType.MODULE
+      case CompletionItemKind.File => d.CompletionItemType.FILE
+      case _ => d.CompletionItemType.TEXT
+    }
+  }
+
+  private def toDebugCompletionItem(
+      item: CompletionItem,
+      indentation: Int
+  ): d.CompletionItem = {
+    val debugItem = new d.CompletionItem()
+    debugItem.setLabel(item.getLabel())
+    val (newText, range) = item.getTextEdit().asScala match {
+      case Left(textEdit) =>
+        (textEdit.getNewText, textEdit.getRange)
+      case Right(insertReplace) =>
+        (insertReplace.getNewText, insertReplace.getReplace)
+    }
+    val start = range.getStart().getCharacter() - indentation
+    val end = range.getEnd().getCharacter() - indentation
+
+    val length = end - start
+    debugItem.setLength(length)
+
+    // remove snippets, since they are not supported in DAP
+    val fullText = newText.replaceAll("\\$[1-9]+", "")
+
+    val selection = fullText.indexOf("$0")
+
+    // Find the spot for the cursor
+    if (selection >= 0) {
+      debugItem.setSelectionStart(selection)
+    }
+
+    debugItem.setText(fullText.replace("$0", ""))
+    debugItem.setStart(start)
+    debugItem.setType(toDebugCompletionType(item.getKind()))
+    debugItem.setSortText(item.getFilterText())
+    debugItem
+  }
+
+}
+
+object Compilers {
+
+  sealed trait PresentationCompilerKey
+  object PresentationCompilerKey {
+    final case class BuildTarget(id: BuildTargetIdentifier)
+        extends PresentationCompilerKey
+    case object Default extends PresentationCompilerKey
   }
 }

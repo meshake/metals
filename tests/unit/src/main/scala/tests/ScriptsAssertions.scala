@@ -6,6 +6,7 @@ import java.nio.file.Paths
 
 import scala.concurrent.Future
 
+import scala.meta.internal.metals.HoverExtParams
 import scala.meta.internal.metals.MetalsEnrichments._
 
 import org.eclipse.lsp4j.Position
@@ -58,14 +59,11 @@ trait ScriptsAssertions { self: BaseLspSuite =>
           s"Expected file location, got URI $locationUri"
         )
         val locationPath = workspace.toNIO.relativize(Paths.get(locationUri))
-        val alternativeExpectedLocation =
-          if (isWindows) Some(expectedLocation.replace('/', '\\'))
-          else None
+        val expectedPath =
+          server.toPath(expectedLocation).toRelative(workspace).toNIO
         assert(
-          locationPath.toString == expectedLocation || alternativeExpectedLocation
-            .exists(_ == locationPath.toString),
-          s"Expected location $expectedLocation${alternativeExpectedLocation
-            .fold("")(loc => s"(or $loc)")}, got $locationPath"
+          locationPath == expectedPath,
+          s"Expected location $expectedLocation{$expectedPath}, got $locationPath"
         )
         for (expectedLine0 <- Option(expectedLine)) {
           val line = locations0.head.getRange.getStart.getLine
@@ -85,7 +83,7 @@ trait ScriptsAssertions { self: BaseLspSuite =>
   ): Future[String] =
     server.server
       .hover(
-        new TextDocumentPositionParams(
+        new HoverExtParams(
           new TextDocumentIdentifier(
             server.toPath(path).toNIO.toUri.toASCIIString
           ),

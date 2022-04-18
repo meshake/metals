@@ -1,20 +1,25 @@
-package scala.meta.internal.metals
+package scala.meta.internal.metals.clients.language
 
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.{util => ju}
 
 import scala.collection.concurrent.TrieMap
-import scala.concurrent.ExecutionContext
 import scala.concurrent.Promise
-import scala.util.Failure
-import scala.util.Success
 
+import scala.meta.internal.metals.BuildTargets
+import scala.meta.internal.metals.Cancelable
+import scala.meta.internal.metals.ClientConfiguration
+import scala.meta.internal.metals.ConcurrentHashSet
+import scala.meta.internal.metals.Diagnostics
+import scala.meta.internal.metals.MetalsBuildClient
 import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.ammonite.Ammonite
-import scala.meta.internal.metals.debug.BuildTargetClasses
+import scala.meta.internal.metals.StatusBar
+import scala.meta.internal.metals.TaskProgress
+import scala.meta.internal.metals.Time
+import scala.meta.internal.metals.Timer
 import scala.meta.internal.tvp._
-import scala.meta.internal.worksheets.WorksheetProvider
+import scala.meta.io.AbsolutePath
 
 import ch.epfl.scala.bsp4j._
 import ch.epfl.scala.{bsp4j => b}
@@ -29,16 +34,13 @@ final class ForwardingMetalsBuildClient(
     languageClient: MetalsLanguageClient,
     diagnostics: Diagnostics,
     buildTargets: BuildTargets,
-    buildTargetClasses: BuildTargetClasses,
     clientConfig: ClientConfiguration,
     statusBar: StatusBar,
     time: Time,
     didCompile: CompileReport => Unit,
-    treeViewProvider: () => TreeViewProvider,
-    worksheetProvider: () => WorksheetProvider,
-    ammonite: () => Ammonite
-)(implicit ec: ExecutionContext)
-    extends MetalsBuildClient
+    onBuildTargetDidCompile: BuildTargetIdentifier => Unit,
+    onBuildTargetDidChangeFunc: b.DidChangeBuildTarget => Unit
+) extends MetalsBuildClient
     with Cancelable {
 
   private case class Compilation(
@@ -61,6 +63,14 @@ final class ForwardingMetalsBuildClient(
   def buildHasErrors(buildTargetId: BuildTargetIdentifier): Boolean = {
     buildTargets
       .buildTargetTransitiveDependencies(buildTargetId)
+      .exists(hasReportedError.contains(_))
+  }
+
+  def buildHasErrors(file: AbsolutePath): Boolean = {
+    buildTargets
+      .inverseSources(file)
+      .toIterable
+      .flatMap(buildTargets.buildTargetTransitiveDependencies)
       .exists(hasReportedError.contains(_))
   }
 
@@ -100,16 +110,7 @@ final class ForwardingMetalsBuildClient(
   }
 
   def onBuildTargetDidChange(params: b.DidChangeBuildTarget): Unit = {
-    val ammoniteBuildChanged =
-      params.getChanges.asScala.exists(_.getTarget.getUri.isAmmoniteScript)
-    if (ammoniteBuildChanged)
-      ammonite().importBuild().onComplete {
-        case Success(()) =>
-        case Failure(exception) =>
-          scribe.error("Error re-importing Ammonite build", exception)
-      }
-    else
-      scribe.info(params.toString)
+    onBuildTargetDidChangeFunc(params)
   }
 
   def onBuildTargetCompileReport(params: b.CompileReport): Unit = {}
@@ -155,7 +156,7 @@ final class ForwardingMetalsBuildClient(
           report <- params.asCompileReport
           compilation <- compilations.remove(report.getTarget)
         } {
-          diagnostics.onFinishCompileBuildTarget(report.getTarget)
+          diagnostics.onFinishCompileBuildTarget(report, params.getStatus())
           didCompile(report)
           val target = report.getTarget
           compilation.promise.trySuccess(report)
@@ -183,16 +184,14 @@ final class ForwardingMetalsBuildClient(
               // that target to fix
               // https://github.com/scalameta/metals/issues/846.
               updatedTreeViews.add(target)
-              treeViewProvider().onBuildTargetDidCompile(target)
-              worksheetProvider().onBuildTargetDidCompile(target)
+              onBuildTargetDidCompile(target)
             }
             hasReportedError.remove(target)
           } else {
             hasReportedError.add(target)
             statusBar.addMessage(
               MetalsStatusParams(
-                message,
-                command = ClientCommands.FocusDiagnostics.id
+                message
               )
             )
           }
@@ -206,8 +205,8 @@ final class ForwardingMetalsBuildClient(
     params.getDataKind match {
       case "bloop-progress" =>
         for {
-          data <- Option(params.getData).collect {
-            case o: JsonObject => o
+          data <- Option(params.getData).collect { case o: JsonObject =>
+            o
           }
           targetElement <- Option(data.get("target"))
           if targetElement.isJsonObject

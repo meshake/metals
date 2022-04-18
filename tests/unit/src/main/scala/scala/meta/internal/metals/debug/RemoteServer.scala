@@ -109,6 +109,18 @@ private[debug] final class RemoteServer(
     sendRequest("stepOut", args)
   }
 
+  override def evaluate(
+      args: EvaluateArguments
+  ): CompletableFuture[EvaluateResponse] = {
+    sendRequest("evaluate", args)
+  }
+
+  override def completions(
+      args: CompletionsArguments
+  ): CompletableFuture[CompletionsResponse] = {
+    sendRequest("completions", args)
+  }
+
   override def disconnect(
       args: DisconnectArguments
   ): CompletableFuture[Void] = {
@@ -143,8 +155,8 @@ private[debug] final class RemoteServer(
   private def notify[A: ClassTag](msg: Notification, f: A => Unit): Unit = {
     msg.getParams match {
       case json: JsonElement =>
-        json.as[A].map(f).recover {
-          case e => scribe.error(s"Could not handle notification [msg]", e)
+        json.as[A].map(f).recover { case e =>
+          scribe.error(s"Could not handle notification [msg]", e)
         }
       case _ =>
         scribe.error(s"Not a json: ${msg.getParams}")

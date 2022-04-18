@@ -1,12 +1,11 @@
 package tests.pc
 
 import tests.BaseCompletionSuite
-import tests.BuildInfoVersions
 
 class CompletionIssueSuite extends BaseCompletionSuite {
 
-  override def excludedScalaVersions: Set[String] =
-    BuildInfoVersions.scala3Versions.toSet
+  override def ignoreScalaVersion: Option[IgnoreScalaVersion] =
+    Some(IgnoreScala3)
 
   check(
     "mutate",
@@ -56,18 +55,16 @@ class CompletionIssueSuite extends BaseCompletionSuite {
       |object B {
       |  NestedLea@@
       |}""".stripMargin,
-    """
-      |package a
-      |
-      |import a.A.Nested.NestedLeaf
-      |object A {
-      |  object Nested{
-      |    object NestedLeaf
-      |  }
-      |}
-      |object B {
-      |  NestedLeaf
-      |}""".stripMargin
+    """|package a
+       |object A {
+       |  object Nested{
+       |    object NestedLeaf
+       |  }
+       |}
+       |object B {
+       |  A.Nested.NestedLeaf
+       |}
+       |""".stripMargin
   )
 
   checkEdit(
@@ -91,26 +88,25 @@ class CompletionIssueSuite extends BaseCompletionSuite {
       |object B {
       |  val allCountries = Sweden + France + USA + Norway@@
       |}""".stripMargin,
-    """
-      |package all
-      |import all.World.Countries.{
-      |  Sweden,
-      |  USA
-      |}
-      |import all.World.Countries.Norway
-      |
-      |object World {
-      |  object Countries{
-      |    object Sweden
-      |    object Norway
-      |    object France
-      |    object USA
-      |  }
-      |}
-      |import all.World.Countries.France
-      |object B {
-      |  val allCountries = Sweden + France + USA + Norway
-      |}""".stripMargin
+    """|package all
+       |import all.World.Countries.{
+       |  Sweden,
+       |  USA
+       |}
+       |
+       |object World {
+       |  object Countries{
+       |    object Sweden
+       |    object Norway
+       |    object France
+       |    object USA
+       |  }
+       |}
+       |import all.World.Countries.France
+       |object B {
+       |  val allCountries = Sweden + France + USA + World.Countries.Norway
+       |}
+       |""".stripMargin
   )
 
   check(
@@ -123,10 +119,16 @@ class CompletionIssueSuite extends BaseCompletionSuite {
        |  .@@
        |}
        |""".stripMargin,
-    """|::[B >: Int](x: B): List[B]
+    """|::[B >: Int](elem: B): List[B]
        |:::[B >: Int](prefix: List[B]): List[B]
        |""".stripMargin,
-    topLines = Some(2)
+    topLines = Some(2),
+    compat = Map(
+      "2.12" ->
+        """|++[B >: Int, That](that: GenTraversableOnce[B])(implicit bf: CanBuildFrom[List[Int],B,That]): That
+           |+:[B >: Int, That](elem: B)(implicit bf: CanBuildFrom[List[Int],B,That]): That
+           |""".stripMargin
+    )
   )
 
   check(

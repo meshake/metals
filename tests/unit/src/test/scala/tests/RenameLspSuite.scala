@@ -1,6 +1,11 @@
 package tests
 
-class RenameLspSuite extends BaseRenameLspSuite("rename") {
+import scala.meta.internal.metals.InitializationOptions
+
+abstract class RenameLspSuite extends BaseRenameLspSuite(s"rename") {
+
+  override protected def initializationOptions: Option[InitializationOptions] =
+    Some(TestingServer.TestDefault)
 
   renamed(
     "basic",
@@ -16,6 +21,50 @@ class RenameLspSuite extends BaseRenameLspSuite("rename") {
        |}
        |""".stripMargin,
     newName = "otherRename"
+  )
+
+  renamed(
+    "renamed-import",
+    """|/a/src/main/scala/a/Main.scala
+       |package a
+       |
+       |import java.util.{List => <<`J-List`>>}
+       |
+       |object Main{
+       |  val toRename: <<`J-L@@ist`>>[Int] = ???
+       |  val toRename2: <<`J-List`>>[Int] = ???
+       |  val toRename3: java.util.List[Int] = ???
+       |}
+       |/a/src/main/scala/a/Main2.scala
+       |package a
+       |
+       |import java.util.{List => JList}
+       |
+       |object Main2{
+       |  val toRename: JList[Int] = ???
+       |}
+       |""".stripMargin,
+    newName = "Java-List"
+  )
+
+  renamed(
+    "renamed-import-local",
+    """|/a/src/main/scala/a/Main.scala
+       |package a
+       |
+       |import a.{Main2 => <<Ot@@herMain>>}
+       |
+       |object Main{
+       |  val toRename = <<OtherMain>>.toRename
+       |}
+       |/a/src/main/scala/a/Main2.scala
+       |package a
+       |
+       |object Main2{
+       |  val toRename = ""
+       |}
+       |""".stripMargin,
+    newName = "OtherM"
   )
 
   renamed(
@@ -244,7 +293,7 @@ class RenameLspSuite extends BaseRenameLspSuite("rename") {
        |  "" <<::>> user
        |}
        |""".stripMargin,
-    newName = "method:"
+    newName = "+++:"
   )
 
   same(
@@ -400,11 +449,35 @@ class RenameLspSuite extends BaseRenameLspSuite("rename") {
   )
 
   renamed(
-    "java-unchanged",
+    "java-changed",
     """|/a/src/main/java/a/Other.java
        |package a;
-       |public class Other{
+       |public class <<Other>>{
        |
+       |  <<Other>> other;
+       |  public <<Other>>(){
+       |     
+       |  }
+       |}
+       |/a/src/main/scala/a/Main.scala
+       |package a
+       |object Main{
+       |  val other = new <<Oth@@er>>()
+       |}
+       |""".stripMargin,
+    newName = "Renamed"
+  )
+
+  renamed(
+    "java-only",
+    """|/a/src/main/java/a/Other.java
+       |package a;
+       |public class <<Other>>{
+       |
+       |  <<Ot@@her>> other;
+       |  public <<Other>>(){
+       |     
+       |  }
        |}
        |/a/src/main/scala/a/Main.scala
        |package a
@@ -429,7 +502,8 @@ class RenameLspSuite extends BaseRenameLspSuite("rename") {
        |}
        |""".stripMargin,
     newName = "otherRename",
-    breakingChange = (str: String) => str.replaceAll("Int", "String")
+    breakingChange = (str: String) => str.replaceAll("Int", "String"),
+    expectedError = true
   )
 
   renamed(
@@ -448,7 +522,7 @@ class RenameLspSuite extends BaseRenameLspSuite("rename") {
   )
 
   renamed(
-    "macro2",
+    "macro1",
     """|/a/src/main/scala/a/Main.scala
        |package a
        |import io.circe.generic.JsonCodec
@@ -463,7 +537,7 @@ class RenameLspSuite extends BaseRenameLspSuite("rename") {
   )
 
   renamed(
-    "macro1",
+    "macro2",
     """|/a/src/main/scala/a/Main.scala
        |package a
        |import io.circe.generic.JsonCodec
@@ -474,7 +548,7 @@ class RenameLspSuite extends BaseRenameLspSuite("rename") {
   )
 
   renamed(
-    "macro2",
+    "macro3",
     """|/a/src/main/scala/a/Main.scala
        |package a
        |import io.circe.generic.JsonCodec
@@ -518,6 +592,36 @@ class RenameLspSuite extends BaseRenameLspSuite("rename") {
   )
 
   renamed(
+    "backtick-new-name",
+    """|/a/src/main/scala/a/Main.scala
+       |package a
+       |object Main{
+       |  val <<toRename>> = 123
+       |}
+       |/a/src/main/scala/a/Main2.scala
+       |package a
+       |object Main2{
+       |  val toRename = Main.<<toR@@ename>>
+       |}
+       |""".stripMargin,
+    newName = "other-rename"
+  )
+
+  renamed(
+    "backtick-old-and-new-name",
+    """|/a/src/main/scala/a/Main.scala
+       |package a
+       |object Main{
+       |  val <<`to-Rename`>> = 123
+       |}
+       |object Main2{
+       |  val toRename = Main.<<`to-R@@ename`>>
+       |}
+       |""".stripMargin,
+    newName = "`other-rename`"
+  )
+
+  renamed(
     "backtick",
     """|/a/src/main/scala/a/Main.scala
        |package a
@@ -529,6 +633,20 @@ class RenameLspSuite extends BaseRenameLspSuite("rename") {
        |}
        |""".stripMargin,
     newName = "other"
+  )
+
+  renamed(
+    "double-backtick",
+    """|/a/src/main/scala/a/Main.scala
+       |package a
+       |object Main{
+       |  val <<greet@@ing>> = "Hello"
+       |  "" match {
+       |    case <<`greeting`>> =>
+       |  }
+       |}
+       |""".stripMargin,
+    newName = "greeting-!"
   )
 
   renamed(
@@ -594,21 +712,18 @@ class RenameLspSuite extends BaseRenameLspSuite("rename") {
     newName = "name"
   )
 
-  // tests currently not working correctly due to issues in SemanticDB
-  // https://github.com/scalameta/metals/issues/1086 - most likely due to scalameta bug
   renamed(
     "constructor",
     """|/a/src/main/scala/a/Main.scala
        |case class Name(<<va@@lue>>: String)
        |
        |object Main {
-       |  val name2 = new Name(value = "44")
+       |  val name2 = new Name(<<value>> = "44")
        |}
        |""".stripMargin,
     newName = "name"
   )
 
-  // https://github.com/scalameta/scalameta/issues/1909
   renamed(
     "type-params",
     """|/a/src/main/scala/a/Main.scala
@@ -616,13 +731,87 @@ class RenameLspSuite extends BaseRenameLspSuite("rename") {
        |trait <<ABC>>
        |class CBD[T <: <<AB@@C>>]
        |object Main{
-       |  val a = classOf[ABC]
+       |  val a = classOf[<<ABC>>]
        |  val b = new CBD[<<ABC>>]
        |}
        |""".stripMargin,
     newName = "Animal"
   )
 
+  renamed(
+    "implicit-parameter",
+    """|/a/src/main/scala/a/Main.scala
+       |trait A {
+       | implicit def <<foo>>: Double
+       |}
+       |object A extends A {
+       |  implicit def <<fo@@o>>: Double = 0.1
+       |  def bar(implicit x: Double): Double = x
+       |  val x = bar
+       |}
+       |""".stripMargin,
+    newName = "foo2"
+  )
+
+  renamed(
+    "ignores-unrelated-build-targets",
+    """|/a/src/main/scala/a/Main.scala
+       |trait <<@@A>>
+       |/a/src/main/scala/a/B.scala
+       |trait B extends <<A>>
+       |/b/src/main/scala/b/Main.scala
+       |trait A
+       |/b/src/main/scala/b/B.scala
+       |trait B extends A
+       |""".stripMargin,
+    metalsJson = Some(
+      s"""|{
+          |  "a" : {
+          |    "scalaVersion": "${BuildInfo.scalaVersion}"
+          |  },
+          |  "b" : {
+          |    "scalaVersion": "${BuildInfo.scalaVersion}"
+          |  }
+          |}""".stripMargin
+    ),
+    newName = "C"
+  )
+
+  renamed(
+    "hierarchy-inside-method-trait",
+    """|/a/src/main/scala/a/Main.scala
+       |package a
+       |object Main {
+       |  final def main(args: Array[String]) = {
+       |    sealed trait <<Sy@@mbol>>
+       |    case class Method(name: String) extends <<Symbol>>
+       |    case class Variable(value: String) extends <<Symbol>>
+       |
+       |    val symbol2: <<Symbol>> = Method("method")
+       |    val symbol3: <<Symbol>> = Variable("value")
+       |  }
+       |}
+       |""".stripMargin,
+    newName = "NewSymbol"
+  )
+
+  renamed(
+    "hierarchy-inside-method-class",
+    """|/a/src/main/scala/a/Main.scala
+       |package a
+       |object Main {
+       |  final def main(args: Array[String]) = {
+       |    sealed abstract class <<Sy@@mbol>>
+       |    case class Method(name: String) extends <<Symbol>>
+       |    case class Variable(value: String) extends <<Symbol>>
+       |
+       |    val symbol2: <<Symbol>> = Method("method")
+       |    val symbol3: <<Symbol>> = Variable("value")
+       |  }
+       |}
+       |""".stripMargin,
+    newName = "NewSymbol"
+  )
   override protected def libraryDependencies: List[String] =
     List("org.scalatest::scalatest:3.0.5", "io.circe::circe-generic:0.12.0")
 

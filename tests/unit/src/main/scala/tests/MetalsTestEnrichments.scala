@@ -5,10 +5,12 @@ import java.nio.file.Files
 import scala.collection.mutable.ArrayBuffer
 import scala.{meta => m}
 
+import scala.meta.dialects
 import scala.meta.internal.metals.JdkSources
 import scala.meta.internal.metals.Memory
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.PositionSyntax._
+import scala.meta.internal.metals.ScalaVersions
 import scala.meta.internal.metals.SemanticdbDefinition
 import scala.meta.internal.metals.WorkspaceSources
 import scala.meta.internal.metals.WorkspaceSymbolInformation
@@ -42,15 +44,14 @@ object MetalsTestEnrichments {
 
   implicit class XtensionTestClasspath(classpath: Classpath) {
     def bytesSize: String = {
-      val bytes = classpath.entries.foldLeft(0L) {
-        case (a, b) =>
-          a + Files.size(b.toNIO)
+      val bytes = classpath.entries.foldLeft(0L) { case (a, b) =>
+        a + Files.size(b.toNIO)
       }
       Memory.approx(bytes)
     }
   }
   implicit class XtensionTestBuildTargets(wsp: WorkspaceSymbolProvider) {
-    def indexWorkspace(): Unit = {
+    def indexWorkspace(dialect: m.Dialect): Unit = {
       val files = new WorkspaceSources(wsp.workspace)
       for {
         source <- files.all
@@ -58,19 +59,24 @@ object MetalsTestEnrichments {
       } {
         val input = source.toInput
         val symbols = ArrayBuffer.empty[WorkspaceSymbolInformation]
-        SemanticdbDefinition.foreach(input) {
+        SemanticdbDefinition.foreach(input, dialect) {
           case defn @ SemanticdbDefinition(info, _, _) =>
             if (WorkspaceSymbolProvider.isRelevantKind(info.kind)) {
               symbols += defn.toCached
             }
         }
-        wsp.didChange(source, symbols)
+        wsp.didChange(source, symbols.toSeq)
       }
     }
     def indexLibraries(libraries: Seq[Library]): Unit = {
-      JdkSources(None).foreach { zip => wsp.index.addSourceJar(zip) }
+      JdkSources(None).foreach { zip =>
+        wsp.index.addSourceJar(zip, dialects.Scala213)
+      }
       libraries.foreach(
-        _.sources.entries.foreach(s => wsp.index.addSourceJar(s))
+        _.sources.entries.foreach { s =>
+          val dialect = ScalaVersions.dialectForDependencyJar(s.filename)
+          wsp.index.addSourceJar(s, dialect)
+        }
       )
       val bti = new BuildTargetIdentifier("workspace")
       val buildTarget = new BuildTarget(
@@ -91,16 +97,18 @@ object MetalsTestEnrichments {
       val data = gson.toJsonTree(scalaTarget)
       buildTarget.setData(data)
       val result = new WorkspaceBuildTargetsResult(List(buildTarget).asJava)
-      wsp.buildTargets.addWorkspaceBuildTargets(result)
+      val data0 = new m.internal.metals.TargetData
+      data0.addWorkspaceBuildTargets(result)
       val item = new ScalacOptionsItem(
         bti,
         Nil.asJava,
         libraries.flatMap(_.classpath.entries).map(_.toURI.toString).asJava,
         ""
       )
-      wsp.buildTargets.addScalacOptions(
+      data0.addScalacOptions(
         new ScalacOptionsResult(List(item).asJava)
       )
+      wsp.buildTargets.addData(data0)
     }
   }
   implicit class XtensionTestLspRange(range: l.Range) {

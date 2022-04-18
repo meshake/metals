@@ -1,5 +1,6 @@
 package tests
 
+import scala.meta.dialects
 import scala.meta.internal.inputs._
 import scala.meta.internal.metals.WorkspaceSymbolProvider
 import scala.meta.internal.mtags.Mtags
@@ -14,7 +15,7 @@ class WorkspaceSymbolExpectSuite
         file,
         { () =>
           val input = file.input
-          val mtags0 = Mtags.allToplevels(input)
+          val mtags0 = Mtags.allToplevels(input, dialects.Scala213)
           val symtab0 = mtags0.symbols.map(i => i.symbol -> i).toMap
           val mtags = mtags0.copy(
             occurrences = mtags0.occurrences.filter { occ =>
@@ -22,14 +23,8 @@ class WorkspaceSymbolExpectSuite
             }
           )
           val obtained = Semanticdbs.printTextDocument(mtags)
-          val isException = Set(
-            "example/nested/LocalClass#LocalClass#"
-          )
           val unknownSymbols = mtags.occurrences.collect {
-            case occ
-                if symtab.info(occ.symbol).isEmpty && !isException(
-                  occ.symbol
-                ) =>
+            case occ if symtab.info(occ.symbol).isEmpty =>
               val pos = input.toPosition(occ)
               pos.formatMessage("error", s"unknown symbol: ${occ.symbol}")
           }

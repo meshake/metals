@@ -1,6 +1,7 @@
 package scala.meta.internal.metals.debug
 
 import java.net.Socket
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.concurrent.ExecutionContext
@@ -9,34 +10,48 @@ import scala.concurrent.Promise
 
 import scala.meta.internal.metals.Cancelable
 import scala.meta.internal.metals.Compilers
-import scala.meta.internal.metals.GlobalTrace
+import scala.meta.internal.metals.EmptyCancelToken
+import scala.meta.internal.metals.JsonParser._
+import scala.meta.internal.metals.MetalsEnrichments._
+import scala.meta.internal.metals.StacktraceAnalyzer
+import scala.meta.internal.metals.StatusBar
+import scala.meta.internal.metals.Trace
+import scala.meta.internal.metals.debug.DebugProtocol.CompletionRequest
+import scala.meta.internal.metals.debug.DebugProtocol.ErrorOutputNotification
 import scala.meta.internal.metals.debug.DebugProtocol.InitializeRequest
 import scala.meta.internal.metals.debug.DebugProtocol.LaunchRequest
 import scala.meta.internal.metals.debug.DebugProtocol.OutputNotification
 import scala.meta.internal.metals.debug.DebugProtocol.RestartRequest
 import scala.meta.internal.metals.debug.DebugProtocol.SetBreakpointRequest
 import scala.meta.internal.metals.debug.DebugProxy._
+import scala.meta.io.AbsolutePath
 
+import org.eclipse.lsp4j.Position
+import org.eclipse.lsp4j.debug.CompletionsResponse
 import org.eclipse.lsp4j.debug.SetBreakpointsResponse
+import org.eclipse.lsp4j.debug.Source
+import org.eclipse.lsp4j.debug.StackFrame
 import org.eclipse.lsp4j.jsonrpc.MessageConsumer
+import org.eclipse.lsp4j.jsonrpc.debug.messages.DebugResponseMessage
 import org.eclipse.lsp4j.jsonrpc.messages.Message
 
 private[debug] final class DebugProxy(
     sessionName: String,
-    sourcePathProvider: SourcePathProvider,
     client: RemoteEndpoint,
     server: ServerAdapter,
-    compilers: Compilers
+    debugAdapter: MetalsDebugAdapter,
+    stackTraceAnalyzer: StacktraceAnalyzer,
+    compilers: Compilers,
+    stripColor: Boolean,
+    statusBar: StatusBar
 )(implicit ec: ExecutionContext) {
   private val exitStatus = Promise[ExitStatus]()
   @volatile private var outputTerminated = false
   @volatile private var debugMode: DebugMode = DebugMode.Enabled
-
   private val cancelled = new AtomicBoolean()
-  private val adapters = new MetalsDebugAdapters
 
-  private val handleSetBreakpointsRequest =
-    new SetBreakpointsRequestHandler(server, adapters, compilers)
+  @volatile private var clientAdapter = ClientConfigurationAdapter.default
+  @volatile private var lastFrames: Array[StackFrame] = Array.empty
 
   lazy val listen: Future[ExitStatus] = {
     scribe.info(s"Starting debug proxy for [$sessionName]")
@@ -55,18 +70,25 @@ private[debug] final class DebugProxy(
       .andThen { case _ => cancel() }
   }
 
+  private val initialized = Promise[Unit]()
+
   private val handleClientMessage: MessageConsumer = {
     case null =>
       () // ignore
     case _ if cancelled.get() =>
       () // ignore
     case request @ InitializeRequest(args) =>
-      adapters.initialize(args)
+      statusBar.trackFuture(
+        "Initializing debugger",
+        initialized.future
+      )
+      clientAdapter = ClientConfigurationAdapter.initialize(args)
       server.send(request)
     case request @ LaunchRequest(debugMode) =>
       this.debugMode = debugMode
       server.send(request)
     case request @ RestartRequest(_) =>
+      initialized.trySuccess(())
       // set the status first, since the server can kill the connection
       exitStatus.trySuccess(Restarted)
       outputTerminated = true
@@ -77,50 +99,124 @@ private[debug] final class DebugProxy(
       response.setBreakpoints(Array.empty)
       client.consume(DebugProtocol.syntheticResponse(request, response))
     case request @ SetBreakpointRequest(args) =>
-      handleSetBreakpointsRequest(args)
+      val originalSource = DebugProtocol.copy(args.getSource)
+      val metalsSourcePath = clientAdapter.toMetalsPath(originalSource.getPath)
+
+      args.getBreakpoints.foreach { breakpoint =>
+        val line = clientAdapter.normalizeLineForServer(breakpoint.getLine)
+        breakpoint.setLine(line)
+      }
+
+      val requests =
+        debugAdapter.adaptSetBreakpointsRequest(metalsSourcePath, args)
+      server
+        .sendPartitioned(requests.map(DebugProtocol.syntheticRequest))
+        .map(_.map(DebugProtocol.parseResponse[SetBreakpointsResponse]))
+        .map(_.flatMap(_.toList))
+        .map(assembleResponse(_, originalSource))
         .map(DebugProtocol.syntheticResponse(request, _))
         .foreach(client.consume)
 
-    case message =>
-      server.send(message)
+    case request @ CompletionRequest(args) =>
+      val completions = for {
+        frame <- lastFrames.find(_.getId() == args.getFrameId())
+      } yield {
+        val originalSource = frame.getSource()
+        val sourceUri = clientAdapter.toMetalsPath(originalSource.getPath)
+        compilers.debugCompletions(
+          sourceUri,
+          new Position(frame.getLine() - 1, 0),
+          EmptyCancelToken,
+          args
+        )
+      }
+      completions
+        .getOrElse(Future.failed(new Exception("No source data available")))
+        .map { items =>
+          val responseArgs = new CompletionsResponse()
+          responseArgs.setTargets(items.toArray)
+          val response = new DebugResponseMessage
+          response.setId(request.getId)
+          response.setMethod(request.getMethod)
+          response.setResult(responseArgs.toJson)
+          client.consume(response)
+        }
+        .withTimeout(5, TimeUnit.SECONDS)
+
+    case message => server.send(message)
+  }
+
+  private def assembleResponse(
+      responses: Iterable[SetBreakpointsResponse],
+      originalSource: Source
+  ): SetBreakpointsResponse = {
+    val breakpoints = for {
+      response <- responses
+      breakpoint <- response.getBreakpoints
+    } yield {
+      val line = clientAdapter.adaptLineForClient(breakpoint.getLine)
+      breakpoint.setSource(originalSource)
+      breakpoint.setLine(line)
+      breakpoint
+    }
+
+    val response = new SetBreakpointsResponse
+    response.setBreakpoints(breakpoints.toArray)
+    response
   }
 
   private val handleServerMessage: Message => Unit = {
-    case null =>
-      () // ignore
-    case _ if cancelled.get() =>
-      () // ignore
-    case OutputNotification() if outputTerminated =>
+    case null => () // ignore
+    case _ if cancelled.get() => () // ignore
+    case OutputNotification(_) if outputTerminated => ()
     // ignore. When restarting, the output keeps getting printed for a short while after the
     // output window gets refreshed resulting in stale messages being printed on top, before
     // any actual logs from the restarted process
     case response @ DebugProtocol.StackTraceResponse(args) =>
       import scala.meta.internal.metals.JsonParser._
-      args.getStackFrames.foreach {
-        case frame if frame.getSource == null =>
-        // send as is, it is most often a frame for a synthetic class
-        case frame =>
-          sourcePathProvider.findPathFor(frame.getSource) match {
-            case Some(path) =>
-              frame.getSource.setPath(adapters.adaptPathForClient(path))
-            case None =>
-              // don't send invalid source if we couldn't adapt it
-              frame.setSource(null)
-          }
-      }
+      for {
+        stackFrame <- args.getStackFrames
+        frameSource <- Option(stackFrame.getSource)
+        sourcePath <- Option(frameSource.getPath)
+        metalsSource <- debugAdapter.adaptStackFrameSource(
+          sourcePath,
+          frameSource.getName
+        )
+      } frameSource.setPath(clientAdapter.adaptPathForClient(metalsSource))
       response.setResult(args.toJson)
+      lastFrames = args.getStackFrames()
       client.consume(response)
+    case message @ ErrorOutputNotification(output) =>
+      initialized.trySuccess(())
+      val analyzedMessage = stackTraceAnalyzer
+        .fileLocationFromLine(output.getOutput())
+        .map(DebugProtocol.stacktraceOutputResponse(output, _))
+        .getOrElse(message)
+      client.consume(analyzedMessage)
+
+    case message @ OutputNotification(output) if stripColor =>
+      val raw = output.getOutput()
+      // As long as the color codes are valid this should correctly strip
+      // anything that is ESC (U+001B) plus [
+      val msgWithoutColorCodes = raw.replaceAll("\u001B\\[[;\\d]*m", "");
+      output.setOutput(msgWithoutColorCodes)
+      message.setParams(output)
+      client.consume(message)
+
     case message =>
+      initialized.trySuccess(())
       client.consume(message)
   }
 
   def cancel(): Unit = {
     if (cancelled.compareAndSet(false, true)) {
+      initialized.trySuccess(())
       scribe.info(s"Canceling debug proxy for [$sessionName]")
       exitStatus.trySuccess(Terminated)
       Cancelable.cancelAll(List(client, server))
     }
   }
+
 }
 
 private[debug] object DebugProxy {
@@ -136,30 +232,48 @@ private[debug] object DebugProxy {
 
   def open(
       name: String,
-      sourcePathProvider: SourcePathProvider,
       awaitClient: () => Future[Socket],
       connectToServer: () => Future[Socket],
-      compilers: Compilers
+      debugAdapter: MetalsDebugAdapter,
+      stackTraceAnalyzer: StacktraceAnalyzer,
+      compilers: Compilers,
+      workspace: AbsolutePath,
+      stripColor: Boolean,
+      status: StatusBar
   )(implicit ec: ExecutionContext): Future[DebugProxy] = {
     for {
       server <- connectToServer()
         .map(new SocketEndpoint(_))
-        .map(endpoint => withLogger(endpoint, DebugProtocol.serverName))
+        .map(endpoint =>
+          withLogger(workspace, endpoint, DebugProtocol.serverName)
+        )
         .map(new MessageIdAdapter(_))
         .map(new ServerAdapter(_))
       client <- awaitClient()
         .map(new SocketEndpoint(_))
-        .map(endpoint => withLogger(endpoint, DebugProtocol.clientName))
+        .map(endpoint =>
+          withLogger(workspace, endpoint, DebugProtocol.clientName)
+        )
         .map(new MessageIdAdapter(_))
-    } yield new DebugProxy(name, sourcePathProvider, client, server, compilers)
+    } yield new DebugProxy(
+      name,
+      client,
+      server,
+      debugAdapter,
+      stackTraceAnalyzer,
+      compilers,
+      stripColor,
+      status
+    )
   }
 
   private def withLogger(
+      workspace: AbsolutePath,
       endpoint: RemoteEndpoint,
       name: String
-  ): RemoteEndpoint = {
-    val trace = GlobalTrace.setupTracePrinter(name)
-    if (trace == null) endpoint
-    else new EndpointLogger(endpoint, trace)
-  }
+  ): RemoteEndpoint =
+    Trace.setupTracePrinter(name, workspace) match {
+      case Some(trace) => new EndpointLogger(endpoint, trace)
+      case None => endpoint
+    }
 }

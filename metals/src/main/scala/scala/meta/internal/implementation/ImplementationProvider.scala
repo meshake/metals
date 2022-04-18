@@ -5,19 +5,22 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 
 import scala.collection.mutable
+import scala.collection.parallel.CollectionConverters._
 import scala.util.control.NonFatal
 
 import scala.meta.internal.metals.Buffers
 import scala.meta.internal.metals.BuildTargets
 import scala.meta.internal.metals.DefinitionProvider
 import scala.meta.internal.metals.MetalsEnrichments._
+import scala.meta.internal.metals.ScalaVersionSelector
+import scala.meta.internal.metals.SemanticdbFeatureProvider
 import scala.meta.internal.mtags.GlobalSymbolIndex
 import scala.meta.internal.mtags.Mtags
 import scala.meta.internal.mtags.Semanticdbs
 import scala.meta.internal.mtags.SymbolDefinition
 import scala.meta.internal.mtags.{Symbol => MSymbol}
+import scala.meta.internal.parsing.Trees
 import scala.meta.internal.semanticdb.ClassSignature
-import scala.meta.internal.semanticdb.MethodSignature
 import scala.meta.internal.semanticdb.Scala._
 import scala.meta.internal.semanticdb.Signature
 import scala.meta.internal.semanticdb.SymbolInformation
@@ -38,27 +41,30 @@ final class ImplementationProvider(
     index: GlobalSymbolIndex,
     buildTargets: BuildTargets,
     buffer: Buffers,
-    definitionProvider: DefinitionProvider
-) {
+    definitionProvider: DefinitionProvider,
+    trees: Trees,
+    scalaVersionSelector: ScalaVersionSelector
+) extends SemanticdbFeatureProvider {
   import ImplementationProvider._
 
   private val globalTable = new GlobalClassTable(buildTargets)
   private val implementationsInPath =
     new ConcurrentHashMap[Path, Map[String, Set[ClassLocation]]]
 
-  def clear(): Unit = {
+  override def reset(): Unit = {
     implementationsInPath.clear()
   }
 
-  def onDelete(path: Path): Unit = {
-    implementationsInPath.remove(path)
+  override def onDelete(path: AbsolutePath): Unit = {
+    implementationsInPath.remove(path.toNIO)
   }
 
-  def onChange(docs: TextDocuments, path: Path): Unit = {
-    implementationsInPath.compute(
-      path,
-      { (_, _) => computeInheritance(docs) }
-    )
+  override def onChange(docs: TextDocuments, path: AbsolutePath): Unit = {
+    if (!path.isJarFileSystem)
+      implementationsInPath.compute(
+        path.toNIO,
+        { (_, _) => computeInheritance(docs) }
+      )
   }
 
   private def computeInheritance(
@@ -78,36 +84,8 @@ final class ImplementationProvider(
         )
       }
     }
-    parentImplLocationPairs.groupBy(_._1).map {
-      case (symbol, locations) =>
-        symbol -> locations.map(_._2).toSet
-    }
-  }
-
-  def defaultSymbolSearch(
-      textDocumentWithPath: TextDocumentWithPath
-  ): String => Option[SymbolInformation] =
-    defaultSymbolSearch(
-      textDocumentWithPath.filePath,
-      textDocumentWithPath.textDocument
-    )
-
-  def defaultSymbolSearchMemoize(
-      anyWorkspacePath: AbsolutePath,
-      textDocument: TextDocument
-  ): String => Option[SymbolInformation] = {
-    lazy val global =
-      globalTable.globalSymbolTableFor(anyWorkspacePath)
-    val textSymbolsMap = textDocument.symbols.map(s => s.symbol -> s).toMap
-    val memoized: mutable.Map[String, SymbolInformation] = mutable.Map.empty
-    symbol => {
-      val result = memoized
-        .get(symbol)
-        .orElse(textSymbolsMap.get(symbol))
-        .orElse(findSymbolInformation(symbol))
-        .orElse(global.flatMap(_.safeInfo(symbol)))
-      result.foreach(r => memoized.put(symbol, r))
-      result
+    parentImplLocationPairs.groupBy(_._1).map { case (symbol, locations) =>
+      symbol -> locations.map(_._2).toSet
     }
   }
 
@@ -215,34 +193,24 @@ final class ImplementationProvider(
   private def methodInParentSignature(
       currentClassSig: ClassSignature,
       bottomSymbol: SymbolInformation,
-      bottomClassSig: ClassSignature,
-      childASF: Map[String, String] = Map.empty
+      bottomClassSig: ClassSignature
   ): Seq[Location] = {
     currentClassSig.parents.flatMap {
       case parentSym: TypeRef =>
         val parentTextDocument = findSemanticDbForSymbol(parentSym.symbol)
         def search(symbol: String) =
           parentTextDocument.flatMap(findSymbol(_, symbol))
-        val parentASF =
-          AsSeenFrom.calculateAsSeenFrom(
-            parentSym,
-            currentClassSig.typeParameters
-          )
-        val asSeenFrom = AsSeenFrom.translateAsSeenFrom(childASF, parentASF)
         search(parentSym.symbol).map(_.signature) match {
           case Some(parenClassSig: ClassSignature) =>
             val fromParent = methodInParentSignature(
               parenClassSig,
               bottomSymbol,
-              bottomClassSig,
-              asSeenFrom
+              bottomClassSig
             )
             if (fromParent.isEmpty) {
               locationFromClass(
                 bottomSymbol,
-                bottomClassSig,
                 parenClassSig,
-                asSeenFrom,
                 search,
                 parentTextDocument
               )
@@ -258,17 +226,13 @@ final class ImplementationProvider(
 
   private def locationFromClass(
       bottomSymbolInformation: SymbolInformation,
-      bottomClassSignature: ClassSignature,
       parentClassSig: ClassSignature,
-      asSeenFrom: Map[String, String],
       search: String => Option[SymbolInformation],
       parentTextDocument: Option[TextDocument]
   ): Option[Location] = {
     val matchingSymbol = MethodImplementation.findParentSymbol(
       bottomSymbolInformation,
-      bottomClassSignature,
       parentClassSig,
-      asSeenFrom,
       search
     )
     for {
@@ -283,7 +247,8 @@ final class ImplementationProvider(
       range <- implOccurrence.range
       distance = buffer.tokenEditDistance(
         source,
-        parentDoc.text
+        parentDoc.text,
+        trees
       )
       revised <- distance.toRevised(range.toLSP)
     } yield new Location(source.toNIO.toUri().toString(), revised)
@@ -298,8 +263,6 @@ final class ImplementationProvider(
     def findImplementationSymbol(
         parentSymbolInfo: SymbolInformation,
         implDocument: TextDocument,
-        symbolClass: SymbolInformation,
-        classContext: InheritanceContext,
         implReal: ClassLocation
     ): Option[String] = {
       if (isClassLike(parentSymbolInfo))
@@ -308,8 +271,6 @@ final class ImplementationProvider(
         val symbolSearch = defaultSymbolSearch(source, implDocument)
         MethodImplementation.findInherited(
           parentSymbolInfo,
-          symbolClass,
-          classContext,
           implReal,
           symbolSearch
         )
@@ -320,8 +281,7 @@ final class ImplementationProvider(
 
     for {
       classContext <- inheritanceContext.toIterable
-      plainParentSymbol <- classContext.findSymbol(symbol).toIterable
-      parentSymbol = addParameterSignatures(plainParentSymbol, classContext)
+      parentSymbol <- classContext.findSymbol(symbol).toIterable
       symbolClass <- classFromSymbol(parentSymbol, classContext.findSymbol)
       locationsByFile = findImplementation(
         symbolClass.symbol,
@@ -332,15 +292,12 @@ final class ImplementationProvider(
       locations = locationsByFile(file)
       implPath = AbsolutePath(file)
       implDocument <- findSemanticdb(implPath).toIterable
-      distance = buffer.tokenEditDistance(implPath, implDocument.text)
+      distance = buffer.tokenEditDistance(implPath, implDocument.text, trees)
       implLocation <- locations
-      implReal = implLocation.toRealNames(symbolClass, translateKey = true)
       implSymbol <- findImplementationSymbol(
         parentSymbol,
         implDocument,
-        symbolClass,
-        classContext,
-        implReal
+        implLocation
       )
       if !findSymbol(implDocument, implSymbol).exists(
         _.kind == SymbolInformation.Kind.TYPE
@@ -356,10 +313,14 @@ final class ImplementationProvider(
     allLocations.asScala
   }
 
-  private def findSemanticdb(fileSource: AbsolutePath): Option[TextDocument] =
-    semanticdbs
-      .textDocument(fileSource)
-      .documentIncludingStale
+  private def findSemanticdb(fileSource: AbsolutePath): Option[TextDocument] = {
+    if (fileSource.isJarFileSystem)
+      None
+    else
+      semanticdbs
+        .textDocument(fileSource)
+        .documentIncludingStale
+  }
 
   private def findImplementation(
       symbol: String,
@@ -376,11 +337,7 @@ final class ImplementationProvider(
           (loc.symbol.isLocal && loc.file != currentPath)
         }
       directImplementations ++ directImplementations
-        .flatMap { loc =>
-          val allPossible = loop(loc.symbol, loc.file)
-          allPossible.map(_.translateAsSeenFrom(loc))
-
-        }
+        .flatMap { loc => loop(loc.symbol, loc.file) }
     }
 
     loop(symbol, Some(file)).groupBy(_.file).collect {
@@ -430,6 +387,23 @@ final class ImplementationProvider(
     classInfo.map(inf => dealiasClass(inf, findSymbol))
   }
 
+  private def findDefOccurrence(
+      semanticDb: TextDocument,
+      symbol: String,
+      source: AbsolutePath
+  ): Option[SymbolOccurrence] = {
+    def isDefinitionOccurrence(occ: SymbolOccurrence) =
+      occ.role.isDefinition && occ.symbol == symbol
+
+    semanticDb.occurrences
+      .find(isDefinitionOccurrence)
+      .orElse(
+        Mtags
+          .allToplevels(source.toInput, scalaVersionSelector.getDialect(source))
+          .occurrences
+          .find(isDefinitionOccurrence)
+      )
+  }
 }
 
 object ImplementationProvider {
@@ -495,19 +469,9 @@ object ImplementationProvider {
     def fromClassSignature(
         classSig: ClassSignature
     ): Seq[(String, ClassLocation)] = {
-      val allLocations = classSig.parents.collect {
-        case t: TypeRef =>
-          val loc =
-            ClassLocation(
-              symbol,
-              filePath.map(_.toNIO),
-              t,
-              classSig.typeParameters
-            )
-          t.symbol -> loc
-
+      classSig.parents.collect { case t: TypeRef =>
+        t.symbol -> ClassLocation(symbol, filePath.map(_.toNIO))
       }
-      allLocations
     }
 
     def fromTypeSignature(typeSig: TypeSignature) = {
@@ -516,9 +480,7 @@ object ImplementationProvider {
           Seq(
             tr.symbol -> ClassLocation(
               symbol,
-              filePath.map(_.toNIO),
-              tr,
-              typeSig.typeParameters
+              filePath.map(_.toNIO)
             )
           )
         case _ => Seq.empty
@@ -535,62 +497,7 @@ object ImplementationProvider {
     }
   }
 
-  def findDefOccurrence(
-      semanticDb: TextDocument,
-      symbol: String,
-      source: AbsolutePath
-  ): Option[SymbolOccurrence] = {
-    def isDefinitionOccurrence(occ: SymbolOccurrence) =
-      occ.role.isDefinition && occ.symbol == symbol
-
-    semanticDb.occurrences
-      .find(isDefinitionOccurrence)
-      .orElse(
-        Mtags
-          .allToplevels(source.toInput)
-          .occurrences
-          .find(isDefinitionOccurrence)
-      )
-  }
-
   def isClassLike(info: SymbolInformation): Boolean =
     info.isObject || info.isClass || info.isTrait || info.isType
 
-  def addParameterSignatures(
-      plainParentSymbol: SymbolInformation,
-      classContext: InheritanceContext
-  ): SymbolInformation = {
-    plainParentSymbol.copy(
-      signature = addParameterSignatures(
-        plainParentSymbol.signature,
-        classContext.findSymbol
-      )
-    )
-  }
-
-  def addParameterSignatures(
-      signature: Signature,
-      findSymbol: String => Option[SymbolInformation]
-  ): Signature = {
-    signature match {
-      case methodSignature: MethodSignature =>
-        addParameterSignatures(methodSignature, findSymbol)
-      case _ => signature
-    }
-  }
-
-  def addParameterSignatures(
-      signature: MethodSignature,
-      findSymbol: String => Option[SymbolInformation]
-  ): MethodSignature = {
-    val allParams = signature.parameterLists.map { scope =>
-      if (scope.symlinks.size > scope.hardlinks.size) {
-        val hardlinks = scope.symlinks.flatMap { sym => findSymbol(sym) }
-        scope.copy(hardlinks = hardlinks)
-      } else {
-        scope
-      }
-    }
-    signature.copy(parameterLists = allParams)
-  }
 }

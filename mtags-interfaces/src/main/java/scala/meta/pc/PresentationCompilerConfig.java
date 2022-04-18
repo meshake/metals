@@ -1,6 +1,8 @@
 package scala.meta.pc;
 
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
@@ -12,8 +14,8 @@ public interface PresentationCompilerConfig {
 
     /**
      * Command ID to trigger parameter hints (textDocument/signatureHelp) in the editor.
-     *
-     * See https://scalameta.org/metals/docs/editors/new-editor.html#-dmetalssignature-helpcommand
+     * 
+     * See https://scalameta.org/metals/docs/integrations/new-editor.html#compileroptionsparameterhintscommand
      * for details.
      */
     Optional<String> parameterHintsCommand();
@@ -31,6 +33,11 @@ public interface PresentationCompilerConfig {
         map.put("java/util/", "ju.");
         return map;
     }
+
+    /**
+     * Returns true if user didn't modify symbol prefixes
+     */
+    boolean isDefaultSymbolPrefixes();
 
     /**
      * What text format to use for rendering `override def` labels for completion items.
@@ -64,12 +71,6 @@ public interface PresentationCompilerConfig {
      */
     boolean isHoverDocumentationEnabled();
 
-
-    /**
-     * Returns true if the result from <code>textDocument/foldingRange</code> should only use lines for folding.
-     */
-    boolean isFoldOnlyLines();
-    
     /**
      * True if the client defaults to adding the identation of the reference
      * line that the operation started on (relevant for multiline textEdits)
@@ -98,5 +99,19 @@ public interface PresentationCompilerConfig {
      * The unit to use for <code>timeoutDelay</code>.
      */
     TimeUnit timeoutUnit();
+
+    /**
+     * The SemanticDB compiler options to use for the <code>semanticdbTextDocument</code> method.
+     *
+     * The full list of supported options is documented here https://scalameta.org/docs/semanticdb/guide.html#scalac-compiler-plugin
+     */
+    List<String> semanticdbCompilerOptions();
+
+    static List<String> defaultSemanticdbCompilerOptions() {
+        return Arrays.asList(
+            "-P:semanticdb:synthetics:on",
+            "-P:semanticdb:text:on"
+        );
+    }
 
 }

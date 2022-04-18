@@ -2,6 +2,7 @@
 id: overview
 title: Text Editors
 sidebar_label: Overview
+slug: /
 ---
 
 ## Latest Metals server versions
@@ -13,7 +14,6 @@ specific sections.
 
 ```
 
-
 ## Editor support
 
 Metals works with the following text editors with varying degree of
@@ -24,9 +24,8 @@ functionality.
   <tr>
     <td />
     <td align="center">Visual Studio Code</td>
-    <td align="center">Atom</td>
     <td align="center">Vim</td>
-    <td align="center">Sublime Text 3</td>
+    <td align="center">Sublime Text</td>
     <td align="center">Emacs</td>
     <td align="center">Eclipse</td>
   </tr>
@@ -37,13 +36,11 @@ functionality.
     <td align="center">Single click</td>
     <td align="center">Single click</td>
     <td align="center">Single click</td>
-    <td align="center">Single click</td>
     <td align="center">Few steps</td>
     <td align="center">Few steps</td>
   </tr>
   <tr>
     <td>Build import</td>
-    <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
@@ -57,11 +54,9 @@ functionality.
     <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
-    <td align="center">✅</td>
   </tr>
   <tr>
     <td>Goto definition</td>
-    <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
@@ -71,7 +66,6 @@ functionality.
   <tr>
     <td>Completions</td>
     <td align="center">✅</td>
-    <td align="center">✅*</td>
     <td align="center">✅*</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
@@ -84,12 +78,18 @@ functionality.
     <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
+  </tr>
+  <tr>
+    <td>Hover for selection</td>
     <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">❌</td>
+    <td align="center">❌</td>
   </tr>
   <tr>
     <td>Parameter hints</td>
     <td align="center">✅</td>
-    <td align="center"></td>
     <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
@@ -102,12 +102,10 @@ functionality.
     <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
-    <td align="center">✅</td>
   </tr>
   <tr>
     <td>Run/Debug</td>
     <td align="center">✅</td>
-    <td align="center"></td>
     <td align="center"></td>
     <td align="center"></td>
     <td align="center">✅</td>
@@ -115,7 +113,6 @@ functionality.
   </tr>
   <tr>
     <td>Find implementations</td>
-    <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
@@ -129,7 +126,6 @@ functionality.
     <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
-    <td align="center">✅</td>
   </tr>
   <tr>
     <td>Code actions</td>
@@ -138,21 +134,17 @@ functionality.
     <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
-    <td align="center">✅</td>
-  </tr>
   </tr>
   <tr>
     <td>Worksheets</td>
     <td align="center">✅</td>
-    <td align="center">Comments</td>
     <td align="center">✅</td>
-    <td align="center">Comments</td>
+    <td align="center">✅</td>
     <td align="center">Comments</td>
     <td align="center">Comments</td>
   </tr>
   <tr>
     <td>Document symbols</td>
-    <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">Flat</td>
     <td align="center">Flat</td>
@@ -162,7 +154,6 @@ functionality.
   <tr>
     <td>Workspace symbols</td>
     <td align="center">✅</td>
-    <td align="center"></td>
     <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
@@ -174,13 +165,11 @@ functionality.
     <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
-    <td align="center">✅</td>
     <td align="center">✅*</td>
   </tr>
   <tr>
     <td>Folding</td>
     <td align="center">✅</td>
-    <td align="center"> </td>
     <td align="center">✅</td>
     <td align="center"> </td>
     <td align="center">✅</td>
@@ -193,25 +182,46 @@ functionality.
     <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
-    <td align="center">✅</td>
   </tr>
   <tr>
     <td>Metals Extensions</td>
     <td align="center">✅</td>
-    <td align="center">Status bar</td>
-    <td align="center">Status bar, Quick pick</td>
-    <td align="center">Status bar, Input box</td>
+    <td align="center">✅</td>
+    <td align="center">Status bar, Input box, Decoration protocol, Did focus</td>
     <td align="center">Status bar</td>
     <td align="center">Status bar, Slow task</td>
   </tr>
   <tr>
      <td>Organize imports</td>
      <td align="center">✅</td>
-     <td align="center"></td>
+     <td align="center">✅</td>
+     <td align="center">✅</td>
      <td align="center">✅</td>
      <td align="center"></td>
+  </tr>
+  <tr>
+     <td>Implicit decorations</td>
      <td align="center">✅</td>
-     <td align="center"></td>
+     <td align="center">Shown in hover</td>
+     <td align="center">✅</td>
+     <td align="center">✅</td>
+     <td align="center">Shown in hover</td>
+  </tr>
+  <tr>
+     <td>Source file analyzer</td>
+     <td align="center">✅</td>
+     <td align="center">✅</td>
+     <td align="center">✅</td>
+     <td align="center">❌</td>
+     <td align="center">❌</td>
+  </tr>
+  <tr>
+     <td>Find text in dependency JAR files</td>
+     <td align="center">✅</td>
+     <td align="center">✅</td>
+     <td align="center">✅</td>
+     <td align="center">❌</td>
+     <td align="center">❌</td>
   </tr>
 </tbody>
 </table>
@@ -223,6 +233,8 @@ out-of-the-box.
 
 **Few steps**: installing Metals requires a few custom steps and minimal
 configuration to work.
+
+_You can find instructions on how to install Metals for your editor on its specific page._
 
 ## Build import
 
@@ -269,9 +281,6 @@ buffer.
   definition.
 
 ## Completions
-
-**✅ Atom**: no auto-import and string interpolator completions produce invalid
-code.
 
 **✅ Vim**: auto-import and snippets require
 [coc.nvim](https://github.com/neoclide/coc.nvim) client.
@@ -332,11 +341,13 @@ projects.
 
 ## Worksheets
 
-**✅**: Worksheets work via Decoration protocol and are added as a non-editable
-side decoration.
+**✅**: Worksheets work via the Decoration protocol and are added as a
+non-editable side decoration.
 
 **Comments**: Worksheets work via `workspace/applyEdit` by adding comments to
-the source code and support hover to show larger output.
+the source code and support hover to show larger output. You can find more
+information about worksheets under the editor specific worksheet section. For
+example, [here for VS Code](vscode.md#worksheets).
 
 ## Document symbols
 
@@ -386,12 +397,33 @@ Highlight references to the same symbol in the open file.
 Browse packages, classes and methods in the workspace and library dependencies
 using the Metals sidebar. This feature is only implemented in VS Code.
 
+## Test Explorer
+
+Test Explorer is a feature that allows editors to display tests as a separate tree representation of tests. 
+Although it was implemented in order to use Visual Studio Code's [Testing API](https://code.visualstudio.com/api/extension-guides/testing). Test Explorer API is editor agnostic and can be used by other editors than just VS Code.
+![test-explorer](https://i.imgur.com/Z3VtS0O.gif)
+
+Work on Test Explorer is still on progress and the feature has some known limitations:
+
+- Test Explorer is able to discover single test cases only for JUnit4 test classes. Support for other test frameworks is being worked on.
+- detecting suites in cross scala-version projects is inconsistent, see [this issue](https://github.com/scalameta/metals/issues/3503).
+- there is no support for JS and Native platforms. For any changes subscribe to the related [feature request](https://github.com/scalameta/metals-feature-requests/issues/256).
+
+You can find more
+information about Test Explorer under the [VS Code](vscode.md#test-explorer) specific section.
+### Running Tests
+
+Both run and debug under the hood use BSP's debug request. More information about it can be found at [Bloop DAP diagram](https://github.com/scalacenter/bloop/blob/master/docs/assets/dap-example-metals.png) or [BSP specification](https://build-server-protocol.github.io/docs/specification.html#debug-request) website.
+
 ## Metals Extensions
 
 **Status bar**: Editor client implements the `metals/status` notification.
 
+**Decoration protocol**: Editor client impliments the
+[Decoration Protocol](../integrations/decoration-protocol.md).
+
 **Tree view**: Editor client implements the
-[Tree View Protocol](tree-view-protocol.md).
+[Tree View Protocol](../integrations/tree-view-protocol.md).
 
 **Did focus**: Editor client implements the `metals/didFocusTextDocument`
 notification.
@@ -410,11 +442,20 @@ notification.
 The Metals language server supports custom extensions that are not part of the
 Language Server Protocol (LSP). These extensions are not necessary for Metals to
 function but they improve the user experience. To learn more about Metals
-extensions, see [integrating a new editor](new-editor.md).
+extensions, see [integrating a new editor](../integrations/new-editor.md).
+
+## Implicit decorations
+
+**✅**: Additional information inferred from the code can be show within the
+code using virtual text.
+
+**Shown in hover**: Additional information inferred from the code can be show
+when hovering over a specific line. That hover only shows the additional symbols
+on the current line.
 
 ## Additional file types
 
-Not all features are supported in all possible scenarios, espacially when it
+Not all features are supported in all possible scenarios, especially when it
 comes to non-standard Scala files like Ammonite scripts, worksheets or sbt
 scripts.
 
@@ -422,9 +463,9 @@ scripts.
 <thead>
   <tr>
     <td />
-    <td align="center">Sbt scripts</td>
+    <td align="center">sbt scripts</td>
     <td align="center">Worksheets</td>
-    <td align="center">Ammonite scripts</td>
+    <td align="center">Ammonite scripts*</td>
     <td align="center">Standalone Scala files</td>
   </tr>
 </thead>
@@ -466,10 +507,10 @@ scripts.
   </tr>
   <tr>
     <td>Find references</td>
-    <td align="center"></td>
-    <td align="center"></td>
     <td align="center">✅</td>
-    <td align="center"></td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
   </tr>
   <tr>
     <td>Run/Debug</td>
@@ -480,17 +521,17 @@ scripts.
   </tr>
   <tr>
     <td>Find implementations</td>
-    <td align="center"></td>
-    <td align="center"></td>
     <td align="center">✅</td>
     <td align="center"></td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
   </tr>
   <tr>
     <td>Rename symbol</td>
-    <td align="center"></td>
-    <td align="center"></td>
     <td align="center">✅</td>
-    <td align="center"></td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
   </tr>
   <tr>
     <td>Code actions</td>
@@ -508,10 +549,10 @@ scripts.
   </tr>
   <tr>
     <td>Workspace symbols</td>
-    <td align="center"></td>
-    <td align="center"></td>
     <td align="center">✅</td>
-    <td align="center"></td>
+    <td align="center">All symbols are local</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
   </tr>
   <tr>
     <td>Formatting</td>
@@ -523,16 +564,16 @@ scripts.
   <tr>
     <td>Folding</td>
     <td align="center">✅</td>
-    <td align="center"></td>
+    <td align="center">✅</td>
     <td align="center">✅</td>
     <td align="center">✅</td>
   </tr>
   <tr>
     <td>Highlight</td>
-    <td align="center"></td>
-    <td align="center"></td>
     <td align="center">✅</td>
-    <td align="center"></td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
   </tr>
   <tr>
      <td>Organize imports</td>
@@ -541,14 +582,26 @@ scripts.
      <td align="center"></td>
      <td align="center"></td>
   </tr>
+  <tr>
+    <td>Implicit decorations</td>
+    <td align="center">✅</td>
+    <td align="center"></td>
+    <td align="center">✅</td>
+    <td align="center">✅</td>
+  </tr>
+  <tr>
+    <td>Decode file (cfr, semanticdb, tasty, javap)</td>
+    <td align="center"></td>
+    <td align="center"></td>
+    <td align="center"></td>
+    <td align="center"></td>
+  </tr>
 </tbody>
 </table>
 
-\* Diagnostics for Sbt script and standalone Scala files will only show parsing
+\* Note that there are some specific Ammonite features that aren't supported
+like [multi-stage](https://ammonite.io/#Multi-stageScripts) scripts. Currently
+Ammonite support is also limited to Scala 2.
+
+\* Diagnostics for sbt script and standalone Scala files will only show parsing
 errors, but not diagnostics coming from the compiler.
-
-## Unsupported features
-
-Metals does not support the following features:
-
-- Refactoring: move class, extract/inline value, convert to block

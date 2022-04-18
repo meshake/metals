@@ -1,12 +1,11 @@
 package tests.pc
 
 import tests.BaseCompletionSuite
-import tests.BuildInfoVersions
 
 class CompletionSnippetSuite extends BaseCompletionSuite {
 
-  override def excludedScalaVersions: Set[String] =
-    BuildInfoVersions.scala3Versions.toSet
+  override def ignoreScalaVersion: Option[IgnoreScalaVersion] =
+    Some(IgnoreScala3)
 
   checkSnippet(
     "member",
@@ -125,13 +124,13 @@ class CompletionSnippetSuite extends BaseCompletionSuite {
         |  def foo(param: ArrayDeque@@)
         |}
         |""".stripMargin,
-    """|ju.ArrayDeque[$0]
+    """|ArrayDeque[$0]
        |""".stripMargin,
     compat = Map(
       "2.13" ->
-        """|ju.ArrayDeque[$0]
-           |mutable.ArrayDeque
-           |mutable.ArrayDequeOps
+        """|ArrayDeque[$0]
+           |ArrayDeque
+           |ArrayDequeOps
            |""".stripMargin
     )
   )

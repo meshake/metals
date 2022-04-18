@@ -1,10 +1,7 @@
 package tests
 
-import scala.collection.mutable
-
-import org.eclipse.{lsp4j => l}
-
-class AnalyzeStacktraceLspSuite extends BaseLspSuite("analyzestacktrace") {
+class AnalyzeStacktraceLspSuite
+    extends BaseAnalyzeStacktraceSuite("analyzestacktrace") {
 
   check(
     "simple",
@@ -55,41 +52,27 @@ class AnalyzeStacktraceLspSuite extends BaseLspSuite("analyzestacktrace") {
        |""".stripMargin
   )
 
-  def check(
-      name: String,
-      code: String,
-      stacktrace: String
-  ): Unit = {
-    test(name) {
-      cleanWorkspace()
-      for {
-        _ <- server.initialize(
-          s"""
-             |/metals.json
-             |{"a":{}}
-             |/a/src/main/scala/a/Main.scala
-             |${prepare(code)}
-             |""".stripMargin
-        )
-        _ <- server.didOpen("a/src/main/scala/a/Main.scala")
-        lenses = server.analyzeStacktrace(stacktrace)
-        output =
-          lenses
-            .map(cl =>
-              cl.getRange.getStart.getLine -> cl
-                .getCommand()
-                .getArguments()
-                .get(0)
-                .asInstanceOf[l.Location]
-                .getRange
-                .getStart
-                .getLine
-            )
-            .toMap
-        _ = assertEquals(output, getExpected(code))
-      } yield ()
-    }
-  }
+  /**
+   * If you have a stack trace during test with sbt it won't actually be an
+   * `[error]` but rather `[info]` like in the case below... which I just ran
+   * into in real life.
+   *
+   * [info]   com.spotify.docker.client.exceptions.DockerException: java.util.concurrent.ExecutionException: javax.ws.rs.ProcessingException: java.lang.Abstract
+   * [info]   at com.spotify.docker.client.DefaultDockerClient.propagate(DefaultDockerClient.java:2812)
+   * [info]   at com.spotify.docker.client.DefaultDockerClient.request(DefaultDockerClient.java:2666)
+   * [info]   at com.spotify.docker.client.DefaultDockerClient.listImages(DefaultDockerClient.java:690)
+   */
+  check(
+    "sbt-info",
+    code,
+    """|[info] java.lang.Exception: error
+       |[info]         at a.b.ClassConstrError.<init>(Main.scala:24)
+       |[info]         at a.b.ObjectError$.raise(Main.scala:18)
+       |[info]         at a.b.ClassError.raise(Main.scala:12)
+       |[info]         at a.b.Main$.main(Main.scala:5)
+       |[info]         at a.b.Main.main(Main.scala)
+       |""".stripMargin
+  )
 
   private lazy val code: String =
     """|package a.b
@@ -121,20 +104,4 @@ class AnalyzeStacktraceLspSuite extends BaseLspSuite("analyzestacktrace") {
        |
        |""".stripMargin
 
-  private def getExpected(code: String): Map[Int, Int] = {
-    val result: mutable.Buffer[(Int, Int)] = mutable.Buffer()
-    for ((line, idx) <- code.split('\n').zipWithIndex) {
-      if (line.contains("<<") && line.contains(">>")) {
-        val marker = Integer.valueOf(
-          line.substring(line.indexOf("<<") + 2, line.indexOf(">>"))
-        )
-        result += ((marker, idx))
-      }
-    }
-    result.toList.toMap
-  }
-
-  private def prepare(code: String): String = {
-    code.replaceAll("<<.*>>", "")
-  }
 }

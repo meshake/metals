@@ -8,7 +8,7 @@ class BuildServerConnectionLspSuite
   test("basic") {
     cleanWorkspace()
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         """
           |/metals.json
           |{
@@ -25,7 +25,7 @@ class BuildServerConnectionLspSuite
       _ = assertNoDiagnostics()
       _ = server.server.bspSession.get.cancel()
       _ = assertNoDiagnostics()
-      _ <- server.executeCommand(ServerCommands.ConnectBuildServer.id)
+      _ <- server.executeCommand(ServerCommands.ConnectBuildServer)
       _ <- server.didSave("a/src/main/scala/a/A.scala")(
         _.replace("val n = 42", "val n: String = 42")
       )
@@ -45,7 +45,7 @@ class BuildServerConnectionLspSuite
     cleanWorkspace()
     val updatedBloopVersion = "1.4.0-RC1-76-1488031d"
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""|/metals.json
             |{"a":
             |  {}

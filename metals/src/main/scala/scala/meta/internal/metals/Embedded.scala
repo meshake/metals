@@ -12,8 +12,6 @@ import scala.meta.internal.worksheets.MdocClassLoader
 import scala.meta.io.Classpath
 import scala.meta.pc.PresentationCompiler
 
-import ch.epfl.scala.bsp4j.ScalaBuildTarget
-import ch.epfl.scala.bsp4j.ScalacOptionsItem
 import coursierapi.Dependency
 import coursierapi.Fetch
 import coursierapi.MavenRepository
@@ -28,9 +26,7 @@ import mdoc.interfaces.Mdoc
  * - mdoc
  */
 final class Embedded(
-    icons: Icons,
-    statusBar: StatusBar,
-    userConfig: () => UserConfiguration
+    statusBar: StatusBar
 ) extends Cancelable {
 
   private val mdocs: TrieMap[String, URLClassLoader] =
@@ -43,11 +39,11 @@ final class Embedded(
     mdocs.clear()
   }
 
-  def mdoc(scalaVersion: String, scalaBinaryVersion: String): Mdoc = {
+  def mdoc(scalaBinaryVersion: String): Mdoc = {
     val classloader = mdocs.getOrElseUpdate(
       scalaBinaryVersion,
       statusBar.trackSlowTask("Preparing worksheets") {
-        Embedded.newMdocClassLoader(scalaVersion, scalaBinaryVersion)
+        newMdocClassLoader(scalaBinaryVersion)
       }
     )
     serviceLoader(
@@ -58,13 +54,13 @@ final class Embedded(
   }
 
   def presentationCompiler(
-      info: ScalaBuildTarget,
-      scalac: ScalacOptionsItem
+      mtags: MtagsBinaries.Artifacts,
+      classpath: Seq[Path]
   ): PresentationCompiler = {
     val classloader = presentationCompilers.getOrElseUpdate(
-      ScalaVersions.dropVendorSuffix(info.getScalaVersion),
+      ScalaVersions.dropVendorSuffix(mtags.scalaVersion),
       statusBar.trackSlowTask("Preparing presentation compiler") {
-        Embedded.newPresentationCompilerClassLoader(info, scalac)
+        newPresentationCompilerClassLoader(mtags, classpath)
       }
     )
     serviceLoader(
@@ -92,9 +88,57 @@ final class Embedded(
     }
   }
 
+  private def newMdocClassLoader(
+      scalaBinaryVersion: String
+  ): URLClassLoader = {
+    val resolutionParams = ResolutionParams
+      .create()
+
+    /* note(@tgodzik) we add an exclusion so that the mdoc classlaoder does not try to
+     * load coursierapi.Logger and instead will use the already loaded one
+     */
+    resolutionParams.addExclusion("io.get-coursier", "interface")
+    val jars =
+      Embedded.downloadMdoc(
+        scalaBinaryVersion,
+        Some(resolutionParams)
+      )
+
+    val parent = new MdocClassLoader(this.getClass.getClassLoader)
+
+    // Full mdoc classpath seems to be causing some issue with akka
+    // We want to keep a minimal set of jars needed here
+    val runtimeClasspath = jars.filter { path =>
+      val pathString = path.toString
+      pathString.contains("scala-lang") ||
+      pathString.contains("fansi") ||
+      pathString.contains("pprint") ||
+      pathString.contains("sourcecode") ||
+      pathString.contains("mdoc") ||
+      pathString.contains("scalameta") ||
+      pathString.contains("metaconfig") ||
+      pathString.contains("diffutils")
+    }
+    val urls = runtimeClasspath.iterator.map(_.toUri().toURL()).toArray
+    new URLClassLoader(urls, parent)
+  }
+
+  private def newPresentationCompilerClassLoader(
+      mtags: MtagsBinaries.Artifacts,
+      classpath: Seq[Path]
+  ): URLClassLoader = {
+    val allJars = Iterator(mtags.jars, classpath).flatten
+    val allURLs = allJars.map(_.toUri.toURL).toArray
+    // Share classloader for a subset of types.
+    val parent =
+      new PresentationCompilerClassLoader(this.getClass.getClassLoader)
+    new URLClassLoader(allURLs, parent)
+  }
+
 }
 
 object Embedded {
+
   lazy val repositories: List[Repository] =
     Repository.defaults().asScala.toList ++
       List(
@@ -108,40 +152,24 @@ object Embedded {
         )
       )
 
-  def newMdocClassLoader(
-      scalaVersion: String,
-      scalaBinaryVersion: String
-  ): URLClassLoader = {
-    val resolutionParams = ResolutionParams
-      .create()
-
-    /* note(@tgodzik) we add an exclusion so that the mdoc classlaoder does not try to
-     * load coursierapi.Logger and instead will use the already loaded one
-     */
-    resolutionParams.addExclusion("io.get-coursier", "interface")
-    val jars = downloadMdoc(scalaVersion, scalaBinaryVersion, resolutionParams)
-
-    val parent = new MdocClassLoader(this.getClass.getClassLoader)
-    val urls = jars.iterator.map(_.toUri().toURL()).toArray
-    new URLClassLoader(urls, parent)
-  }
-
   def fetchSettings(
       dep: Dependency,
-      scalaVersion: String
+      scalaVersion: Option[String],
+      resolution: Option[ResolutionParams] = None
   ): Fetch = {
 
-    val resolutionParams = ResolutionParams
-      .create()
+    val resolutionParams = resolution.getOrElse(ResolutionParams.create())
 
-    if (!ScalaVersions.isScala3Version(scalaVersion))
-      resolutionParams.forceVersions(
-        List(
-          Dependency.of("org.scala-lang", "scala-library", scalaVersion),
-          Dependency.of("org.scala-lang", "scala-compiler", scalaVersion),
-          Dependency.of("org.scala-lang", "scala-reflect", scalaVersion)
-        ).map(d => (d.getModule, d.getVersion)).toMap.asJava
-      )
+    scalaVersion.foreach { scalaVersion =>
+      if (!ScalaVersions.isScala3Version(scalaVersion))
+        resolutionParams.forceVersions(
+          List(
+            Dependency.of("org.scala-lang", "scala-library", scalaVersion),
+            Dependency.of("org.scala-lang", "scala-compiler", scalaVersion),
+            Dependency.of("org.scala-lang", "scala-reflect", scalaVersion)
+          ).map(d => (d.getModule, d.getVersion)).toMap.asJava
+        )
+    }
 
     Fetch
       .create()
@@ -153,10 +181,22 @@ object Embedded {
   private def scalaDependency(scalaVersion: String): Dependency =
     Dependency.of("org.scala-lang", "scala-library", scalaVersion)
 
-  private def dottyDependency(scalaVersion: String): Dependency = {
+  private def scala3Dependency(scalaVersion: String): Dependency = {
     val binaryVersion =
       ScalaVersions.scalaBinaryVersionFromFullVersion(scalaVersion)
-    Dependency.of("ch.epfl.lamp", s"dotty-library_$binaryVersion", scalaVersion)
+    if (binaryVersion.startsWith("3")) {
+      Dependency.of(
+        "org.scala-lang",
+        s"scala3-library_$binaryVersion",
+        scalaVersion
+      )
+    } else {
+      Dependency.of(
+        "ch.epfl.lamp",
+        s"dotty-library_$binaryVersion",
+        scalaVersion
+      )
+    }
   }
 
   private def mtagsDependency(scalaVersion: String): Dependency =
@@ -167,14 +207,14 @@ object Embedded {
     )
 
   private def mdocDependency(
-      scalaVersion: String,
       scalaBinaryVersion: String
-  ): Dependency =
+  ): Dependency = {
     Dependency.of(
       "org.scalameta",
       s"mdoc_${scalaBinaryVersion}",
-      BuildInfo.mdocVersion
+      if (scalaBinaryVersion == "2.11") "2.2.24" else BuildInfo.mdocVersion
     )
+  }
 
   private def semanticdbScalacDependency(scalaVersion: String): Dependency =
     Dependency.of(
@@ -185,45 +225,59 @@ object Embedded {
 
   private def downloadDependency(
       dep: Dependency,
-      scalaVersion: String,
+      scalaVersion: Option[String],
       classfiers: Seq[String] = Seq.empty,
-      resolution: ResolutionParams = ResolutionParams.create()
-  ): List[Path] =
-    fetchSettings(dep, scalaVersion)
+      resolution: Option[ResolutionParams] = None
+  ): List[Path] = {
+    fetchSettings(dep, scalaVersion, resolution)
       .addClassifiers(classfiers: _*)
-      .withResolutionParams(resolution)
       .fetch()
       .asScala
       .toList
       .map(_.toPath())
+  }
 
   def downloadScalaSources(scalaVersion: String): List[Path] =
     downloadDependency(
       scalaDependency(scalaVersion),
-      scalaVersion,
+      Some(scalaVersion),
       classfiers = Seq("sources")
     )
 
-  def downloadDottySources(scalaVersion: String): List[Path] =
+  def downloadScala3Sources(scalaVersion: String): List[Path] =
     downloadDependency(
-      dottyDependency(scalaVersion),
-      scalaVersion,
+      scala3Dependency(scalaVersion),
+      Some(scalaVersion),
       classfiers = Seq("sources")
     )
 
   def downloadSemanticdbScalac(scalaVersion: String): List[Path] =
-    downloadDependency(semanticdbScalacDependency(scalaVersion), scalaVersion)
+    downloadDependency(
+      semanticdbScalacDependency(scalaVersion),
+      Some(scalaVersion)
+    )
+
+  def downloadSemanticdbJavac: List[Path] = {
+    downloadDependency(
+      Dependency.of(
+        "com.sourcegraph",
+        "semanticdb-javac",
+        BuildInfo.javaSemanticdbVersion
+      ),
+      None
+    )
+  }
+
   def downloadMtags(scalaVersion: String): List[Path] =
-    downloadDependency(mtagsDependency(scalaVersion), scalaVersion)
+    downloadDependency(mtagsDependency(scalaVersion), Some(scalaVersion))
 
   def downloadMdoc(
-      scalaVersion: String,
       scalaBinaryVersion: String,
-      resolutionParams: ResolutionParams = ResolutionParams.create()
+      resolutionParams: Option[ResolutionParams] = None
   ): List[Path] =
     downloadDependency(
-      mdocDependency(scalaVersion, scalaBinaryVersion),
-      scalaVersion,
+      mdocDependency(scalaBinaryVersion),
+      scalaVersion = None,
       resolution = resolutionParams
     )
 
@@ -233,27 +287,7 @@ object Embedded {
       s"organize-imports_$scalaBinaryVersion",
       BuildInfo.organizeImportVersion
     )
-    downloadDependency(dep, scalaBinaryVersion)
-  }
-
-  def newPresentationCompilerClassLoader(
-      info: ScalaBuildTarget,
-      scalac: ScalacOptionsItem
-  ): URLClassLoader = {
-    val scalaVersion = ScalaVersions
-      .dropVendorSuffix(info.getScalaVersion)
-    val dep = mtagsDependency(scalaVersion)
-    val jars = fetchSettings(dep, info.getScalaVersion())
-      .fetch()
-      .asScala
-      .map(_.toPath)
-    val scalaJars = info.getJars.asScala.map(_.toAbsolutePath.toNIO)
-    val allJars = Iterator(jars, scalaJars).flatten
-    val allURLs = allJars.map(_.toUri.toURL).toArray
-    // Share classloader for a subset of types.
-    val parent =
-      new PresentationCompilerClassLoader(this.getClass.getClassLoader)
-    new URLClassLoader(allURLs, parent)
+    downloadDependency(dep, scalaVersion = None)
   }
 
   def toClassLoader(
@@ -262,6 +296,18 @@ object Embedded {
   ): URLClassLoader = {
     val urls = classpath.entries.map(_.toNIO.toUri.toURL).toArray
     new URLClassLoader(urls, classLoader)
+  }
+
+  /**
+   * Provides scala3-library dependency for stadalone PC and mdoc instances
+   */
+  def scalaLibrary(scalaVersion: String): List[Path] = {
+    val dependency =
+      if (ScalaVersions.isScala3Version(scalaVersion))
+        scala3Dependency(scalaVersion)
+      else
+        scalaDependency(scalaVersion)
+    downloadDependency(dependency, Some(scalaVersion))
   }
 
 }

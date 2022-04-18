@@ -5,19 +5,22 @@ import java.nio.file.FileAlreadyExistsException
 
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
+import scala.util.Properties
 import scala.util.control.NonFatal
 
 import scala.meta.internal.metals.ClientCommands
 import scala.meta.internal.metals.Messages.NewScalaFile
 import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.MetalsInputBoxParams
-import scala.meta.internal.metals.MetalsLanguageClient
-import scala.meta.internal.metals.MetalsQuickPickParams
 import scala.meta.internal.metals.PackageProvider
+import scala.meta.internal.metals.ScalaVersionSelector
+import scala.meta.internal.metals.ScalaVersions
+import scala.meta.internal.metals.clients.language.MetalsInputBoxParams
+import scala.meta.internal.metals.clients.language.MetalsLanguageClient
+import scala.meta.internal.metals.clients.language.MetalsQuickPickParams
 import scala.meta.internal.metals.newScalaFile.NewFileTypes._
+import scala.meta.internal.pc.Identifier
 import scala.meta.io.AbsolutePath
 
-import org.eclipse.lsp4j.ExecuteCommandParams
 import org.eclipse.lsp4j.Location
 import org.eclipse.lsp4j.MessageType
 import org.eclipse.lsp4j.Range
@@ -26,7 +29,8 @@ class NewFileProvider(
     workspace: AbsolutePath,
     client: MetalsLanguageClient,
     packageProvider: PackageProvider,
-    focusedDocument: () => Option[AbsolutePath]
+    focusedDocument: () => Option[AbsolutePath],
+    selector: ScalaVersionSelector
 )(implicit
     ec: ExecutionContext
 ) {
@@ -34,7 +38,8 @@ class NewFileProvider(
   def handleFileCreation(
       directoryUri: Option[URI],
       name: Option[String],
-      fileType: Option[String]
+      fileType: Option[String],
+      isScala: Boolean
   ): Future[Unit] = {
     val directory = directoryUri
       .map { uri =>
@@ -50,8 +55,17 @@ class NewFileProvider(
       fileType.flatMap(getFromString) match {
         case Some(ft) => createFile(directory, ft, name)
         case None =>
-          askForKind
-            .flatMapOption(createFile(directory, _, name))
+          val askForKind =
+            if (isScala)
+              askForScalaKind(
+                directory.forall(dir =>
+                  ScalaVersions.isScala3Version(
+                    selector.scalaVersionForPath(dir)
+                  )
+                )
+              )
+            else askForJavaKind
+          askForKind.flatMapOption(createFile(directory, _, name))
       }
     }
 
@@ -68,11 +82,20 @@ class NewFileProvider(
       name: Option[String]
   ) = {
     fileType match {
-      case kind @ (Class | CaseClass | Object | Trait) =>
+      case kind @ (Class | CaseClass | Object | Trait | Enum) =>
         getName(kind, name)
           .mapOption(
-            createClass(directory, _, kind)
+            createClass(directory, _, kind, ".scala")
           )
+      case kind @ (JavaClass | JavaEnum | JavaInterface | JavaRecord) =>
+        getName(kind, name)
+          .mapOption(
+            createClass(directory, _, kind, ".java")
+          )
+      case ScalaFile =>
+        getName(ScalaFile, name).mapOption(
+          createEmptyFileWithPackage(directory, _)
+        )
       case Worksheet =>
         getName(Worksheet, name)
           .mapOption(
@@ -88,27 +111,48 @@ class NewFileProvider(
     }
   }
 
-  private def askForKind: Future[Option[NewFileType]] = {
+  private def askForKind(
+      kinds: List[NewFileType]
+  ): Future[Option[NewFileType]] = {
     client
       .metalsQuickPick(
         MetalsQuickPickParams(
-          List(
-            Class.toQuickPickItem,
-            CaseClass.toQuickPickItem,
-            Object.toQuickPickItem,
-            Trait.toQuickPickItem,
-            PackageObject.toQuickPickItem,
-            Worksheet.toQuickPickItem,
-            AmmoniteScript.toQuickPickItem
-          ).asJava,
+          kinds.map(_.toQuickPickItem).asJava,
           placeHolder = NewScalaFile.selectTheKindOfFileMessage
         )
       )
       .asScala
-      .map {
-        case kind if !kind.cancelled => getFromString(kind.itemId)
-        case _ => None
-      }
+      .flatMapOptionInside(kind => getFromString(kind.itemId))
+  }
+
+  private def askForScalaKind(
+      isScala3: Boolean
+  ): Future[Option[NewFileType]] = {
+    val allFileTypes = List(
+      ScalaFile,
+      Class,
+      CaseClass,
+      Object,
+      Trait,
+      PackageObject,
+      Worksheet,
+      AmmoniteScript
+    )
+    val withEnum =
+      if (isScala3) allFileTypes :+ Enum else allFileTypes
+    askForKind(withEnum)
+  }
+
+  private def askForJavaKind: Future[Option[NewFileType]] = {
+    val allFileTypes = List(
+      JavaClass,
+      JavaInterface,
+      JavaEnum
+    )
+    val withRecord =
+      if (Properties.isJavaAtLeast("14")) allFileTypes :+ JavaRecord
+      else allFileTypes
+    askForKind(withRecord)
   }
 
   private def askForName(kind: String): Future[Option[String]] = {
@@ -117,10 +161,7 @@ class NewFileProvider(
         MetalsInputBoxParams(prompt = NewScalaFile.enterNameMessage(kind))
       )
       .asScala
-      .map {
-        case name if !name.cancelled => Some(name.value)
-        case _ => None
-      }
+      .mapOptionInside(_.value)
   }
 
   private def getName(
@@ -136,14 +177,19 @@ class NewFileProvider(
   private def createClass(
       directory: Option[AbsolutePath],
       name: String,
-      kind: NewFileType
+      kind: NewFileType,
+      ext: String
   ): Future[(AbsolutePath, Range)] = {
-    val path = directory.getOrElse(workspace).resolve(name + ".scala")
-    //name can be actually be "foo/Name", where "foo" is a folder to create
-    val className = directory.getOrElse(workspace).resolve(name).filename
+    val path = directory.getOrElse(workspace).resolve(name + ext)
+    // name can be actually be "foo/Name", where "foo" is a folder to create
+    val className = Identifier.backtickWrap(
+      directory.getOrElse(workspace).resolve(name).filename
+    )
     val template = kind match {
       case CaseClass => caseClassTemplate(className)
-      case _ => classTemplate(kind.id, className)
+      case Enum => enumTemplate(className)
+      case JavaRecord => javaRecordTemplate(className)
+      case _ => classTemplate(kind.syntax.getOrElse(""), className)
     }
     val editText = template.map { s =>
       packageProvider
@@ -152,6 +198,19 @@ class NewFileProvider(
         .getOrElse("") + s
     }
     createFileAndWriteText(path, editText)
+  }
+
+  private def createEmptyFileWithPackage(
+      directory: Option[AbsolutePath],
+      name: String
+  ): Future[(AbsolutePath, Range)] = {
+    val path = directory.getOrElse(workspace).resolve(name + ".scala")
+    val pkg = packageProvider
+      .packageStatement(path)
+      .map(_.fileContent)
+      .getOrElse("")
+    val template = s"$pkg@@"
+    createFileAndWriteText(path, NewFileTemplate(template))
   }
 
   private def createPackageObject(
@@ -212,12 +271,10 @@ class NewFileProvider(
   }
 
   private def openFile(path: AbsolutePath, cursorRange: Range): Unit = {
+    val location = new Location(path.toURI.toString(), cursorRange)
     client.metalsExecuteClientCommand(
-      new ExecuteCommandParams(
-        ClientCommands.GotoLocation.id,
-        List(
-          new Location(path.toURI.toString(), cursorRange): Object
-        ).asJava
+      ClientCommands.GotoLocation.toExecuteCommandParams(
+        ClientCommands.WindowLocation(location.getUri(), location.getRange())
       )
     )
   }
@@ -230,7 +287,23 @@ class NewFileProvider(
                         |""".stripMargin)
   }
 
+  private def enumTemplate(name: String): NewFileTemplate = {
+    val indent = "  "
+    NewFileTemplate(s"""|enum $name {
+                        |${indent}case@@
+                        |}
+                        |""".stripMargin)
+  }
+
+  private def javaRecordTemplate(name: String): NewFileTemplate = {
+    NewFileTemplate(s"""|record $name(@@) {
+                        |
+                        |}
+                        |""".stripMargin)
+  }
+
   private def caseClassTemplate(name: String): NewFileTemplate =
-    NewFileTemplate(s"final case class $name(@@)")
+    NewFileTemplate(s"""|final case class $name(@@)
+                        |""".stripMargin)
 
 }

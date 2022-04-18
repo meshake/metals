@@ -3,27 +3,45 @@ package scala.meta.internal.metals
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 
+import scala.meta.internal.bsp.BspConnector
+import scala.meta.internal.bsp.BuildChange
 import scala.meta.internal.metals.MetalsEnrichments._
+import scala.meta.internal.metals.clients.language.MetalsLanguageClient
+import scala.meta.internal.metals.doctor.Doctor
+import scala.meta.io.AbsolutePath
 
 import org.eclipse.lsp4j.MessageActionItem
 import org.eclipse.lsp4j.MessageType
 import org.eclipse.lsp4j.ShowMessageRequestParams
 
 class PopupChoiceReset(
+    workspace: AbsolutePath,
     tables: Tables,
     languageClient: MetalsLanguageClient,
     doctor: Doctor,
-    reconnectToBuildServer: () => Future[Unit]
+    slowConnect: () => Future[BuildChange],
+    bspConnector: BspConnector,
+    quickConnect: () => Future[BuildChange]
 ) {
   import PopupChoiceReset._
 
   def reset(value: String)(implicit ec: ExecutionContext): Future[Unit] = {
     val result = if (value == BuildTool) {
+      scribe.info("Resetting build tool selection.")
       tables.buildTool.reset()
-      reconnectToBuildServer()
+      slowConnect().ignoreValue
     } else if (value == BuildImport) {
       tables.dismissedNotifications.ImportChanges.reset()
       Future.successful(())
+    } else if (value == BuildServer) {
+      scribe.info("Resetting build server selection.")
+      (for {
+        didChange <- bspConnector.switchBuildServer(
+          workspace,
+          slowConnect
+        )
+        if didChange
+      } yield quickConnect()).ignoreValue
     } else {
       Future.successful(())
     }
@@ -41,7 +59,8 @@ class PopupChoiceReset(
       params.setActions(
         List(
           new MessageActionItem(PopupChoiceReset.BuildTool),
-          new MessageActionItem(PopupChoiceReset.BuildImport)
+          new MessageActionItem(PopupChoiceReset.BuildImport),
+          new MessageActionItem(PopupChoiceReset.BuildServer)
         ).asJava
       )
       params
@@ -51,10 +70,14 @@ class PopupChoiceReset(
       .showMessageRequest(choicesParams())
       .asScala
       .flatMap { item =>
-        if (item.getTitle() == PopupChoiceReset.BuildTool) {
+        if (item == null) {
+          Future.successful(())
+        } else if (item.getTitle() == PopupChoiceReset.BuildTool) {
           reset(PopupChoiceReset.BuildTool)
         } else if (item.getTitle() == PopupChoiceReset.BuildImport) {
           reset(PopupChoiceReset.BuildImport)
+        } else if (item.getTitle() == PopupChoiceReset.BuildServer) {
+          reset(PopupChoiceReset.BuildServer)
         } else {
           Future.successful(())
         }
@@ -63,6 +86,7 @@ class PopupChoiceReset(
 }
 
 object PopupChoiceReset {
-  final val BuildTool = "build tool selection"
-  final val BuildImport = "build import"
+  final val BuildTool = "Build tool selection"
+  final val BuildImport = "Build import"
+  final val BuildServer = "Build server selection"
 }

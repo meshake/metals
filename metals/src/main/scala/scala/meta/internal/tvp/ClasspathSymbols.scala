@@ -76,18 +76,18 @@ class ClasspathSymbols(isStatisticsEnabled: Boolean = false) {
   private def isRelevant(info: SymbolInformation): Boolean =
     !info.isPrivate &&
       !info.isPrivateThis && {
-      info.kind match {
-        case k.METHOD =>
-          val isVarSetter = info.isVar && info.displayName.endsWith("_=")
-          !isVarSetter &&
-          !isSyntheticMethodName(info.displayName) &&
-          !info.displayName.contains("$default$")
-        case k.CLASS | k.INTERFACE | k.OBJECT | k.PACKAGE_OBJECT | k.TRAIT |
-            k.MACRO | k.FIELD =>
-          true
-        case _ => false
+        info.kind match {
+          case k.METHOD =>
+            val isVarSetter = info.isVar && info.displayName.endsWith("_=")
+            !isVarSetter &&
+            !isSyntheticMethodName(info.displayName) &&
+            !info.displayName.contains("$default$")
+          case k.CLASS | k.INTERFACE | k.OBJECT | k.PACKAGE_OBJECT | k.TRAIT |
+              k.MACRO | k.FIELD =>
+            true
+          case _ => false
+        }
       }
-    }
 
   private def loadSymbols(
       in: AbsolutePath,
@@ -110,7 +110,6 @@ class ClasspathSymbols(isStatisticsEnabled: Boolean = false) {
           try {
             val node = path.toClassNode
             classfileSymbols(
-              path.toNIO,
               node,
               index,
               { i =>
@@ -182,7 +181,7 @@ class ClasspathSymbols(isStatisticsEnabled: Boolean = false) {
         }
       }
     )
-    result
+    result.toSeq
   }
 
   private def isClassfile(path: Path): Boolean = {
@@ -190,7 +189,6 @@ class ClasspathSymbols(isStatisticsEnabled: Boolean = false) {
   }
 
   private def classfileSymbols(
-      path: Path,
       node: ClassNode,
       index: ClasspathIndex,
       fn: SymbolInformation => Unit

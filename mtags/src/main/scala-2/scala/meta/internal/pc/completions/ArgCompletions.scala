@@ -2,6 +2,7 @@ package scala.meta.internal.pc.completions
 
 import scala.collection.immutable.Nil
 
+import scala.meta.internal.pc.Identifier
 import scala.meta.internal.pc.MetalsGlobal
 
 import org.eclipse.{lsp4j => l}
@@ -39,7 +40,7 @@ trait ArgCompletions { this: MetalsGlobal =>
     lazy val allParams: List[Symbol] = {
       baseParams.iterator.filterNot { param =>
         isNamed(param.name) ||
-        param.name.containsChar('$') // exclude synthetic parameters
+        param.isSynthetic
       }.toList
     }
     lazy val params: List[Symbol] =
@@ -49,8 +50,6 @@ trait ArgCompletions { this: MetalsGlobal =>
       .filterNot(isNamed)
       .map(_.toString().trim())
       .toSet
-
-    override def isCandidate(member: Member): Boolean = true
 
     def isName(m: Member): Boolean =
       isParamName(m.sym.nameString.trim())
@@ -80,8 +79,8 @@ trait ArgCompletions { this: MetalsGlobal =>
       }
 
       completions match {
-        case CompletionResult.ScopeMembers(_, results, _) =>
-          results
+        case members: CompletionResult.ScopeMembers =>
+          members.results
             .collect {
               case mem
                   if mem.sym.tpe <:< paramType && notNothingOrNull(
@@ -118,8 +117,9 @@ trait ArgCompletions { this: MetalsGlobal =>
       ) {
         val editText = allParams.zipWithIndex
           .collect {
-            case (param, index) if !param.hasDefault =>
-              s"${param.name} = $${${index + 1}${findDefaultValue(param)}}"
+            case (param, index) if !param.hasDefault => {
+              s"${Identifier.backtickWrap(param.name).replace("$", "$$")} = $${${index + 1}${findDefaultValue(param)}}"
+            }
           }
           .mkString(", ")
         val edit = new l.TextEdit(editRange, editText)
@@ -138,9 +138,10 @@ trait ArgCompletions { this: MetalsGlobal =>
 
     private def findPossibleDefaults(): List[TextEditMember] = {
       params.flatMap { param =>
-        val allMemebers = matchingTypesInScope(param.tpe)
-        allMemebers.map { memberName =>
-          val editText = param.name + " = " + memberName
+        val allMembers = matchingTypesInScope(param.tpe)
+        allMembers.map { memberName =>
+          val editText =
+            Identifier.backtickWrap(param.name) + " = " + memberName
           val edit = new l.TextEdit(editRange, editText)
           new TextEditMember(
             filterText = param.name.toString(),

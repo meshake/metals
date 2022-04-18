@@ -5,7 +5,7 @@ import scala.meta.internal.decorations.PublishDecorationsParams
 import scala.meta.internal.decorations.ThemableDecorationAttachmentRenderOptions
 import scala.meta.internal.decorations.ThemableDecorationInstanceRenderOptions
 import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.MetalsLanguageClient
+import scala.meta.internal.metals.clients.language.MetalsLanguageClient
 import scala.meta.internal.pc.HoverMarkup
 import scala.meta.internal.worksheets.MdocEnrichments._
 import scala.meta.io.AbsolutePath
@@ -16,7 +16,8 @@ import org.eclipse.lsp4j.MarkupContent
 import org.eclipse.lsp4j.MarkupKind
 import org.eclipse.lsp4j.Position
 
-class DecorationWorksheetPublisher() extends WorksheetPublisher {
+class DecorationWorksheetPublisher(isInlineDecorationProvider: Boolean)
+    extends WorksheetPublisher {
 
   private val commentHeader = " // "
 
@@ -30,7 +31,7 @@ class DecorationWorksheetPublisher() extends WorksheetPublisher {
   }
 
   override def hover(path: AbsolutePath, position: Position): Option[Hover] =
-    //publish'ed Decorations handle hover, so nothing to return here
+    // publish'ed Decorations handle hover, so nothing to return here
     None
 
   private def render(
@@ -65,7 +66,12 @@ class DecorationWorksheetPublisher() extends WorksheetPublisher {
       decorations: Array[DecorationOptions]
   ): Unit = {
     val params =
-      new PublishDecorationsParams(path.toURI.toString(), decorations)
+      new PublishDecorationsParams(
+        path.toURI.toString(),
+        decorations,
+        // do not send additional param if it's not inline provider
+        isInline = if (isInlineDecorationProvider) false else null
+      )
     languageClient.metalsPublishDecorations(params)
   }
 

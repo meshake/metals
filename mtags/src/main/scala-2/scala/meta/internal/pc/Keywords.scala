@@ -2,6 +2,8 @@ package scala.meta.internal.pc
 
 import scala.tools.nsc.reporters.StoreReporter
 
+import scala.meta.internal.mtags.MtagsEnrichments._
+
 import org.eclipse.{lsp4j => l}
 
 trait Keywords { this: MetalsGlobal =>
@@ -9,17 +11,38 @@ trait Keywords { this: MetalsGlobal =>
   def keywords(
       pos: Position,
       editRange: l.Range,
-      latestEnclosing: List[Tree]
+      latestEnclosing: List[Tree],
+      completion: CompletionPosition,
+      text: String,
+      isAmmoniteScript: Boolean
   ): List[Member] = {
+
+    lazy val notInComment = checkIfNotInComment(pos, text, latestEnclosing)
+
     getIdentifierName(latestEnclosing, pos) match {
-      case None => Nil
-      case Some(name) =>
+      case None =>
+        completion match {
+          // This whole block is meant to catch top level completions, however
+          // it's also valid to have a scaladoc comment at the top level, so we
+          // explicitly check that we don't have a scaladocCompletion before we
+          // grab the top level completions since it's safe to assume if someone
+          // has already typed /* then they are going for the scaladoc, not the
+          // other stuff.
+          case _: ScaladocCompletion => List.empty
+          case _ if notInComment =>
+            Keyword.all.collect {
+              case kw if kw.isPackage => mkTextEditMember(kw, editRange)
+            }
+          case _ => List.empty
+        }
+      case Some(name) if notInComment =>
         val isExpression = this.isExpression(latestEnclosing)
         val isBlock = this.isBlock(latestEnclosing)
         val isDefinition = this.isDefinition(latestEnclosing, name, pos)
         val isMethodBody = this.isMethodBody(latestEnclosing)
         val isTemplate = this.isTemplate(latestEnclosing)
         val isPackage = this.isPackage(latestEnclosing)
+        val isParam = this.isParam(latestEnclosing)
         Keyword.all.collect {
           case kw
               if kw.matchesPosition(
@@ -29,11 +52,27 @@ trait Keywords { this: MetalsGlobal =>
                 isDefinition = isDefinition,
                 isMethodBody = isMethodBody,
                 isTemplate = isTemplate,
-                isPackage = isPackage
+                isPackage = isPackage,
+                isParam = isParam,
+                isScala3 = false,
+                allowToplevel = isAmmoniteScript
               ) =>
             mkTextEditMember(kw, editRange)
         }
+      case _ => List.empty
     }
+  }
+
+  private def checkIfNotInComment(
+      pos: Position,
+      text: String,
+      enclosing: List[Tree]
+  ): Boolean = {
+    val (treeStart, treeEnd) = enclosing.headOption
+      .map(t => (t.pos.start, t.pos.end))
+      .getOrElse((0, text.size))
+    val offset = pos.start
+    text.mkString.checkIfNotInComment(treeStart, treeEnd, offset)
   }
 
   private def getIdentifierName(
@@ -72,6 +111,13 @@ trait Keywords { this: MetalsGlobal =>
   private def isPackage(enclosing: List[Tree]): Boolean =
     enclosing match {
       case PackageDef(_, _) :: _ => true
+      case Nil => true
+      case _ => false
+    }
+
+  private def isParam(enclosing: List[Tree]): Boolean =
+    enclosing match {
+      case (_: DefDef) :: _ => true
       case _ => false
     }
 

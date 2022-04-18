@@ -97,26 +97,24 @@ object ScaladocParser {
             Some(groupId.toString.trim)
           case _ => None
         }
-      val groupPrio = groupPrio0 flatMap {
-        case (group, body) =>
-          try {
-            body match {
-              case Body(List(Paragraph(Chain(List(Summary(Text(prio))))))) =>
-                List(group -> prio.trim.toInt)
-              case _ => List()
-            }
-          } catch {
-            case _: java.lang.NumberFormatException => List()
-          }
-      }
-      val groupNames = groupNames0 flatMap {
-        case (group, body) =>
+      val groupPrio = groupPrio0 flatMap { case (group, body) =>
+        try {
           body match {
-            case Body(List(Paragraph(Chain(List(Summary(Text(name)))))))
-                if (!name.trim.contains("\n")) =>
-              List(group -> (name.trim))
+            case Body(List(Paragraph(Chain(List(Summary(Text(prio))))))) =>
+              List(group -> prio.trim.toInt)
             case _ => List()
           }
+        } catch {
+          case _: java.lang.NumberFormatException => List()
+        }
+      }
+      val groupNames = groupNames0 flatMap { case (group, body) =>
+        body match {
+          case Body(List(Paragraph(Chain(List(Summary(Text(name)))))))
+              if (!name.trim.contains("\n")) =>
+            List(group -> (name.trim))
+          case _ => List()
+        }
       }
 
       override val shortDescription: Option[Text] =
@@ -344,7 +342,9 @@ object ScaladocParser {
           javadoclessComment,
           { mtch =>
             java.util.regex.Matcher
-              .quoteReplacement(safeTagMarker + mtch.matched + safeTagMarker)
+              .quoteReplacement(
+                "" + safeTagMarker + mtch.matched + safeTagMarker
+              )
           }
         )
       markedTagComment.linesIterator.toList.map(cleanLine)
@@ -540,9 +540,8 @@ object ScaladocParser {
             tags.filterNot(pair => stripTags.contains(pair._1))
 
           val bodyTags: mutable.Map[TagKey, List[Body]] =
-            mutable.Map(tagsWithoutDiagram.map {
-              case (key, tag) =>
-                key -> tag.map(parseWikiAtSymbol(_, pos))
+            mutable.Map(tagsWithoutDiagram.map { case (key, tag) =>
+              key -> tag.map(parseWikiAtSymbol(_, pos))
             }.toSeq: _*)
 
           def oneTag(
@@ -585,14 +584,13 @@ object ScaladocParser {
           def linkedExceptions: Map[String, Body] = {
             val m = allSymsOneTag(SimpleTagKey("throws"), filterEmpty = false)
 
-            m.map {
-              case (name, body) =>
-                val newBody = body match {
-                  case Body(List(Paragraph(Chain(_)))) =>
-                    Body(List())
-                  case _ => body
-                }
-                (name, newBody)
+            m.map { case (name, body) =>
+              val newBody = body match {
+                case Body(List(Paragraph(Chain(_)))) =>
+                  Body(List())
+                case _ => body
+              }
+              (name, newBody)
             }
           }
 
@@ -690,7 +688,7 @@ object ScaladocParser {
       else if (checkSkipInitWhitespace("----"))
         hrule()
       else if (checkList)
-        listBlock
+        listBlock()
       else if (checkTableRow)
         table()
       else {
@@ -738,7 +736,7 @@ object ScaladocParser {
        */
       def listLine(indent: Int, style: String): Option[Block] =
         if (countWhitespace > indent && checkList)
-          Some(listBlock)
+          Some(listBlock())
         else if (countWhitespace != indent || !checkSkipInitWhitespace(style))
           None
         else {
@@ -1185,7 +1183,7 @@ object ScaladocParser {
               ",,"
             ) || check(
               "[["
-            ) || isInlineEnd || checkParaEnded || char == endOfLine
+            ) || isInlineEnd || checkParaEnded() || char == endOfLine
           }
           Text(textTransform(str))
         }
@@ -1194,7 +1192,7 @@ object ScaladocParser {
       val inlines: List[Inline] = {
         val iss = mutable.ListBuffer.empty[Inline]
         iss += inline0()
-        while (!isInlineEnd && !checkParaEnded) {
+        while (!isInlineEnd && !checkParaEnded()) {
           val skipEndOfLine = if (char == endOfLine) {
             nextChar()
             true
@@ -1374,7 +1372,7 @@ object ScaladocParser {
       }
     }
 
-    def reportError(pos: Position, message: String): Unit = {}
+    def reportError(pos: Position, message: String): Unit = ()
   }
 
   sealed class CharReader(buffer: String) { reader =>

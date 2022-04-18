@@ -3,24 +3,29 @@ package tests
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 
+import scala.util.Properties
+
 import scala.meta.internal.metals.InitializationOptions
+import scala.meta.internal.metals.ListParametrizedCommand
 import scala.meta.internal.metals.Messages.NewScalaFile
 import scala.meta.internal.metals.MetalsEnrichments._
-import scala.meta.internal.metals.MetalsInputBoxParams
-import scala.meta.internal.metals.MetalsInputBoxResult
 import scala.meta.internal.metals.RecursivelyDelete
 import scala.meta.internal.metals.ServerCommands
+import scala.meta.internal.metals.clients.language.MetalsInputBoxParams
+import scala.meta.internal.metals.clients.language.RawMetalsInputBoxResult
 import scala.meta.internal.metals.newScalaFile.NewFileTypes._
+import scala.meta.internal.metals.{BuildInfo => V}
 
+import munit.Location
 import munit.TestOptions
 import org.eclipse.lsp4j.ShowMessageRequestParams
 
 class NewFileLspSuite extends BaseLspSuite("new-file") {
 
-  override def initializationOptions: Option[InitializationOptions] =
+  override protected def initializationOptions: Option[InitializationOptions] =
     Some(InitializationOptions.Default.copy(inputBoxProvider = Some(true)))
 
-  check("new-worksheet-picked")(
+  checkScala("new-worksheet-picked")(
     directory = Some("a/src/main/scala/"),
     fileType = Right(Worksheet),
     fileName = Right("Foo"),
@@ -28,7 +33,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
     expectedContent = ""
   )
 
-  check("new-worksheet-name-provided")(
+  checkScala("new-worksheet-name-provided")(
     directory = Some("a/src/main/scala/"),
     fileType = Left(Worksheet),
     fileName = Right("Foo"),
@@ -36,7 +41,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
     expectedContent = ""
   )
 
-  check("new-worksheet-fully-provided")(
+  checkScala("new-worksheet-fully-provided")(
     directory = Some("a/src/main/scala/"),
     fileType = Left(Worksheet),
     fileName = Left("Foo"),
@@ -44,7 +49,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
     expectedContent = ""
   )
 
-  check("new-ammonite-script")(
+  checkScala("new-ammonite-script")(
     directory = Some("a/src/main/scala/"),
     fileType = Right(AmmoniteScript),
     fileName = Right("Foo"),
@@ -52,7 +57,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
     expectedContent = ""
   )
 
-  check("new-ammonite-script-name-provided")(
+  checkScala("new-ammonite-script-name-provided")(
     directory = Some("a/src/main/scala/"),
     fileType = Right(AmmoniteScript),
     fileName = Left("Foo"),
@@ -60,7 +65,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
     expectedContent = ""
   )
 
-  check("new-ammonite-script-fully-provided")(
+  checkScala("new-ammonite-script-fully-provided")(
     directory = Some("a/src/main/scala/"),
     fileType = Left(AmmoniteScript),
     fileName = Left("Foo"),
@@ -68,7 +73,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
     expectedContent = ""
   )
 
-  check("new-class")(
+  checkScala("new-class")(
     directory = Some("a/src/main/scala/foo/"),
     fileType = Right(Class),
     fileName = Right("Foo"),
@@ -81,7 +86,20 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                           |""".stripMargin
   )
 
-  check("new-class-name-provided")(
+  checkScala("new-class-backticked")(
+    directory = Some("a/src/main/scala/this/"),
+    fileType = Right(Class),
+    fileName = Right("type"),
+    expectedFilePath = "a/src/main/scala/this/type.scala",
+    expectedContent = s"""|package `this`
+                          |
+                          |class `type` {
+                          |$indent
+                          |}
+                          |""".stripMargin
+  )
+
+  checkScala("new-class-name-provided")(
     directory = Some("a/src/main/scala/foo/"),
     fileType = Right(Class),
     fileName = Left("Foo"),
@@ -94,7 +112,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                           |""".stripMargin
   )
 
-  check("new-class-fully-provided")(
+  checkScala("new-class-fully-provided")(
     directory = Some("a/src/main/scala/foo/"),
     fileType = Left(Class),
     fileName = Left("Foo"),
@@ -107,7 +125,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                           |""".stripMargin
   )
 
-  check("new-case-class")(
+  checkScala("new-case-class")(
     directory = Some("a/src/main/scala/foo/"),
     fileType = Right(CaseClass),
     fileName = Right("Foo"),
@@ -118,7 +136,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                          |""".stripMargin
   )
 
-  check("new-case-class-name-provided")(
+  checkScala("new-case-class-name-provided")(
     directory = Some("a/src/main/scala/foo/"),
     fileType = Right(CaseClass),
     fileName = Left("Foo"),
@@ -129,7 +147,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                          |""".stripMargin
   )
 
-  check("new-case-class-fully-provided")(
+  checkScala("new-case-class-fully-provided")(
     directory = Some("a/src/main/scala/foo/"),
     fileType = Left(CaseClass),
     fileName = Left("Foo"),
@@ -140,7 +158,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                          |""".stripMargin
   )
 
-  check("new-object-null-dir")(
+  checkScala("new-object-null-dir")(
     directory = None,
     fileType = Right(Object),
     fileName = Right("Bar"),
@@ -151,7 +169,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                           |""".stripMargin
   )
 
-  check("new-object-null-dir-name-provided")(
+  checkScala("new-object-null-dir-name-provided")(
     directory = None,
     fileType = Right(Object),
     fileName = Left("Bar"),
@@ -162,7 +180,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                           |""".stripMargin
   )
 
-  check("new-object-null-dir")(
+  checkScala("new-object-null-dir")(
     directory = None,
     fileType = Left(Object),
     fileName = Left("Bar"),
@@ -173,7 +191,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                           |""".stripMargin
   )
 
-  check("new-trait-new-dir")(
+  checkScala("new-trait-new-dir")(
     directory = Some("a/src/main/scala/"),
     fileType = Right(Trait),
     fileName = Right("bar/Baz"),
@@ -186,7 +204,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                           |""".stripMargin
   )
 
-  check("new-trait-new-dir-name-provided")(
+  checkScala("new-trait-new-dir-name-provided")(
     directory = Some("a/src/main/scala/"),
     fileType = Right(Trait),
     fileName = Left("bar/Baz"),
@@ -199,7 +217,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                           |""".stripMargin
   )
 
-  check("new-trait-new-dir-fully-provided")(
+  checkScala("new-trait-new-dir-fully-provided")(
     directory = Some("a/src/main/scala/"),
     fileType = Right(Trait),
     fileName = Right("bar/Baz"),
@@ -212,7 +230,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                           |""".stripMargin
   )
 
-  check("new-package-object")(
+  checkScala("new-package-object")(
     directory = Some("a/src/main/scala/foo"),
     fileType = Right(PackageObject),
     fileName = Right(
@@ -225,7 +243,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                           |""".stripMargin
   )
 
-  check("new-package-object-provided")(
+  checkScala("new-package-object-provided")(
     directory = Some("a/src/main/scala/foo"),
     fileType = Left(PackageObject),
     fileName = Right(
@@ -238,7 +256,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                           |""".stripMargin
   )
 
-  check("new-class-on-file")(
+  checkScala("new-class-on-file")(
     directory = Some("a/src/main/scala/foo/Other.scala"),
     fileType = Right(Class),
     fileName = Right("Foo"),
@@ -256,7 +274,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                        |""".stripMargin
   )
 
-  check("new-class-on-file-name-provided")(
+  checkScala("new-class-on-file-name-provided")(
     directory = Some("a/src/main/scala/foo/Other.scala"),
     fileType = Right(Class),
     fileName = Left("Foo"),
@@ -274,7 +292,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                        |""".stripMargin
   )
 
-  check("new-class-on-file-fully-provided")(
+  checkScala("new-class-on-file-fully-provided")(
     directory = Some("a/src/main/scala/foo/Other.scala"),
     fileType = Right(Class),
     fileName = Right("Foo"),
@@ -292,7 +310,7 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
                        |""".stripMargin
   )
 
-  check("existing-file")(
+  checkScala("existing-file")(
     directory = Some("a/src/main/scala/foo"),
     fileType = Right(Class),
     fileName = Right("Other"),
@@ -313,6 +331,189 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
     expectedException = List(classOf[FileAlreadyExistsException])
   )
 
+  checkScala("scala3-enum")(
+    directory = Some("a/src/main/scala/foo"),
+    fileType = Right(Enum),
+    fileName = Right("Color"),
+    expectedFilePath = "a/src/main/scala/foo/Color.scala",
+    expectedContent = s"""|package foo
+                          |
+                          |enum Color {
+                          |${indent}case
+                          |}
+                          |""".stripMargin,
+    scalaVersion = Some(V.scala3)
+  )
+
+  checkScala("empty-file-with-package")(
+    directory = Some("a/src/main/scala/foo"),
+    fileType = Right(ScalaFile),
+    fileName = Right("Foo"),
+    expectedFilePath = "a/src/main/scala/foo/Foo.scala",
+    expectedContent = s"""|package foo
+                          |
+                          |""".stripMargin
+  )
+
+  checkJava("new-java-class")(
+    directory = Some("a/src/main/java/foo/"),
+    fileType = Right(JavaClass),
+    fileName = Right("Foo"),
+    expectedFilePath = "a/src/main/java/foo/Foo.java",
+    expectedContent = s"""|package foo;
+                          |
+                          |class Foo {
+                          |$indent
+                          |}
+                          |""".stripMargin
+  )
+
+  checkJava("new-java-class-name-provided")(
+    directory = Some("a/src/main/java/foo/"),
+    fileType = Right(JavaClass),
+    fileName = Left("Foo"),
+    expectedFilePath = "a/src/main/java/foo/Foo.java",
+    expectedContent = s"""|package foo;
+                          |
+                          |class Foo {
+                          |$indent
+                          |}
+                          |""".stripMargin
+  )
+
+  checkJava("new-java-class-fully-provided")(
+    directory = Some("a/src/main/java/foo/"),
+    fileType = Left(JavaClass),
+    fileName = Left("Foo"),
+    expectedFilePath = "a/src/main/java/foo/Foo.java",
+    expectedContent = s"""|package foo;
+                          |
+                          |class Foo {
+                          |$indent
+                          |}
+                          |""".stripMargin
+  )
+
+  checkJava("new-java-interface")(
+    directory = Some("a/src/main/java/foo/"),
+    fileType = Right(JavaInterface),
+    fileName = Right("Foo"),
+    expectedFilePath = "a/src/main/java/foo/Foo.java",
+    expectedContent = s"""|package foo;
+                          |
+                          |interface Foo {
+                          |$indent
+                          |}
+                          |""".stripMargin
+  )
+
+  checkJava("new-java-interface-name-provided")(
+    directory = Some("a/src/main/java/foo/"),
+    fileType = Right(JavaInterface),
+    fileName = Left("Foo"),
+    expectedFilePath = "a/src/main/java/foo/Foo.java",
+    expectedContent = s"""|package foo;
+                          |
+                          |interface Foo {
+                          |$indent
+                          |}
+                          |""".stripMargin
+  )
+
+  checkJava("new-java-interface-fully-provided")(
+    directory = Some("a/src/main/java/foo/"),
+    fileType = Left(JavaInterface),
+    fileName = Left("Foo"),
+    expectedFilePath = "a/src/main/java/foo/Foo.java",
+    expectedContent = s"""|package foo;
+                          |
+                          |interface Foo {
+                          |$indent
+                          |}
+                          |""".stripMargin
+  )
+
+  checkJava("new-java-enum")(
+    directory = Some("a/src/main/java/foo/"),
+    fileType = Right(JavaEnum),
+    fileName = Right("Foo"),
+    expectedFilePath = "a/src/main/java/foo/Foo.java",
+    expectedContent = s"""|package foo;
+                          |
+                          |enum Foo {
+                          |$indent
+                          |}
+                          |""".stripMargin
+  )
+
+  checkJava("new-java-enum-name-provided")(
+    directory = Some("a/src/main/java/foo/"),
+    fileType = Right(JavaEnum),
+    fileName = Left("Foo"),
+    expectedFilePath = "a/src/main/java/foo/Foo.java",
+    expectedContent = s"""|package foo;
+                          |
+                          |enum Foo {
+                          |$indent
+                          |}
+                          |""".stripMargin
+  )
+
+  checkJava("new-java-enum-fully-provided")(
+    directory = Some("a/src/main/java/foo/"),
+    fileType = Left(JavaEnum),
+    fileName = Left("Foo"),
+    expectedFilePath = "a/src/main/java/foo/Foo.java",
+    expectedContent = s"""|package foo;
+                          |
+                          |enum Foo {
+                          |$indent
+                          |}
+                          |""".stripMargin
+  )
+
+  checkJava("new-java-record")(
+    directory = Some("a/src/main/java/foo/"),
+    fileType = Right(JavaRecord),
+    fileName = Right("Foo"),
+    expectedFilePath = "a/src/main/java/foo/Foo.java",
+    expectedContent = """|package foo;
+                         |
+                         |record Foo() {
+                         |
+                         |}
+                         |""".stripMargin,
+    javaMinVersion = Some("14")
+  )
+
+  checkJava("new-java-record-name-provided")(
+    directory = Some("a/src/main/java/foo/"),
+    fileType = Right(JavaRecord),
+    fileName = Left("Foo"),
+    expectedFilePath = "a/src/main/java/foo/Foo.java",
+    expectedContent = """|package foo;
+                         |
+                         |record Foo() {
+                         |
+                         |}
+                         |""".stripMargin,
+    javaMinVersion = Some("14")
+  )
+
+  checkJava("new-java-record-fully-provided")(
+    directory = Some("a/src/main/java/foo/"),
+    fileType = Left(JavaRecord),
+    fileName = Left("Foo"),
+    expectedFilePath = "a/src/main/java/foo/Foo.java",
+    expectedContent = """|package foo;
+                         |
+                         |record Foo() {
+                         |
+                         |}
+                         |""".stripMargin,
+    javaMinVersion = Some("14")
+  )
+
   private lazy val indent = "  "
 
   type ProvidedFileType = NewFileType
@@ -320,16 +521,68 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
   type Provided = String
   type Picked = String
 
-  private def check(testName: TestOptions)(
+  private def checkJava(testName: TestOptions)(
       directory: Option[String],
       fileType: Either[ProvidedFileType, PickedFileType],
       fileName: Either[Provided, Picked],
       expectedFilePath: String,
       expectedContent: String,
       existingFiles: String = "",
-      expectedException: List[Class[_]] = Nil
-  ): Unit =
+      expectedException: List[Class[_]] = Nil,
+      javaMinVersion: Option[String] = None
+  )(implicit loc: Location): Unit = if (
+    Properties.isJavaAtLeast(javaMinVersion.getOrElse("1.8"))
+  )
+    check(testName)(
+      directory,
+      fileType,
+      fileName,
+      expectedFilePath,
+      expectedContent,
+      ServerCommands.NewJavaFile,
+      existingFiles,
+      expectedException,
+      None
+    )
+
+  private def checkScala(testName: TestOptions)(
+      directory: Option[String],
+      fileType: Either[ProvidedFileType, PickedFileType],
+      fileName: Either[Provided, Picked],
+      expectedFilePath: String,
+      expectedContent: String,
+      existingFiles: String = "",
+      expectedException: List[Class[_]] = Nil,
+      scalaVersion: Option[String] = None
+  )(implicit loc: Location): Unit = check(testName)(
+    directory,
+    fileType,
+    fileName,
+    expectedFilePath,
+    expectedContent,
+    ServerCommands.NewScalaFile,
+    existingFiles,
+    expectedException,
+    scalaVersion
+  )
+
+  /**
+   * NewScalaFile request may include @param fileType and @param fileName (2 x Left) in arguments.
+   * When one of them missing Metals will use quickpick in order to ask the user about lacking information
+   */
+  private def check(testName: TestOptions)(
+      directory: Option[String],
+      fileType: Either[ProvidedFileType, PickedFileType],
+      fileName: Either[Provided, Picked],
+      expectedFilePath: String,
+      expectedContent: String,
+      command: ListParametrizedCommand[String],
+      existingFiles: String,
+      expectedException: List[Class[_]],
+      scalaVersion: Option[String]
+  )(implicit loc: Location): Unit =
     test(testName) {
+      val localScalaVersion = scalaVersion.getOrElse(V.scala213)
       val directoryUri = directory.fold(null.asInstanceOf[String])(
         workspace.resolve(_).toURI.toString()
       )
@@ -361,9 +614,9 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
         case Right(value) =>
           client.inputBoxHandler = { params =>
             if (isEnterName(params, ft)) {
-              Some(new MetalsInputBoxResult(value = value))
+              RawMetalsInputBoxResult(value = value)
             } else {
-              None
+              RawMetalsInputBoxResult(cancelled = true)
             }
           }
       }
@@ -389,26 +642,24 @@ class NewFileLspSuite extends BaseLspSuite("new-file") {
       )
 
       val futureToRecover = for {
-        _ <- server.initialize(s"""
-                                  |/metals.json
-                                  |{
-                                  |  "a": { }
-                                  |}
-                                  |$existingFiles
-                                  |""".stripMargin)
+        _ <- initialize(
+          s"""/metals.json
+             |{
+             |  "a": { "scalaVersion" : "$localScalaVersion" }
+             |}
+             |$existingFiles
+          """.stripMargin
+        )
         _ <-
           server
-            .executeCommand(
-              ServerCommands.NewScalaFile.id,
-              args: _*
-            )
+            .executeCommand(command, args: _*)
         _ = {
           assertNoDiff(
             client.workspaceMessageRequests,
             expectedMessages
           )
           assert(expectedFilePathAbsolute.exists)
-          assertNoDiff(
+          assertLines(
             expectedFilePathAbsolute.readText,
             expectedContent
           )

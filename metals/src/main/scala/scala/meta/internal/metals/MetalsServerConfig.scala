@@ -39,6 +39,7 @@ import scala.meta.pc.PresentationCompilerConfig.OverrideDefFormat
  *                                       be turned off. By default this is on, but Metals only
  *                                       supports a small subset of this, so it may be problematic
  *                                       for certain clients.
+ * @param macOsMaxWatchRoots The maximum number of root directories to watch on MacOS.
  */
 final case class MetalsServerConfig(
     globSyntax: GlobSyntaxConfig = GlobSyntaxConfig.default,
@@ -56,10 +57,6 @@ final case class MetalsServerConfig(
     ),
     isHttpEnabled: Boolean = MetalsServerConfig.binaryOption(
       "metals.http",
-      default = false
-    ),
-    isCommandInHtmlSupported: Boolean = MetalsServerConfig.binaryOption(
-      "metals.commands-in-html",
       default = false
     ),
     isInputBoxEnabled: Boolean = MetalsServerConfig.binaryOption(
@@ -90,7 +87,15 @@ final case class MetalsServerConfig(
     allowMultilineStringFormatting: Boolean = MetalsServerConfig.binaryOption(
       "metals.allow-multiline-string-formatting",
       default = true
-    )
+    ),
+    bloopPort: Option[Int] = Option(System.getProperty("metals.bloop-port"))
+      .filter(_.forall(Character.isDigit(_)))
+      .map(_.toInt),
+    macOsMaxWatchRoots: Int =
+      Option(System.getProperty("metals.macos-max-watch-roots"))
+        .filter(_.forall(Character.isDigit(_)))
+        .map(_.toInt)
+        .getOrElse(32)
 ) {
   override def toString: String =
     List[String](
@@ -105,7 +110,9 @@ final case class MetalsServerConfig(
       s"input-box=$isInputBoxEnabled",
       s"ask-to-reconnect=$askToReconnect",
       s"icons=$icons",
-      s"statistics=$statistics"
+      s"statistics=$statistics",
+      s"bloop-port=${bloopPort.map(_.toString()).getOrElse("default")}",
+      s"macos-max-watch-roots=${macOsMaxWatchRoots}"
     ).mkString("MetalsServerConfig(\n  ", ",\n  ", "\n)")
 }
 object MetalsServerConfig {
@@ -133,7 +140,6 @@ object MetalsServerConfig {
         base.copy(
           icons = Icons.vscode,
           globSyntax = GlobSyntaxConfig.vscode,
-          isCommandInHtmlSupported = true,
           compilers = base.compilers.copy(
             _parameterHintsCommand =
               Some("editor.action.triggerParameterHints"),

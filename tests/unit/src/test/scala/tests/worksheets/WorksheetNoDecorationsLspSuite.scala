@@ -14,7 +14,7 @@ class WorksheetNoDecorationsLspSuite
 
   test("edits-and-hovers") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""
            |/metals.json
            |{
@@ -52,7 +52,7 @@ class WorksheetNoDecorationsLspSuite
 
   test("new-edits") {
     for {
-      _ <- server.initialize(
+      _ <- initialize(
         s"""
            |/metals.json
            |{
@@ -105,8 +105,8 @@ class WorksheetNoDecorationsLspSuite
         .zip(expected.toList)
 
     Future
-      .traverse(queriesAndExpected) {
-        case (q, e) => server.assertHover(filename, q, e)
+      .traverse(queriesAndExpected) { case (q, e) =>
+        server.assertHover(filename, q, e)
       }
       .map(_ => ())
   }

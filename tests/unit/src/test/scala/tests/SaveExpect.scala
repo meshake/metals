@@ -3,12 +3,17 @@ package tests
 object SaveExpect {
   def main(args: Array[String]): Unit = {
     List[BaseExpectSuite](
-      new DefinitionSuite,
-      new SemanticdbSuite,
-      new MtagsSuite,
+      new DefinitionScala2Suite,
+      new DefinitionScala3Suite,
+      new SemanticdbScala2Suite,
+      new SemanticdbScala3Suite,
+      new MtagsScala2Suite,
+      new MtagsScala3Suite,
       new ToplevelSuite,
-      new DocumentSymbolSuite,
-      new FoldingRangeSuite,
+      new DocumentSymbolScala2Suite,
+      new DocumentSymbolScala3Suite,
+      new FoldingRangeScala2Suite,
+      new FoldingRangeScala3Suite,
       new WorkspaceSymbolExpectSuite
     ).foreach { suite =>
       val header = suite.suiteName.length + 2

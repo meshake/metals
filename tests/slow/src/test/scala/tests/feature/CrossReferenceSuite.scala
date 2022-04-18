@@ -9,8 +9,24 @@ import tests.BaseRangesSuite
 class CrossReferenceSuite extends BaseRangesSuite("cross-reference-suite") {
 
   check(
-    "references-dotty",
+    "references-scala3",
     """|/a/src/main/scala/a/Main.scala
+       |package a
+       |
+       |object Main{
+       |  def <<hel@@lo>>() = println("Hello world")
+       |  <<hello>>()
+       |  <<hello>>()
+       |  <<hello>>()
+       |}
+       |
+       |""".stripMargin,
+    scalaVersion = Some(V.scala3)
+  )
+
+  check(
+    "references-scala3-standalone",
+    """|/Main.scala
        |package a
        |
        |object Main{

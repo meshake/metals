@@ -12,6 +12,7 @@ import java.nio.file.attribute.BasicFileAttributes
 import java.util
 import java.util.Collections
 import java.util.concurrent.ScheduledExecutorService
+import java.{util => ju}
 
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
@@ -19,37 +20,44 @@ import scala.collection.mutable.ListBuffer
 import scala.concurrent.ExecutionContextExecutorService
 import scala.concurrent.Future
 import scala.concurrent.Promise
-import scala.util.Properties
 import scala.util.matching.Regex
 import scala.{meta => m}
 
 import scala.meta.Input
-import scala.meta.internal.implementation.Supermethods.GoToSuperMethodParams
 import scala.meta.internal.implementation.Supermethods.formatMethodSymbolForQuickPick
 import scala.meta.internal.io.FileIO
 import scala.meta.internal.io.PathIO
 import scala.meta.internal.metals.Buffers
 import scala.meta.internal.metals.ClientCommands
+import scala.meta.internal.metals.Command
 import scala.meta.internal.metals.Debug
 import scala.meta.internal.metals.DebugSession
 import scala.meta.internal.metals.DebugUnresolvedMainClassParams
+import scala.meta.internal.metals.DecoderResponse
 import scala.meta.internal.metals.DidFocusResult
 import scala.meta.internal.metals.Directories
+import scala.meta.internal.metals.HoverExtParams
 import scala.meta.internal.metals.InitializationOptions
+import scala.meta.internal.metals.ListParametrizedCommand
 import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.MetalsLanguageServer
 import scala.meta.internal.metals.MetalsServerConfig
+import scala.meta.internal.metals.MtagsResolver
+import scala.meta.internal.metals.ParametrizedCommand
 import scala.meta.internal.metals.PositionSyntax._
 import scala.meta.internal.metals.ProgressTicks
+import scala.meta.internal.metals.ScalaVersionSelector
 import scala.meta.internal.metals.ServerCommands
 import scala.meta.internal.metals.TextEdits
 import scala.meta.internal.metals.Time
-import scala.meta.internal.metals.Trees
 import scala.meta.internal.metals.UserConfiguration
 import scala.meta.internal.metals.WindowStateDidChangeParams
 import scala.meta.internal.metals.debug.Stoppage
 import scala.meta.internal.metals.debug.TestDebugger
+import scala.meta.internal.metals.findfiles._
+import scala.meta.internal.metals.testProvider.BuildTargetUpdate
 import scala.meta.internal.mtags.Semanticdbs
+import scala.meta.internal.parsing.Trees
 import scala.meta.internal.semanticdb.Scala.Symbols
 import scala.meta.internal.semanticdb.Scala._
 import scala.meta.internal.tvp.TreeViewChildrenParams
@@ -58,8 +66,10 @@ import scala.meta.internal.{semanticdb => s}
 import scala.meta.io.AbsolutePath
 import scala.meta.io.RelativePath
 
+import _root_.org.eclipse.lsp4j.DocumentSymbolCapabilities
 import ch.epfl.scala.{bsp4j => b}
 import com.google.gson.JsonElement
+import munit.Tag
 import org.eclipse.lsp4j.ClientCapabilities
 import org.eclipse.lsp4j.CodeActionContext
 import org.eclipse.lsp4j.CodeActionParams
@@ -119,9 +129,12 @@ final class TestingServer(
     bspGlobalDirectories: List[AbsolutePath],
     sh: ScheduledExecutorService,
     time: Time,
-    initializationOptions: Option[InitializationOptions]
+    initializationOptions: Option[InitializationOptions],
+    mtagsResolver: MtagsResolver,
+    onStartCompilation: () => Unit = () => ()
 )(implicit ex: ExecutionContextExecutorService) {
   import scala.meta.internal.metals.JsonParser._
+
   val server = new MetalsLanguageServer(
     ex,
     buffers = buffers,
@@ -131,11 +144,21 @@ final class TestingServer(
     bspGlobalDirectories = bspGlobalDirectories,
     sh = sh,
     time = time,
-    // relying on the macOS/Windows file watchers causes flaky test failures.
-    isReliableFileWatcher = Properties.isLinux
+    isReliableFileWatcher = System.getenv("CI") != "true",
+    mtagsResolver = mtagsResolver,
+    onStartCompilation = onStartCompilation
   )
   server.connectToLanguageClient(client)
-  private val readonlySources = TrieMap.empty[String, AbsolutePath]
+
+  private val trees = new Trees(
+    buffers,
+    new ScalaVersionSelector(
+      () => UserConfiguration.default,
+      server.buildTargets
+    )
+  )
+
+  private val virtualDocSources = TrieMap.empty[String, AbsolutePath]
   def statusBarHistory: String = {
     // collect both published items in the client and pending items from the server.
     val all = List(
@@ -145,16 +168,17 @@ final class TestingServer(
     all.distinct.mkString("\n")
   }
 
-  private def write(layout: String): Unit = {
-    FileLayout.fromString(layout, root = workspace)
-  }
-
   def workspaceSymbol(
       query: String,
       includeKind: Boolean = false,
       includeFilename: Boolean = false
   ): String = {
     val infos = server.workspaceSymbol(query)
+    infos.foreach(info => {
+      val path = info.getLocation().getUri().toAbsolutePath
+      if (path.isJarFileSystem)
+        virtualDocSources(path.toString.stripPrefix("/")) = path
+    })
     infos
       .map { info =>
         val kind =
@@ -201,6 +225,7 @@ final class TestingServer(
           dependencySources
             .getItems()
             .asScala
+            .toSeq
             .flatMap(_.getSources().asScala)
         }
       case None =>
@@ -218,8 +243,11 @@ final class TestingServer(
       toCheck match {
         case (pos, expectedPos) :: tl =>
           val (position, document) = context(pos)
-          val command = GoToSuperMethodParams(document, position)
-          executeCommand(ServerCommands.GotoSuperMethod.id, command)
+          val command = new TextDocumentPositionParams(
+            new TextDocumentIdentifier(document),
+            position
+          )
+          executeCommand(ServerCommands.GotoSuperMethod, command)
             .flatMap(_ =>
               exec(tl).map(rest => expectedPos.flatMap(context.get) +: rest)
             )
@@ -234,17 +262,54 @@ final class TestingServer(
       val expectedGotoPositions = expectedGotoPositionsOpts.collect {
         case Some(pos) => pos
       }
-      val gotoExecutedCommandPositions = client.clientCommands.asScala
-        .filter(_.getCommand == ClientCommands.GotoLocation.id)
-        .map(_.getArguments.asScala.head.asInstanceOf[l.Location])
-        .map(l => (l.getRange.getStart, l.getUri))
-        .toList
+      val gotoExecutedCommandPositions = client.clientCommands.asScala.collect {
+        case ClientCommands.GotoLocation(location) =>
+          (location.range.getStart, location.uri)
+      }
+      if (
+        initializationOptions
+          .flatMap(_.isVirtualDocumentSupported)
+          .getOrElse(false)
+      ) {
 
-      Assertions.assertEquals(
-        gotoExecutedCommandPositions,
-        expectedGotoPositions
-      )
+        def shortenJarPath(longPath: String): String = {
+          val revSplitPath = longPath.reverse.split("!")
+          if (revSplitPath.length == 2) {
+            val path = revSplitPath(0).reverse
+            val jarPath =
+              revSplitPath(1).replace("\\", "/").takeWhile(_ != '/').reverse
+            s"$jarPath$path"
+          } else longPath
+        }
+        def shortenReadOnlyPath(longPath: String): String = {
+          val path = longPath.toAbsolutePath.toRelativeInside(
+            workspace.resolve(Directories.dependencies)
+          )
+          path.map(_.toString).getOrElse(longPath).replace("\\", "/")
+        }
+        val shortenedObtained = gotoExecutedCommandPositions.map {
+          case (position, location) => (position, shortenJarPath(location))
+        }
+        val shortenedExpected = expectedGotoPositions.map {
+          case (position, location) => (position, shortenReadOnlyPath(location))
+        }
+        Assertions.assertEquals(
+          shortenedObtained,
+          shortenedExpected
+        )
+      } else
+        Assertions.assertEquals(
+          gotoExecutedCommandPositions,
+          expectedGotoPositions
+        )
     }
+  }
+
+  def executeDecodeFileCommand(
+      uri: String
+  ): Future[DecoderResponse] = {
+    executeCommand(ServerCommands.DecodeFile, uri)
+      .asInstanceOf[Future[DecoderResponse]]
   }
 
   def assertSuperMethodHierarchy(
@@ -264,8 +329,11 @@ final class TestingServer(
     def exec(toCheck: List[(Int, List[String])]): Future[List[Set[String]]] = {
       toCheck match {
         case (pos, expected) :: tl =>
-          val command = GoToSuperMethodParams(uri, context(pos))
-          executeCommand(ServerCommands.SuperMethodHierarchy.id, command)
+          val command = new TextDocumentPositionParams(
+            new TextDocumentIdentifier(uri),
+            context(pos)
+          )
+          executeCommand(ServerCommands.SuperMethodHierarchy, command)
             .flatMap(_ => exec(tl).map(rest => expected.toSet +: rest))
 
         case _ =>
@@ -290,13 +358,12 @@ final class TestingServer(
       Assertions.assertSimpleLocationOrdering(referenceLocations)
       val references =
         TestRanges.renderLocationsAsString(base, referenceLocations)
-      references.foreach {
-        case (file, obtained) =>
-          val expectedImpl = expected(file)
-          Assertions.assertNoDiff(
-            obtained,
-            expectedImpl
-          )
+      references.foreach { case (file, obtained) =>
+        val expectedImpl = expected(file)
+        Assertions.assertNoDiff(
+          obtained,
+          expectedImpl
+        )
       }
     }
   }
@@ -305,8 +372,8 @@ final class TestingServer(
       loc: munit.Location
   ): Unit = {
     val compare = workspaceReferences()
-    assert(compare.definition.nonEmpty)
-    assert(compare.references.nonEmpty)
+    assert(compare.definition.nonEmpty, "Definitions should not be empty")
+    assert(compare.references.nonEmpty, "References should not be empty")
     Assertions.assertNoDiff(
       compare.referencesFormat,
       compare.definitionFormat
@@ -341,7 +408,7 @@ final class TestingServer(
       source <- workspaceSources()
       input = source.toInputFromBuffers(buffers)
       identifier = source.toTextDocumentIdentifier
-      token <- Trees.defaultDialect(input).tokenize.get
+      token <- trees.tokenized(input).get
       if token.isIdentifier
       params = token.toPositionParams(identifier)
       definition = server.definitionResult(params).asJava.get()
@@ -368,9 +435,11 @@ final class TestingServer(
         new ReferenceContext(true)
       )
       val obtainedLocations = server.referencesResult(params)
-      references ++= obtainedLocations.locations.map(l =>
-        newRef(obtainedLocations.symbol, l)
-      )
+      references ++= obtainedLocations.flatMap { result =>
+        result.locations.map { l =>
+          newRef(result.symbol, l)
+        }
+      }
       definition ++= expectedLocations.map(l => newRef(ref.symbol, l))
     }
     WorkspaceSymbolReferences(
@@ -380,25 +449,21 @@ final class TestingServer(
   }
 
   def initialize(
-      layout: String,
-      expectError: Boolean = false,
-      preInitialized: () => Future[Unit] = () => Future.successful(()),
       workspaceFolders: List[String] = Nil
-  ): Future[Unit] = {
-    Debug.printEnclosing()
-    write(layout)
-    QuickBuild.bloopInstall(workspace)
+  ): Future[l.InitializeResult] = {
     val params = new InitializeParams
     val workspaceCapabilities = new WorkspaceClientCapabilities()
     val textDocumentCapabilities = new TextDocumentClientCapabilities
     textDocumentCapabilities.setFoldingRange(new FoldingRangeCapabilities)
-    val initOptions = initializationOptions.getOrElse(
-      InitializationOptions.Default.copy(
-        debuggingProvider = Some(true),
-        treeViewProvider = Some(true),
-        slowTaskProvider = Some(true)
-      )
+    val completionItemCapabilities = new l.CompletionItemCapabilities(true)
+    textDocumentCapabilities.setCompletion(
+      new l.CompletionCapabilities(completionItemCapabilities)
     )
+    val documentSymbolCapabilities = new DocumentSymbolCapabilities()
+    documentSymbolCapabilities.setHierarchicalDocumentSymbolSupport(true)
+    textDocumentCapabilities.setDocumentSymbol(documentSymbolCapabilities)
+    val initOptions: InitializationOptions =
+      initializationOptions.getOrElse(TestingServer.TestDefault)
 
     // Yes, this is a bit gross :/
     // However, I want to only get the existing fields that are being set
@@ -412,7 +477,8 @@ final class TestingServer(
           field.getName -> field.get(initOptions)
         }
         .collect {
-          case (key, Some(value)) => key -> value
+          case (key, Some(value: Boolean)) => key -> value
+          case (key, Some(value)) => key -> value.toString
         }
         .toMap
         .asJava
@@ -431,15 +497,11 @@ final class TestingServer(
         .asJava
     )
     params.setRootUri(workspace.toURI.toString)
-    for {
-      _ <- server.initialize(params).asScala
-      _ <- preInitialized()
-      _ <- server.initialized(new InitializedParams).asScala
-    } yield {
-      if (!expectError) {
-        assertBuildServerConnection()
-      }
-    }
+    server.initialize(params).asScala
+  }
+
+  def initialized(): Future[Unit] = {
+    server.initialized(new InitializedParams).asScala
   }
 
   def assertBuildServerConnection(): Unit = {
@@ -447,9 +509,40 @@ final class TestingServer(
   }
 
   def toPath(filename: String): AbsolutePath =
-    TestingServer.toPath(workspace, filename)
+    TestingServer.toPath(workspace, filename, virtualDocSources)
 
-  def executeCommand(command: String, params: Object*): Future[Any] = {
+  def executeCommand[T](
+      command: ParametrizedCommand[T],
+      param: T
+  ): Future[Any] = {
+    Debug.printEnclosing()
+    scribe.info(s"Executing command [${command.id}]")
+    server.executeCommand(command.toExecuteCommandParams(param)).asScala
+  }
+
+  def executeCommand[T](
+      command: ListParametrizedCommand[T],
+      param: T*
+  ): Future[Any] = {
+    Debug.printEnclosing()
+    scribe.info(s"Executing command [${command.id}]")
+    server.executeCommand(command.toExecuteCommandParams(param: _*)).asScala
+  }
+
+  def executeCommand[T](command: Command): Future[Any] = {
+    Debug.printEnclosing()
+    scribe.info(s"Executing command [${command.id}]")
+    server.executeCommand(command.toExecuteCommandParams()).asScala
+  }
+
+  /**
+   * Operating on strings can be dangerous, but needed for running unknown commands
+   * and for the StartDebugAdapter command, which doesn't have a stable argument.
+   */
+  def executeCommandUnsafe(
+      command: String,
+      params: Seq[Object]
+  ): Future[Any] = {
     Debug.printEnclosing()
     scribe.info(s"Executing command [$command]")
     val args: java.util.List[Object] =
@@ -457,6 +550,8 @@ final class TestingServer(
 
     server.executeCommand(new ExecuteCommandParams(command, args)).asScala
   }
+
+  def waitFor(millis: Long): Future[Unit] = Future { Thread.sleep(millis) }
 
   def startDebugging(
       target: String,
@@ -470,11 +565,11 @@ final class TestingServer(
     val params =
       new b.DebugSessionParams(targets.asJava, kind, parameter.toJson)
 
-    executeCommand(ServerCommands.StartDebugAdapter.id, params).collect {
-      case DebugSession(_, uri) =>
+    executeCommandUnsafe(ServerCommands.StartDebugAdapter.id, Seq(params))
+      .collect { case DebugSession(_, uri) =>
         scribe.info(s"Starting debug session for $uri")
         TestDebugger(URI.create(uri), stoppageHandler)
-    }
+      }
   }
 
   // note(@tgodzik) all test should have `System.exit(0)` added to avoid occasional issue due to:
@@ -508,10 +603,10 @@ final class TestingServer(
       params: AnyRef
   ): Future[TestDebugger] = {
     assertSystemExit(params)
-    executeCommand(ServerCommands.StartDebugAdapter.id, params).collect {
-      case DebugSession(_, uri) =>
+    executeCommandUnsafe(ServerCommands.StartDebugAdapter.id, Seq(params))
+      .collect { case DebugSession(_, uri) =>
         TestDebugger(URI.create(uri), Stoppage.Handler.Continue)
-    }
+      }
   }
 
   def didFocus(filename: String): Future[DidFocusResult.Value] = {
@@ -523,7 +618,7 @@ final class TestingServer(
   }
 
   def didSave(filename: String)(fn: String => String): Future[Unit] = {
-    Debug.printEnclosing()
+    Debug.printEnclosing(filename)
     val abspath = toPath(filename)
     val oldText = abspath.toInputFromBuffers(buffers).text
     val newText = fn(oldText)
@@ -541,7 +636,7 @@ final class TestingServer(
   }
 
   def didChange(filename: String)(fn: String => String): Future[Unit] = {
-    Debug.printEnclosing()
+    Debug.printEnclosing(filename)
     val abspath = toPath(filename)
     val oldText = abspath.toInputFromBuffers(buffers).text
     val newText = fn(oldText)
@@ -559,8 +654,13 @@ final class TestingServer(
     server.stacktraceAnalyzer.stacktraceLenses(stacktrace.split('\n').toList)
   }
 
+  def exportEvaluation(filename: String): Option[String] = {
+    val path = toPath(filename)
+    server.worksheetProvider.copyWorksheetOutput(path)
+  }
+
   def didOpen(filename: String): Future[Unit] = {
-    Debug.printEnclosing()
+    Debug.printEnclosing(filename)
     val abspath = toPath(filename)
     val uri = abspath.toURI.toString
     val extension = PathIO.extension(abspath.toNIO)
@@ -575,7 +675,7 @@ final class TestingServer(
   }
 
   def didClose(filename: String): Future[Unit] = {
-    Debug.printEnclosing()
+    Debug.printEnclosing(filename)
     val abspath = toPath(filename)
     val uri = abspath.toURI.toString
     Future.successful {
@@ -618,7 +718,7 @@ final class TestingServer(
     val params = new FoldingRangeRequestParams(new TextDocumentIdentifier(uri))
     for {
       ranges <- server.foldingRange(params).asScala
-      textEdits = FoldingRangesTextEdits(ranges)
+      textEdits = RangesTextEdits.fromFoldingRanges(ranges)
     } yield TextEdits.applyEdits(textContents(filename), textEdits)
   }
 
@@ -630,12 +730,45 @@ final class TestingServer(
       _ = Assertions.assertNoDiff(folded, expected)
     } yield ()
 
+  def retrieveRanges(
+      filename: String,
+      expected: String
+  ): Future[ju.List[l.SelectionRange]] = {
+    val path = toPath(filename)
+    val input = path.toInputFromBuffers(buffers)
+    val offset = expected.indexOf("@@")
+    if (offset < 0) sys.error("missing @@")
+    val start = input.text.indexOf(expected.replace("@@", ""))
+    val point = start + offset
+    val pos = m.Position.Range(input, point, point)
+    val params =
+      new l.SelectionRangeParams(
+        path.toTextDocumentIdentifier,
+        List(pos.toLSP.getStart).asJava
+      )
+
+    server.selectionRange(params).asScala
+  }
+
+  def assertSelectionRanges(
+      filename: String,
+      ranges: List[l.SelectionRange],
+      expected: List[String]
+  ): Unit = {
+    expected.headOption.foreach { expectedRange =>
+      val edits = RangesTextEdits.fromSelectionRanges(ranges)
+      val edited = TextEdits.applyEdits(textContents(filename), edits)
+      Assertions.assertNoDiff(edited, expectedRange)
+      assertSelectionRanges(filename, ranges.map(_.getParent()), expected.tail)
+    }
+  }
+
   def onTypeFormatting(
       filename: String,
       query: String,
       expected: String,
       autoIndent: String,
-      replaceWith: String,
+      triggerChar: String,
       root: AbsolutePath = workspace
   )(implicit loc: munit.Location): Future[Unit] = {
     for {
@@ -644,7 +777,7 @@ final class TestingServer(
         query,
         root,
         autoIndent,
-        replaceWith
+        triggerChar
       )
       multiline <- server.onTypeFormatting(params).asScala
       format = TextEdits.applyEdits(
@@ -661,10 +794,17 @@ final class TestingServer(
       query: String,
       expected: String,
       paste: String,
-      root: AbsolutePath
+      root: AbsolutePath,
+      formattingOptions: Option[FormattingOptions]
   )(implicit loc: munit.Location): Future[Unit] = {
     for {
-      (_, params) <- rangeFormattingParams(filename, query, paste, root)
+      (_, params) <- rangeFormattingParams(
+        filename,
+        query,
+        paste,
+        root,
+        formattingOptions
+      )
       multiline <- server.rangeFormatting(params).asScala
       format = TextEdits.applyEdits(
         textContents(filename),
@@ -678,10 +818,16 @@ final class TestingServer(
       filename: String,
       query: String,
       expected: String,
-      root: AbsolutePath = workspace
+      root: AbsolutePath = workspace,
+      formattingOptions: Option[FormattingOptions] = None
   )(implicit loc: munit.Location): Future[Unit] = {
     for {
-      (_, params) <- rangeFormattingParams(filename, query, root)
+      (_, params) <- rangeFormattingParams(
+        filename,
+        query,
+        root,
+        formattingOptions
+      )
       multiline <- server.rangeFormatting(params).asScala
       format = TextEdits.applyEdits(
         textContents(filename),
@@ -692,7 +838,48 @@ final class TestingServer(
     }
   }
 
-  def codeLenses(filename: String)(maxRetries: Int): Future[String] = {
+  def discoverTestSuites(
+      files: List[String],
+      uri: Option[String] = None
+  ): Future[List[BuildTargetUpdate]] = {
+    val paths = files.map(filename => toPath(filename))
+    val maxRetries = 6
+    def askServer(
+        retries: Int,
+        backoff: Int
+    ): Future[List[BuildTargetUpdate]] = {
+      val arg = ServerCommands.DiscoverTestParams(uri.orNull)
+      executeCommand(ServerCommands.DiscoverTestSuites, arg)
+        .asInstanceOf[Future[ju.List[BuildTargetUpdate]]]
+        .map(_.asScala.toList)
+        .flatMap { r =>
+          if (r.exists(_.events.asScala.nonEmpty)) {
+            Future.successful(r)
+          } else if (retries > 0) {
+            scribe.info(
+              s"Fetched empty test discovery, wait for $backoff and try again"
+            )
+            Thread.sleep(backoff)
+            askServer(retries - 1, backoff * 2)
+          } else {
+            val error =
+              s"Could not fetch any test classes in $maxRetries tries"
+            Future.failed(new NoSuchElementException(error))
+          }
+        }
+    }
+
+    val compilations = paths.map(path => server.compilations.compileFile(path))
+    for {
+      _ <- Future.sequence(compilations)
+      _ <- waitFor(util.concurrent.TimeUnit.SECONDS.toMillis(1))
+      classes <- askServer(maxRetries, backoff = 100)
+    } yield classes
+  }
+
+  def codeLenses(filename: String, printCommand: Boolean = false)(
+      maxRetries: Int
+  ): Future[String] = {
     val path = toPath(filename)
     val uri = path.toURI.toString
     val params = new CodeLensParams(new TextDocumentIdentifier(uri))
@@ -731,7 +918,7 @@ final class TestingServer(
       // first compilation, to trigger the handler
       _ <- server.compilations.compileFile(path)
       lenses <- codeLenses.future
-      textEdits = CodeLensesTextEdits(lenses)
+      textEdits = CodeLensesTextEdits(lenses, printCommand)
     } yield TextEdits.applyEdits(textContents(filename), textEdits.toList)
   }
 
@@ -805,7 +992,7 @@ final class TestingServer(
     val input = m.Input.String(text)
     val path = root.resolve(filename)
     path.touch()
-    val pos = m.Position.Range(input, startOffset, endOffset - "<<>>".length())
+    val pos = m.Position.Range(input, startOffset, endOffset - "<<".length())
     for {
       _ <- didChange(filename)(_ => text)
     } yield {
@@ -822,9 +1009,17 @@ final class TestingServer(
       original: String,
       root: AbsolutePath
   ): Future[(String, TextDocumentPositionParams)] =
-    positionFromString(filename, original, root) {
-      case (text, textId, start) =>
-        (text, new TextDocumentPositionParams(textId, start))
+    positionFromString(filename, original, root) { case (text, textId, start) =>
+      (text, new TextDocumentPositionParams(textId, start))
+    }
+
+  private def hoverExtParams(
+      filename: String,
+      original: String,
+      root: AbsolutePath
+  ): Future[(String, HoverExtParams)] =
+    positionFromString(filename, original, root) { case (text, textId, start) =>
+      (text, new HoverExtParams(textId, start))
     }
 
   private def codeActionParams(
@@ -833,9 +1028,8 @@ final class TestingServer(
       root: AbsolutePath,
       context: CodeActionContext
   ): Future[(String, CodeActionParams)] =
-    rangeFromString(filename, original, root) {
-      case (text, textId, range) =>
-        (text, new CodeActionParams(textId, range, context))
+    rangeFromString(filename, original, root) { case (text, textId, range) =>
+      (text, new CodeActionParams(textId, range, context))
     }
 
   private def onTypeParams(
@@ -851,19 +1045,18 @@ final class TestingServer(
       root,
       replaceWith =
         if (triggerChar == "\n") triggerChar + autoIndent else triggerChar
-    ) {
-      case (text, textId, start) =>
-        if (triggerChar == "\n") {
-          start.setLine(start.getLine() + 1) // + newline
-          start.setCharacter(autoIndent.size)
-        }
-        val params = new DocumentOnTypeFormattingParams(
-          textId,
-          new FormattingOptions,
-          start,
-          triggerChar
-        )
-        (text, params)
+    ) { case (text, textId, start) =>
+      if (triggerChar == "\n") {
+        start.setLine(start.getLine() + 1) // + newline
+        start.setCharacter(autoIndent.size)
+      }
+      val params = new DocumentOnTypeFormattingParams(
+        textId,
+        new FormattingOptions,
+        start,
+        triggerChar
+      )
+      (text, params)
     }
   }
 
@@ -871,17 +1064,21 @@ final class TestingServer(
       filename: String,
       original: String,
       paste: String,
-      root: AbsolutePath
+      root: AbsolutePath,
+      formattingOptions: Option[FormattingOptions]
   ): Future[(String, DocumentRangeFormattingParams)] = {
     positionFromString(filename, original, root, replaceWith = paste) {
       case (text, textId, start) =>
         val lines = paste.count(_ == '\n')
-        val char = paste.reverse.takeWhile(_ != '\n').size
+        val char =
+          if (lines == 0) start.getCharacter() + paste.size
+          else paste.reverse.takeWhile(_ != '\n').size
         val end = new l.Position(start.getLine() + lines, char)
         val range = new l.Range(start, end)
         val params = new DocumentRangeFormattingParams()
         params.setRange(range)
         params.setTextDocument(textId)
+        formattingOptions.foreach(params.setOptions)
         (text, params)
     }
   }
@@ -889,15 +1086,28 @@ final class TestingServer(
   private def rangeFormattingParams(
       filename: String,
       original: String,
-      root: AbsolutePath
+      root: AbsolutePath,
+      formattingOptions: Option[FormattingOptions]
   ): Future[(String, DocumentRangeFormattingParams)] = {
     rangeFromString(filename, original, root) {
       case (text, textId, rangeSelection) =>
         val params = new DocumentRangeFormattingParams()
         params.setRange(rangeSelection)
         params.setTextDocument(textId)
+        formattingOptions.foreach(params.setOptions)
         (text, params)
     }
+  }
+
+  def assertHoverAtLine(
+      filename: String,
+      query: String,
+      expected: String,
+      root: AbsolutePath = workspace
+  )(implicit loc: munit.Location): Future[Unit] = {
+    val text = root.resolve(filename).readText
+    val fullQuery = text.replace(query.replace("@@", "") + "\n", query + "\n")
+    assertHover(filename, fullQuery, expected, root)
   }
 
   def assertHover(
@@ -933,7 +1143,7 @@ final class TestingServer(
       root: AbsolutePath
   ): Future[String] = {
     for {
-      (text, params) <- offsetParams(filename, query, root)
+      (text, params) <- hoverExtParams(filename, query, root)
       hover <- server.hover(params).asScala
     } yield TestHovers.renderAsString(text, Option(hover), includeRange = false)
   }
@@ -1002,14 +1212,13 @@ final class TestingServer(
     for {
       renames <- rename(filename, query, files, newName)
     } yield {
-      renames.foreach {
-        case (file, obtained) =>
-          assert(
-            expected.contains(file),
-            s"Unexpected file obtained from renames: $file"
-          )
-          val expectedImpl = expected(file)
-          Assertions.assertNoDiff(obtained, expectedImpl)
+      renames.foreach { case (file, obtained) =>
+        assert(
+          expected.contains(file),
+          s"Unexpected file obtained from renames: $file"
+        )
+        val expectedImpl = expected(file)
+        Assertions.assertNoDiff(obtained, expectedImpl)
       }
     }
   }
@@ -1085,13 +1294,12 @@ final class TestingServer(
     for {
       implementations <- implementation(filename, query, base)
     } yield {
-      implementations.foreach {
-        case (file, obtained) =>
-          val expectedImpl = expected(file)
-          Assertions.assertNoDiff(
-            obtained,
-            expectedImpl
-          )
+      implementations.foreach { case (file, obtained) =>
+        val expectedImpl = expected(file)
+        Assertions.assertNoDiff(
+          obtained,
+          expectedImpl
+        )
       }
     }
   }
@@ -1147,11 +1355,18 @@ final class TestingServer(
     )
     server.references(params).asScala.map { r =>
       r.asScala
+        .sortBy { l =>
+          val start = l.getRange().getStart()
+          (start.getLine(), start.getCharacter())
+        }
         .map { l =>
           val path = l.getUri.toAbsolutePath
+          val shortPath =
+            if (path.isJarFileSystem) path.toString.replace("\\", "/")
+            else path.toRelative(workspace).toURI(false).toString
           val input = path
             .toInputFromBuffers(buffers)
-            .copy(path = path.toRelative(workspace).toURI(false).toString)
+            .copy(path = shortPath)
           val pos = l.getRange.toMeta(input)
           pos.formatMessage("info", "reference")
         }
@@ -1180,15 +1395,14 @@ final class TestingServer(
       buffer <- buffers.get(path)
     } yield {
       val input = Input.String(buffer)
-      val newBuffer = textEdits.asScala.foldLeft(buffer) {
-        case (buf, edit) =>
-          val startPosition = edit.getRange.getStart
-          val endPosition = edit.getRange.getEnd
-          val startOffset =
-            input.toOffset(startPosition.getLine, startPosition.getCharacter)
-          val endOffset =
-            input.toOffset(endPosition.getLine, endPosition.getCharacter)
-          buf.patch(startOffset, edit.getNewText, endOffset)
+      val newBuffer = textEdits.asScala.foldLeft(buffer) { case (buf, edit) =>
+        val startPosition = edit.getRange.getStart
+        val endPosition = edit.getRange.getEnd
+        val startOffset =
+          input.toOffset(startPosition.getLine, startPosition.getCharacter)
+        val endOffset =
+          input.toOffset(endPosition.getLine, endPosition.getCharacter)
+        buf.patch(startOffset, edit.getNewText, endOffset)
       }
       buffers.put(path, newBuffer)
     }
@@ -1199,15 +1413,15 @@ final class TestingServer(
     val identifier = path.toTextDocumentIdentifier
     val occurrences = ListBuffer.empty[s.SymbolOccurrence]
     var last = List[String]()
-    Trees.defaultDialect(input).tokenize.get.foreach { token =>
+    trees.tokenized(input).get.foreach { token =>
       val params = token.toPositionParams(identifier)
       val definition = server
         .definitionOrReferences(params, definitionOnly = true)
         .asJava
         .get()
       definition.definition.foreach { path =>
-        if (path.isDependencySource(workspace)) {
-          readonlySources(path.toNIO.getFileName.toString) = path
+        if (path.isJarFileSystem) {
+          virtualDocSources(path.toString.stripPrefix("/")) = path
         }
       }
       val locations = definition.locations.asScala.toList
@@ -1229,7 +1443,7 @@ final class TestingServer(
         else Some(Symbols.Multi(symbols.sorted))
       } else {
         if (symbols.isEmpty) None // OK, expected
-        else if (last == symbols) None //OK, expected
+        else if (last == symbols) None // OK, expected
         else Some(s"unexpected: ${Symbols.Multi(symbols.sorted)}")
       }
       occurrences ++= occurrence.map { symbol =>
@@ -1240,7 +1454,7 @@ final class TestingServer(
       schema = s.Schema.SEMANTICDB4,
       uri = input.path,
       text = input.text,
-      occurrences = occurrences
+      occurrences = occurrences.toSeq
     )
   }
 
@@ -1264,9 +1478,10 @@ final class TestingServer(
     val identifier = path.toTextDocumentIdentifier
     val params = new DocumentSymbolParams(identifier)
     for {
-      documentSymbols <- server.documentSymbolResult(params)
+      documentSymbols <- server.documentSymbol(params).asScala
     } yield {
-      val symbols = documentSymbols.asScala.toSymbolInformation(uri)
+      val symbols =
+        documentSymbols.getLeft.asScala.toSeq.toSymbolInformation(uri)
       val textDocument = s.TextDocument(
         schema = s.Schema.SEMANTICDB4,
         language = s.Language.SCALA,
@@ -1283,7 +1498,7 @@ final class TestingServer(
       .map(_.getId().getUri())
       .getOrElse {
         val alternatives =
-          server.buildTargets.all.map(_.displayName).mkString(" ")
+          server.buildTargets.all.map(_.getDisplayName()).mkString(" ")
         throw new NoSuchElementException(
           s"$displayName (alternatives: ${alternatives}"
         )
@@ -1339,15 +1554,14 @@ final class TestingServer(
 
     val tree = parents
       .zip(reveal.uriChain :+ "root")
-      .foldLeft(PrettyPrintTree.empty) {
-        case (child, (parent, uri)) =>
-          PrettyPrintTree(
-            label(uri.toLowerCase),
-            parent.nodes
-              .map(n => PrettyPrintTree(label(n.nodeUri.toLowerCase)))
-              .filterNot(t => isIgnored(t.value))
-              .toList :+ child
-          )
+      .foldLeft(PrettyPrintTree.empty) { case (child, (parent, uri)) =>
+        PrettyPrintTree(
+          label(uri.toLowerCase),
+          parent.nodes
+            .map(n => PrettyPrintTree(label(n.nodeUri.toLowerCase)))
+            .filterNot(t => isIgnored(t.value))
+            .toList :+ child
+        )
       }
     tree.toString()
   }
@@ -1375,6 +1589,26 @@ final class TestingServer(
       }
       .mkString("\n")
     Assertions.assertNoDiff(obtained, expected)
+  }
+
+  def findTextInDependencyJars(
+      include: String,
+      pattern: String
+  ): Future[List[Location]] = {
+    server
+      .findTextInDependencyJars(
+        FindTextInDependencyJarsRequest(
+          FindTextInFilesOptions(include = include, exclude = null),
+          TextSearchQuery(
+            pattern = pattern,
+            isRegExp = null,
+            isCaseSensitive = null,
+            isWordMatch = null
+          )
+        )
+      )
+      .asScala
+      .map(_.asScala.toList)
   }
 
   def textContents(filename: String): String =
@@ -1428,15 +1662,30 @@ final class TestingServer(
 }
 
 object TestingServer {
-  def toPath(workspace: AbsolutePath, filename: String): AbsolutePath = {
+  def toPath(
+      workspace: AbsolutePath,
+      filename: String,
+      virtualDocSources: TrieMap[String, AbsolutePath]
+  ): AbsolutePath = {
     val path = RelativePath(filename)
-    List(
-      workspace,
-      workspace.resolve(Directories.readonly)
-    ).map(_.resolve(path))
+    val base = List(workspace, workspace.resolve(Directories.readonly))
+    val dependencies = workspace.resolve(Directories.dependencies).list.toList
+    val all = base ++ dependencies
+    all
+      .map(_.resolve(path))
       .find(p => Files.exists(p.toNIO))
+      .orElse(virtualDocSources.get(filename))
       .getOrElse {
         throw new IllegalArgumentException(s"no such file: $filename")
       }
   }
+
+  val virtualDocTag = new Tag("UseVirtualDocs")
+
+  val TestDefault: InitializationOptions =
+    InitializationOptions.Default.copy(
+      debuggingProvider = Some(true),
+      treeViewProvider = Some(true),
+      slowTaskProvider = Some(true)
+    )
 }

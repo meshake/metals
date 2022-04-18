@@ -6,10 +6,9 @@ import java.nio.file.StandardCopyOption
 
 import scala.concurrent.Future
 
-import scala.meta.internal.metals.MetalsLanguageClient
 import scala.meta.io.AbsolutePath
 
-abstract class BuildTool {
+trait BuildTool {
 
   /**
    * Export the build to Bloop
@@ -20,9 +19,8 @@ abstract class BuildTool {
    */
   def bloopInstall(
       workspace: AbsolutePath,
-      languageClient: MetalsLanguageClient,
-      systemProcess: List[String] => Future[BloopInstallResult]
-  ): Future[BloopInstallResult]
+      systemProcess: List[String] => Future[WorkspaceLoadedStatus]
+  ): Future[WorkspaceLoadedStatus]
 
   def digest(workspace: AbsolutePath): Option[String]
 

@@ -28,7 +28,8 @@ object DownloadDependencies {
     downloadMdoc()
     downloadScalafmt()
     downloadMtags()
-    downloadSemanticDB()
+    downloadSemanticDBScalac()
+    downloadSemanticDBJavac()
     downloadScala()
     // NOTE(olafur): important, Bloop comes last because it does System.exit()
     downloadBloop()
@@ -41,7 +42,7 @@ object DownloadDependencies {
     }
 
     BuildInfo.supportedScala3Versions.foreach { scalaVersion =>
-      Embedded.downloadDottySources(scalaVersion)
+      Embedded.downloadScala3Sources(scalaVersion)
     }
   }
 
@@ -49,7 +50,6 @@ object DownloadDependencies {
     scribe.info("Downloading mdoc")
     BuildInfo.supportedScala2Versions.foreach { scalaVersion =>
       Embedded.downloadMdoc(
-        scalaVersion,
         ScalaVersions.scalaBinaryVersionFromFullVersion(scalaVersion)
       )
     }
@@ -60,6 +60,11 @@ object DownloadDependencies {
     val scalafmt = FormattingProvider.newScalafmt()
     val tmp = Files.createTempFile("scalafmt", "Foo.scala")
     val config = Files.createTempFile("scalafmt", ".scalafmt.conf")
+    Files.write(
+      config,
+      s"""|version = ${BuildInfo.scalafmtVersion}
+          |runner.dialect = scala3""".stripMargin.getBytes
+    )
     scalafmt.format(config, tmp, "object Foo { }")
     Files.deleteIfExists(tmp)
     Files.deleteIfExists(config)
@@ -72,11 +77,16 @@ object DownloadDependencies {
     }
   }
 
-  def downloadSemanticDB(): Unit = {
+  def downloadSemanticDBScalac(): Unit = {
     scribe.info("Downloading semanticdb-scalac")
     BuildInfo.supportedScala2Versions.foreach { scalaVersion =>
       Embedded.downloadSemanticdbScalac(scalaVersion)
     }
+  }
+
+  def downloadSemanticDBJavac(): Unit = {
+    scribe.info("Downloading semanticdb-javac")
+    Embedded.downloadSemanticdbJavac
   }
 
   def downloadBloop(): Unit = {

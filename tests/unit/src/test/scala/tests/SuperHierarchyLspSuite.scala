@@ -2,9 +2,14 @@ package tests
 
 import scala.concurrent.Future
 
+import scala.meta.internal.metals.InitializationOptions
+
 import org.eclipse.lsp4j.Position
 
 class SuperHierarchyLspSuite extends BaseLspSuite("super-method-hierarchy") {
+
+  override protected def initializationOptions: Option[InitializationOptions] =
+    Some(TestingServer.TestDefault)
 
   test("simple") {
     val code =
@@ -73,7 +78,7 @@ class SuperHierarchyLspSuite extends BaseLspSuite("super-method-hierarchy") {
     )
   }
 
-  test("with external dep") {
+  test("with external dep", withoutVirtualDocs = true) {
     val code =
       """
         |package a
@@ -115,7 +120,7 @@ class SuperHierarchyLspSuite extends BaseLspSuite("super-method-hierarchy") {
 
     cleanWorkspace()
     for {
-      _ <- server.initialize(strip(header + code))
+      _ <- initialize(strip(header + code))
       _ <- server.didOpen("a/src/main/scala/a/A.scala")
       _ = assertNoDiagnostics()
 

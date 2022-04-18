@@ -1,14 +1,13 @@
 package tests.pc
 
 import tests.BaseCompletionSuite
-import tests.BuildInfoVersions
 
 class CompletionDocSuite extends BaseCompletionSuite {
   override def requiresJdkSources: Boolean = true
   override def requiresScalaLibrarySources: Boolean = true
 
-  override def excludedScalaVersions: Set[String] =
-    BuildInfoVersions.scala3Versions.toSet
+  override def ignoreScalaVersion: Option[IgnoreScalaVersion] =
+    Some(IgnoreScala3)
 
   check(
     "java",
@@ -142,55 +141,65 @@ class CompletionDocSuite extends BaseCompletionSuite {
        |""".stripMargin,
     includeDocs = true
   )
-  def predefDocString: String =
-    """|
-       |> The `Predef` object provides definitions that are accessible in all Scala
-       | compilation units without explicit qualification.
-       |
-       |###  Commonly Used Types
+
+  val commonlyUsedTypesPre2134: String =
+    """|###  Commonly Used Types
        | Predef provides type aliases for types which are commonly used, such as
        | the immutable collection types [scala.collection.immutable.Map](scala.collection.immutable.Map),
        | [scala.collection.immutable.Set](scala.collection.immutable.Set), and the [scala.collection.immutable.List](scala.collection.immutable.List)
        | constructors ([scala.collection.immutable.::](scala.collection.immutable.::) and
-       | [scala.collection.immutable.Nil](scala.collection.immutable.Nil)).
-       |
-       |###  Console Output
-       | For basic console output, `Predef` provides convenience methods [print(x:Any* print](print(x:Any* print) and [println(x:Any* println](println(x:Any* println),
-       | which are aliases of the methods in the object [scala.Console](scala.Console).
-       |
-       |###  Assertions
-       | A set of `assert` functions are provided for use as a way to document
-       | and dynamically check invariants in code. Invocations of `assert` can be elided
-       | at compile time by providing the command line option `-Xdisable-assertions`,
-       | which raises `-Xelide-below` above `elidable.ASSERTION`, to the `scalac` command.
-       |
-       | Variants of `assert` intended for use with static analysis tools are also
-       | provided: `assume`, `require` and `ensuring`. `require` and `ensuring` are
-       | intended for use as a means of design-by-contract style specification
-       | of pre- and post-conditions on functions, with the intention that these
-       | specifications could be consumed by a static analysis tool. For instance,
-       |
-       |```
-       |def addNaturals(nats: List[Int]): Int = {
-       |  require(nats forall (_ >= 0), "List contains negative numbers")
-       |  nats.foldLeft(0)(_ + _)
-       |} ensuring(_ >= 0)
-       |```
-       | The declaration of `addNaturals` states that the list of integers passed should
-       | only contain natural numbers (i.e. non-negative), and that the result returned
-       | will also be natural. `require` is distinct from `assert` in that if the
-       | condition fails, then the caller of the function is to blame rather than a
-       | logical error having been made within `addNaturals` itself. `ensuring` is a
-       | form of `assert` that declares the guarantee the function is providing with
-       | regards to its return value.
-       |
-       |###  Implicit Conversions
-       | A number of commonly applied implicit conversions are also defined here, and
-       | in the parent type [scala.LowPriorityImplicits](scala.LowPriorityImplicits). Implicit conversions
-       | are provided for the "widening" of numeric values, for instance, converting a
-       | Short value to a Long value as required, and to add additional higher-order
-       | functions to Array values. These are described in more detail in the documentation of [scala.Array](scala.Array).
-       |""".stripMargin.trim
+       | [scala.collection.immutable.Nil](scala.collection.immutable.Nil)).""".stripMargin
+
+  val commonlyUsedTypesPost2134: String =
+    """|###  Commonly Used Types
+       | Predef provides type aliases for types which are commonly used, such as
+       | the immutable collection types [scala.collection.immutable.Map](scala.collection.immutable.Map) and
+       | [scala.collection.immutable.Set](scala.collection.immutable.Set).""".stripMargin
+
+  def predefDocString(commonlyUsedTypes: String): String =
+    s"""|
+        |> The `Predef` object provides definitions that are accessible in all Scala
+        | compilation units without explicit qualification.
+        |
+        |$commonlyUsedTypes
+        |
+        |###  Console Output
+        | For basic console output, `Predef` provides convenience methods [print(x:Any* print](print(x:Any* print) and [println(x:Any* println](println(x:Any* println),
+        | which are aliases of the methods in the object [scala.Console](scala.Console).
+        |
+        |###  Assertions
+        | A set of `assert` functions are provided for use as a way to document
+        | and dynamically check invariants in code. Invocations of `assert` can be elided
+        | at compile time by providing the command line option `-Xdisable-assertions`,
+        | which raises `-Xelide-below` above `elidable.ASSERTION`, to the `scalac` command.
+        |
+        | Variants of `assert` intended for use with static analysis tools are also
+        | provided: `assume`, `require` and `ensuring`. `require` and `ensuring` are
+        | intended for use as a means of design-by-contract style specification
+        | of pre- and post-conditions on functions, with the intention that these
+        | specifications could be consumed by a static analysis tool. For instance,
+        |
+        |```
+        |def addNaturals(nats: List[Int]): Int = {
+        |  require(nats forall (_ >= 0), "List contains negative numbers")
+        |  nats.foldLeft(0)(_ + _)
+        |} ensuring(_ >= 0)
+        |```
+        | The declaration of `addNaturals` states that the list of integers passed should
+        | only contain natural numbers (i.e. non-negative), and that the result returned
+        | will also be natural. `require` is distinct from `assert` in that if the
+        | condition fails, then the caller of the function is to blame rather than a
+        | logical error having been made within `addNaturals` itself. `ensuring` is a
+        | form of `assert` that declares the guarantee the function is providing with
+        | regards to its return value.
+        |
+        |###  Implicit Conversions
+        | A number of commonly applied implicit conversions are also defined here, and
+        | in the parent type [scala.LowPriorityImplicits](scala.LowPriorityImplicits). Implicit conversions
+        | are provided for the "widening" of numeric values, for instance, converting a
+        | Short value to a Long value as required, and to add additional higher-order
+        | functions to Array values. These are described in more detail in the documentation of [scala.Array](scala.Array).
+        |""".stripMargin.trim
 
   check(
     "scala3",
@@ -200,7 +209,7 @@ class CompletionDocSuite extends BaseCompletionSuite {
       |}
     """.stripMargin,
     s"""
-       |$predefDocString
+       |${predefDocString(commonlyUsedTypesPre2134)}
        |Predef scala
        |DeprecatedPredef scala
        |""".stripMargin,
@@ -208,101 +217,108 @@ class CompletionDocSuite extends BaseCompletionSuite {
     compat = Map(
       "2.13" ->
         s"""
-           |$predefDocString
+           |${predefDocString(commonlyUsedTypesPost2134)}
            |Predef scala
            |""".stripMargin
     )
   )
 
-  val iteratorDocs213: String =
-    """|> Iterators are data structures that allow to iterate over a sequence
-       |of elements. They have a `hasNext` method for checking
-       |if there is a next element available, and a `next` method
-       |which returns the next element and advances the iterator.
-       |
-       |An iterator is mutable: most operations on it change its state. While it is often used
-       |to iterate through the elements of a collection, it can also be used without
-       |being backed by any collection (see constructors on the companion object).
-       |
-       |It is of particular importance to note that, unless stated otherwise, *one should never
-       |use an iterator after calling a method on it*. The two most important exceptions
-       |are also the sole abstract methods: `next` and `hasNext`.
-       |
-       |Both these methods can be called any number of times without having to discard the
-       |iterator. Note that even `hasNext` may cause mutation -- such as when iterating
-       |from an input stream, where it will block until the stream is closed or some
-       |input becomes available.
-       |
-       |Consider this example for safe and unsafe use:
-       |
-       |```
-       |def f[A](it: Iterator[A]) = {
-       |  if (it.hasNext) {            // Safe to reuse "it" after "hasNext"
-       |    it.next                    // Safe to reuse "it" after "next"
-       |    val remainder = it.drop(2) // it is *not* safe to use "it" again after this line!
-       |    remainder.take(2)          // it is *not* safe to use "remainder" after this line!
-       |  } else it
-       |}
-       |```
-       |Iterator scala.collection
-       |> Explicit instantiation of the `Iterator` trait to reduce class file size in subclasses.
-       |AbstractIterator scala.collection
-       |> Buffered iterators are iterators which provide a method `head`
-       | that inspects the next element without discarding it.
-       |BufferedIterator scala.collection
-       |> A specialized Iterator for LinearSeqs that is lazy enough for Stream and LazyList. This is accomplished by not
-       |evaluating the tail after returning the current head.
-       |LinearSeqIterator scala.collection
-       |> Base trait for companion objects of collections that require an implicit `ClassTag`.
-       |
-       |**Type Parameters**
-       |- `CC`: Collection type constructor (e.g. `ArraySeq`)
-       |ClassTagIterableFactory scala.collection
-       |> Base trait for companion objects of collections that require an implicit evidence.
-       |
-       |**Type Parameters**
-       |- `Ev`: Unary type constructor for the implicit evidence required for an element type
-       |           (typically `Ordering` or `ClassTag`)
-       |- `CC`: Collection type constructor (e.g. `ArraySeq`)
-       |EvidenceIterableFactory scala.collection
-       |> This trait provides default implementations for the factory methods `fromSpecific` and
-       |`newSpecificBuilder` that need to be refined when implementing a collection type that refines
-       |the `CC` and `C` type parameters. It is used for collections that have an additional constraint,
-       |expressed by the `evidenceIterableFactory` method.
-       |
-       |The default implementations in this trait can be used in the common case when `CC[A]` is the
-       |same as `C`.
-       |EvidenceIterableFactoryDefaults scala.collection
-       |> Base trait for companion objects of unconstrained collection types that may require
-       |multiple traversals of a source collection to build a target collection `CC`.
-       |
-       |
-       |**Type Parameters**
-       |- `CC`: Collection type constructor (e.g. `List`)
-       |IterableFactory scala.collection
-       |> This trait provides default implementations for the factory methods `fromSpecific` and
-       |`newSpecificBuilder` that need to be refined when implementing a collection type that refines
-       |the `CC` and `C` type parameters.
-       |
-       |The default implementations in this trait can be used in the common case when `CC[A]` is the
-       |same as `C`.
-       |IterableFactoryDefaults scala.collection
-       |> Base trait for companion objects of collections that require an implicit `Ordering`.
-       |
-       |**Type Parameters**
-       |- `CC`: Collection type constructor (e.g. `SortedSet`)
-       |SortedIterableFactory scala.collection
-       |> **Type Parameters**
-       |- `A`: Type of elements (e.g. `Int`, `Boolean`, etc.)
-       |- `C`: Type of collection (e.g. `List[Int]`, `TreeMap[Int, String]`, etc.)
-       |SpecificIterableFactory scala.collection
-       |""".stripMargin
+  def iteratorDocs213(withLinearSeqIterator: Boolean = true): String = {
+    val linearSeqIteratorDocs =
+      if (withLinearSeqIterator) {
+        "\n" +
+          """|> A specialized Iterator for LinearSeqs that is lazy enough for Stream and LazyList. This is accomplished by not
+             |evaluating the tail after returning the current head.
+             |LinearSeqIterator scala.collection""".stripMargin
+      } else {
+        ""
+      }
+    s"""|> Iterators are data structures that allow to iterate over a sequence
+        |of elements. They have a `hasNext` method for checking
+        |if there is a next element available, and a `next` method
+        |which returns the next element and advances the iterator.
+        |
+        |An iterator is mutable: most operations on it change its state. While it is often used
+        |to iterate through the elements of a collection, it can also be used without
+        |being backed by any collection (see constructors on the companion object).
+        |
+        |It is of particular importance to note that, unless stated otherwise, *one should never
+        |use an iterator after calling a method on it*. The two most important exceptions
+        |are also the sole abstract methods: `next` and `hasNext`.
+        |
+        |Both these methods can be called any number of times without having to discard the
+        |iterator. Note that even `hasNext` may cause mutation -- such as when iterating
+        |from an input stream, where it will block until the stream is closed or some
+        |input becomes available.
+        |
+        |Consider this example for safe and unsafe use:
+        |
+        |```
+        |def f[A](it: Iterator[A]) = {
+        |  if (it.hasNext) {            // Safe to reuse "it" after "hasNext"
+        |    it.next()                  // Safe to reuse "it" after "next"
+        |    val remainder = it.drop(2) // it is *not* safe to use "it" again after this line!
+        |    remainder.take(2)          // it is *not* safe to use "remainder" after this line!
+        |  } else it
+        |}
+        |```
+        |Iterator scala.collection
+        |> Explicit instantiation of the `Iterator` trait to reduce class file size in subclasses.
+        |AbstractIterator scala.collection
+        |> Buffered iterators are iterators which provide a method `head`
+        | that inspects the next element without discarding it.
+        |BufferedIterator scala.collection$linearSeqIteratorDocs
+        |> Base trait for companion objects of collections that require an implicit `ClassTag`.
+        |
+        |**Type Parameters**
+        |- `CC`: Collection type constructor (e.g. `ArraySeq`)
+        |ClassTagIterableFactory scala.collection
+        |> Base trait for companion objects of collections that require an implicit evidence.
+        |
+        |**Type Parameters**
+        |- `Ev`: Unary type constructor for the implicit evidence required for an element type
+        |           (typically `Ordering` or `ClassTag`)
+        |- `CC`: Collection type constructor (e.g. `ArraySeq`)
+        |EvidenceIterableFactory scala.collection
+        |> This trait provides default implementations for the factory methods `fromSpecific` and
+        |`newSpecificBuilder` that need to be refined when implementing a collection type that refines
+        |the `CC` and `C` type parameters. It is used for collections that have an additional constraint,
+        |expressed by the `evidenceIterableFactory` method.
+        |
+        |The default implementations in this trait can be used in the common case when `CC[A]` is the
+        |same as `C`.
+        |EvidenceIterableFactoryDefaults scala.collection
+        |> Base trait for companion objects of unconstrained collection types that may require
+        |multiple traversals of a source collection to build a target collection `CC`.
+        |
+        |
+        |**Type Parameters**
+        |- `CC`: Collection type constructor (e.g. `List`)
+        |IterableFactory scala.collection
+        |> This trait provides default implementations for the factory methods `fromSpecific` and
+        |`newSpecificBuilder` that need to be refined when implementing a collection type that refines
+        |the `CC` and `C` type parameters.
+        |
+        |The default implementations in this trait can be used in the common case when `CC[A]` is the
+        |same as `C`.
+        |IterableFactoryDefaults scala.collection
+        |> Base trait for companion objects of collections that require an implicit `Ordering`.
+        |
+        |**Type Parameters**
+        |- `CC`: Collection type constructor (e.g. `SortedSet`)
+        |SortedIterableFactory scala.collection
+        |> **Type Parameters**
+        |- `A`: Type of elements (e.g. `Int`, `Boolean`, etc.)
+        |- `C`: Type of collection (e.g. `List[Int]`, `TreeMap[Int, String]`, etc.)
+        |SpecificIterableFactory scala.collection
+        |""".stripMargin
+  }
 
   check(
     "scala4",
     """
       |object A {
-      |  scala.collection.Iterator@@
+      |  import scala.collection.Iterator@@
       |}
     """.stripMargin,
     """|
@@ -348,13 +364,12 @@ class CompletionDocSuite extends BaseCompletionSuite {
        |""".stripMargin,
     includeDocs = true,
     compat = Map(
-      "2.13.1" -> iteratorDocs213,
-      "2.13.2" -> iteratorDocs213,
-      "2.13.3" -> iteratorDocs213.replace("it.next  ", "it.next()")
+      // LinearSeqIterator should actually not be added since it's private and it's fixed in 2.13.5
+      "2.13" -> iteratorDocs213(withLinearSeqIterator = false)
     )
   )
 
-  def executionDocstring: String =
+  def executionDocstringPre2134: String =
     """|> The implicit global `ExecutionContext`. Import `global` when you want to provide the global
        |`ExecutionContext` implicitly.
        |
@@ -362,6 +377,12 @@ class CompletionDocSuite extends BaseCompletionSuite {
        |the thread pool uses a target number of worker threads equal to the number of
        |[available processors](https://docs.oracle.com/javase/8/docs/api/java/lang/Runtime.html#availableProcessors--).
        |""".stripMargin.trim
+
+  def executionDocstringPost2134: String =
+    """|> An accessor that can be used to import the global `ExecutionContext` into the implicit scope,
+       |see [ExecutionContext.global](ExecutionContext.global).
+       |""".stripMargin.trim
+
   check(
     "scala5",
     """
@@ -369,13 +390,16 @@ class CompletionDocSuite extends BaseCompletionSuite {
       |  scala.concurrent.ExecutionContext.Implicits.global@@
       |}
     """.stripMargin,
-    s"""|$executionDocstring
+    s"""|$executionDocstringPre2134
         |global: ExecutionContext
         |""".stripMargin,
     includeDocs = true,
     compat = Map(
-      "2.11" -> s"""|$executionDocstring
+      "2.11" -> s"""|$executionDocstringPre2134
                     |global: ExecutionContextExecutor
+                    |""".stripMargin,
+      "2.13" -> s"""|$executionDocstringPost2134
+                    |global: ExecutionContext
                     |""".stripMargin
     )
   )
@@ -460,7 +484,7 @@ class CompletionDocSuite extends BaseCompletionSuite {
            |
            |
            |**See**
-           |- ["Scala's Collection Library overview"](http://docs.scala-lang.org/overviews/collections/concrete-mutable-collection-classes.html#stringbuilders)
+           |- ["Scala's Collection Library overview"](https://docs.scala-lang.org/overviews/collections/concrete-mutable-collection-classes.html#stringbuilders)
            |section on `StringBuilders` for more information.
            |StringBuilder scala.collection.mutable
            |""".stripMargin
@@ -526,29 +550,7 @@ class CompletionDocSuite extends BaseCompletionSuite {
        |""".stripMargin,
     includeDocs = true,
     compat = Map(
-      "2.13.1" ->
-        """|> ### class Vector
-           |Vector is a general-purpose, immutable data structure.  It provides random access and updates
-           | in effectively constant time, as well as very fast append and prepend.  Because vectors strike
-           | a good balance between fast random selections and fast random functional updates, they are
-           | currently the default implementation of immutable indexed sequences.  It is backed by a little
-           | endian bit-mapped vector trie with a branching factor of 32.  Locality is very good, but not
-           | contiguous, which is good for very large sequences.
-           |
-           |
-           |**Type Parameters**
-           |- `A`: the element type
-           |
-           |**See**
-           |- ["Scala's Collection Library overview"](http://docs.scala-lang.org/overviews/collections/concrete-immutable-collection-classes.html#vectors)
-           | section on `Vectors` for more information.
-
-           |### object Vector
-           |$factoryInfo
-           |Vector scala.collection.immutable
-           |""".stripMargin,
-      "2.13.2" -> vectorDocs213,
-      "2.13.3" -> vectorDocs213
+      "2.13" -> vectorDocs213
     )
   )
   check(

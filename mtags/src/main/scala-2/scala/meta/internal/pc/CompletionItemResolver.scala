@@ -26,9 +26,14 @@ class CompletionItemResolver(
             if (
               item.getTextEdit != null && data.kind == CompletionItemData.OverrideKind
             ) {
-              item.getTextEdit.setNewText(
-                replaceJavaParameters(info, item.getTextEdit.getNewText)
-              )
+              item.getTextEdit().asScala match {
+                case Left(textEdit) =>
+                  val newText =
+                    replaceJavaParameters(info, textEdit.getNewText())
+                  textEdit.setNewText(newText)
+                // Right[InsertReplaceEdit] is currently not used in Metals
+                case _ =>
+              }
               item.setLabel(replaceJavaParameters(info, item.getLabel))
             }
           } else {
@@ -40,7 +45,11 @@ class CompletionItemResolver(
               .filterNot(_.isEmpty)
               .toSeq
             item.setLabel(replaceScalaDefaultParams(item.getLabel, defaults))
-            if (metalsConfig.isCompletionItemDetailEnabled) {
+            if (
+              metalsConfig.isCompletionItemDetailEnabled && !item
+                .getDetail()
+                .isEmpty()
+            ) {
               item.setDetail(
                 replaceScalaDefaultParams(item.getDetail, defaults)
               )
@@ -86,12 +95,11 @@ class CompletionItemResolver(
       .asScala
       .iterator
       .zipWithIndex
-      .foldLeft(detail) {
-        case (accum, (param, i)) =>
-          accum.replace(
-            s"x$$${i + 1}",
-            param.displayName()
-          )
+      .foldLeft(detail) { case (accum, (param, i)) =>
+        accum.replace(
+          s"x$$${i + 1}",
+          param.displayName()
+        )
       }
   }
 

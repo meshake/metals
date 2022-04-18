@@ -2,9 +2,12 @@ package scala.meta.internal.metals
 
 import javax.annotation.Nullable
 
-import scala.util.matching.Regex
+import scala.meta.internal.metals.newScalaFile.NewFileTypes
 
 import ch.epfl.scala.{bsp4j => b}
+import org.eclipse.lsp4j.Location
+import org.eclipse.lsp4j.TextDocumentIdentifier
+import org.eclipse.lsp4j.TextDocumentPositionParams
 
 /**
  * LSP commands supported by the Metals language server.
@@ -56,6 +59,96 @@ object ServerCommands {
        |""".stripMargin
   )
 
+  /** Decode a file e.g. javap, semanticdb */
+  val DecodeFile = new ParametrizedCommand[String](
+    "file-decode",
+    "Decode file",
+    """|Decode a file into a human readable format.
+       |
+       |Compilation involves various binary files that can't be read directly
+       |in a text editor so they need to be decoded into a human readable format.
+       |Examples include `.class` and `.semanticdb`.
+       |""".stripMargin,
+    """|[uri], uri of the file with any parameters required for decoding.
+       |Examples:
+       |- javap:
+       |  ```
+       |  metalsDecode:file:///somePath/someFile.java.javap
+       |  metalsDecode:file:///somePath/someFile.scala.javap
+       |  metalsDecode:file:///somePath/someFile.class.javap
+       |  metalsDecode:file:///somePath/someFile.java.javap-verbose
+       |  metalsDecode:file:///somePath/someFile.scala.javap-verbose
+       |  metalsDecode:file:///somePath/someFile.class.javap-verbose
+       |  ```
+       |- semanticdb:
+       |  ```
+       |  metalsDecode:file:///somePath/someFile.java.semanticdb-compact
+       |  metalsDecode:file:///somePath/someFile.java.semanticdb-detailed
+       |  metalsDecode:file:///somePath/someFile.scala.semanticdb-compact
+       |  metalsDecode:file:///somePath/someFile.scala.semanticdb-detailed
+       |  metalsDecode:file:///somePath/someFile.java.semanticdb.semanticdb-compact
+       |  metalsDecode:file:///somePath/someFile.java.semanticdb.semanticdb-detailed
+       |  metalsDecode:file:///somePath/someFile.scala.semanticdb.semanticdb-compact
+       |  metalsDecode:file:///somePath/someFile.scala.semanticdb.semanticdb-detailed
+       |  ```
+       |- tasty:
+       |  ```
+       |  metalsDecode:file:///somePath/someFile.scala.tasty-decoded
+       |  metalsDecode:file:///somePath/someFile.tasty.tasty-decoded
+       |  ```
+       |- jar:
+       |  ```
+       |  metalsDecode:jar:file:///somePath/someFile-sources.jar!/somePackage/someFile.java
+       |  ```
+       |- build target:
+       |  ```
+       |  metalsDecode:file:///workspacePath/buildTargetName.metals-buildtarget
+       |  ```
+       |
+       |Response:
+       |```ts
+       |interface DecoderResponse {
+       |  requestedUri: string;
+       |  value?: string;
+       |  error?: string
+       |}
+       |```
+       |""".stripMargin
+  )
+
+  /** If uri is null discover all test suites, otherwise discover testcases in file */
+  final case class DiscoverTestParams(
+      @Nullable uri: String = null
+  )
+  val DiscoverTestSuites = new ParametrizedCommand[DiscoverTestParams](
+    "discover-tests",
+    "Discover tests",
+    """
+      |Discovers all tests in project or a file.
+      |See ClientCommands.UpdateTestExplorer to see how response looks like.
+      |```
+      |""".stripMargin,
+    """
+      |An object with uri, when request is meant to discover test cases for uri
+      |```json
+      |{
+      |  uri: file:///home/dev/foo/Bar.scala
+      |}
+      |```
+      |or empty object if request is meant to discover all test suites
+      |```json
+      |{}
+      |```
+      |""".stripMargin
+  )
+
+  val ListBuildTargets = new Command(
+    "list-build-targets",
+    "List build targets",
+    """|Retrieve a list of build targets for the workspace.
+       |""".stripMargin
+  )
+
   val RunDoctor = new Command(
     "doctor-run",
     "Run doctor",
@@ -94,6 +187,26 @@ object ServerCommands {
     """Cancel the currently ongoing compilation, if any."""
   )
 
+  val GenerateBspConfig = new Command(
+    "generate-bsp-config",
+    "Generate BSP Config",
+    """|Checks to see if your build tool can serve as a BSP server. If so, generate
+       |the necessary BSP config to connect to the server. If there is more than one
+       |build tool for a workspace, you can then choose the desired one and that
+       |one will be used to generate the config.
+       |
+       |After the config is generated, Metals will attempt to auto-connect to it.
+       |
+       |The build servers that Metals knows how to detect and start:
+       | - sbt
+       | - mill-bsp
+       |
+       |Note: while Metals does know how to start Bloop, Bloop will be started when you trigger a build
+       |import or when you use `bsp-switch` to switch to Bloop.
+       |""".stripMargin,
+    "[string], name of the build server."
+  )
+
   val BspSwitch = new Command(
     "bsp-switch",
     "Switch build server",
@@ -128,7 +241,9 @@ object ServerCommands {
         |   mainClass: "com.foo.App",
         |   buildTarget: "foo",
         |   args: ["bar"],
-        |   jvmOptions: ["-Dfile.encoding=UTF-16"]
+        |   jvmOptions: ["-Dfile.encoding=UTF-16"],
+        |   env: {"NUM" : "123"},
+        |   envFile: ".env"
         |}
         |```
         |
@@ -154,13 +269,13 @@ object ServerCommands {
        |""".stripMargin
   )
 
-  val AnalyzeStacktrace = new Command(
+  val AnalyzeStacktrace = new ParametrizedCommand[String](
     "analyze-stacktrace",
     "Analyze stacktrace",
     """|Converts provided stacktrace in the parameter to a format that contains links
        |to locations of places where the exception was raised.
        |
-       |If the configuration parameter of the client (support-commands-in-html) is true
+       |If the configuration parameter of the client `commandInHtmlFormat` is set
        |then client is requested to display html with links
        |already pointing to proper locations in user codebase.
        |Otherwise client will display simple scala file
@@ -169,7 +284,30 @@ object ServerCommands {
     "[string], where the string is a stacktrace."
   )
 
-  val GotoSymbol = new Command(
+  final case class ChooseClassRequest(
+      textDocument: TextDocumentIdentifier,
+      kind: String
+  )
+  val ChooseClass = new ParametrizedCommand[ChooseClassRequest](
+    "choose-class",
+    "Choose class",
+    """|Exists only because of how vscode virtual documents work. Usage of this command is discouraged, it'll be removed in the future,
+       |when metals-vscode will implement custom editor for .tasty and .class files.
+       |Shows toplevel definitions such as classes, traits, objects and toplevel methods which are defined in a given scala file. 
+       |Then, returns an URI pointing to the .tasty or .class file for class picked by user""".stripMargin,
+    """|Object with `textDocument` and `includeInnerClasses`
+       |
+       |Example:
+       |```json
+       |{
+       |  textDocument: {uri: file:///home/dev/foo/Bar.scala},
+       |  kind: 'tasty' | 'class'
+       |}
+       |```
+       |""".stripMargin
+  )
+
+  val GotoSymbol = new ParametrizedCommand[String](
     "goto",
     "Goto location for symbol",
     """|Move the cursor to the definition of the argument symbol.
@@ -178,7 +316,7 @@ object ServerCommands {
     "[string], where the string is a SemanticDB symbol."
   )
 
-  val GotoPosition = new Command(
+  val GotoPosition = new ParametrizedCommand[Location](
     "goto-position",
     "Goto location for position",
     """|Move the cursor to the location provided in arguments.
@@ -188,7 +326,7 @@ object ServerCommands {
     "[location], where the location is a lsp location object."
   )
 
-  val GotoSuperMethod = new Command(
+  val GotoSuperMethod = new ParametrizedCommand[TextDocumentPositionParams](
     "goto-super-method",
     "Go to super method/field definition",
     """|Jumps to super method/field definition of a symbol under cursor according to inheritance rules.
@@ -197,43 +335,25 @@ object ServerCommands {
        |If symbol is a reference of a method it will jump to a definition.
        |If symbol under cursor is invalid or does not override anything then command is ignored.
        |
-       |Note: document in json argument must be absolute path.
        |""".stripMargin,
-    """|
-       |Object with `document` and `position`
-       |
-       |Example:
-       |```json
-       |{
-       |  document: "file:///home/dev/foo/Bar.scala",
-       |  position: {line: 5, character: 12}
-       |}
-       |```
+    """|This command should be sent in with the LSP [`TextDocumentPositionParams`](https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocumentPositionParams)
        |""".stripMargin
   )
 
-  val SuperMethodHierarchy = new Command(
-    "super-method-hierarchy",
-    "Go to super method/field definition in hierarchy",
-    """|When user executes this command it will calculate inheritance hierarchy of a class that contains given method.
-       |Then it will filter out classes not overriding given method and a list using 'metalsQuickPick' will be
-       |displayed to which super method user would like to go to.
-       |Command has no effect on other symbols than method definition.
-       |QuickPick will show up only if more than one result is found.
-       |
-       |Note: document in json argument must be absolute path.
-       |""".stripMargin,
-    """|Object with `document` and `position`
-       |
-       |Example:
-       |```json
-       |{
-       |  document: "file:///home/dev/foo/Bar.scala",
-       |  position: {line: 5, character: 12}
-       |}
-       |```
-       |""".stripMargin
-  )
+  val SuperMethodHierarchy =
+    new ParametrizedCommand[TextDocumentPositionParams](
+      "super-method-hierarchy",
+      "Go to super method/field definition in hierarchy",
+      """|When user executes this command it will calculate inheritance hierarchy of a class that contains given method.
+         |Then it will filter out classes not overriding given method and a list using 'metalsQuickPick' will be
+         |displayed to which super method user would like to go to.
+         |Command has no effect on other symbols than method definition.
+         |QuickPick will show up only if more than one result is found.
+         |
+         |""".stripMargin,
+      """|This command should be sent in with the LSP [`TextDocumentPositionParams`](https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocumentPositionParams)
+         |""".stripMargin
+    )
 
   val ResetChoicePopup = new Command(
     "reset-choice",
@@ -248,13 +368,45 @@ object ServerCommands {
     "[string?], where string is a choice value."
   )
 
-  val NewScalaFile = new Command(
+  val NewScalaFile = new ListParametrizedCommand[String](
     "new-scala-file",
     "Create new scala file",
-    """|Create and open new file with either scala class, object, trait, package object or worksheet.
-       |
-       |Note: requires 'metals/inputBox' capability from language client.
-       |""".stripMargin,
+    s"""|Create and open new Scala file.
+        |
+        |The currently allowed Scala file types that ca be passed in are:
+        |
+        | - ${NewFileTypes.ScalaFile.id} (${NewFileTypes.ScalaFile.label})
+        | - ${NewFileTypes.Class.id} (${NewFileTypes.Class.label})
+        | - ${NewFileTypes.CaseClass.id} (${NewFileTypes.CaseClass.label})
+        | - ${NewFileTypes.Enum.id} (${NewFileTypes.Enum.label})
+        | - ${NewFileTypes.Object.id} (${NewFileTypes.Object.label})
+        | - ${NewFileTypes.Trait.id} (${NewFileTypes.Trait.label})
+        | - ${NewFileTypes.PackageObject.id} (${NewFileTypes.PackageObject.label})
+        | - ${NewFileTypes.Worksheet.id} (${NewFileTypes.Worksheet.label})
+        | - ${NewFileTypes.AmmoniteScript.id} (${NewFileTypes.AmmoniteScript.label})
+        |
+        |Note: requires 'metals/inputBox' capability from language client.
+        |""".stripMargin,
+    """|[string[]], where the first is a directory location for the new file.
+       |The second and third positions correspond to the file name and file type to allow for quick
+       |creation of a file if all are present.
+       |""".stripMargin
+  )
+
+  val NewJavaFile = new ListParametrizedCommand[String](
+    "new-java-file",
+    "Create new java file",
+    s"""|Create and open a new Java file.
+        |
+        |The currently allowed Java file types that ca be passed in are:
+        |
+        | - ${NewFileTypes.JavaClass.id} (${NewFileTypes.JavaClass.label})
+        | - ${NewFileTypes.JavaInterface.id} (${NewFileTypes.JavaInterface.label})
+        | - ${NewFileTypes.JavaEnum.id} (${NewFileTypes.JavaEnum.label})
+        | - ${NewFileTypes.JavaRecord.id} (${NewFileTypes.JavaRecord.label})
+        |
+        |Note: requires 'metals/inputBox' capability from language client.
+        |""".stripMargin,
     """|[string[]], where the first is a directory location for the new file.
        |The second and third positions correspond to the file name and file type to allow for quick
        |creation of a file if all are present.
@@ -272,11 +424,37 @@ object ServerCommands {
        |""".stripMargin
   )
 
-  /**
-   * Open the browser at the given url.
-   */
-  val OpenBrowser: Regex = "browser-open-url:(.*)".r
-  def OpenBrowser(url: String): String = s"browser-open-url:$url"
+  val CopyWorksheetOutput = new ParametrizedCommand[String](
+    "copy-worksheet-output",
+    "Copy Worksheet Output",
+    """|Copy the contents of a worksheet to your local buffer.
+       |
+       |Note: This command returns the contents of the worksheet, and the LSP client
+       |is in charge of taking that content and putting it into your local buffer.
+       |""".stripMargin,
+    "[uri], the uri of the worksheet that you'd like to copy the contents of."
+  )
+
+  val ExtractMemberDefinition =
+    new ParametrizedCommand[TextDocumentPositionParams](
+      "extract-member-definition",
+      "Extract member definition",
+      """|Whenever a user chooses a code action to extract a definition of a Class/Trait/Object/Enum this
+         |command is later ran to extract the code and create a new file with it
+         |""".stripMargin,
+      """|This command should be sent in with the LSP [`TextDocumentPositionParams`](https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocumentPositionParams)
+         |""".stripMargin
+    )
+
+  val InsertInferredType = new ParametrizedCommand[TextDocumentPositionParams](
+    "insert-inferred-type",
+    "Insert inferred type of a value",
+    """|Whenever a user chooses code action to insert the inferred type this command is later ran to 
+       |calculate the type and insert it in the correct location.
+       |""".stripMargin,
+    """|This command should be sent in with the LSP [`TextDocumentPositionParams`](https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocumentPositionParams)
+       |""".stripMargin
+  )
 
   val GotoLog = new Command(
     "goto-log",
@@ -284,50 +462,44 @@ object ServerCommands {
     "Open the Metals logs to troubleshoot issues."
   )
 
-  val OpenIssue = new Command(
-    OpenBrowser("https://github.com/scalameta/metals/issues/new/choose"),
+  val OpenIssue = new OpenBrowserCommand(
+    "https://github.com/scalameta/metals/issues/new/choose",
     "Open issue on GitHub",
     "Open the Metals repository on GitHub to ask a question, report a bug or request a new feature."
   )
 
-  val MetalsGithub = new Command(
-    OpenBrowser("https://github.com/scalameta/metals"),
+  val MetalsGithub = new OpenBrowserCommand(
+    "https://github.com/scalameta/metals",
     "Metals on GitHub",
     "Open the Metals repository on GitHub"
   )
 
-  val BloopGithub = new Command(
-    OpenBrowser("https://github.com/scalacenter/bloop"),
+  val BloopGithub = new OpenBrowserCommand(
+    "https://github.com/scalacenter/bloop",
     "Bloop on GitHub",
     "Open the Metals repository on GitHub"
   )
 
-  val ChatOnGitter = new Command(
-    OpenBrowser("https://gitter.im/scalameta/metals"),
-    "Chat on Gitter",
-    "Open the Metals channel on Gitter to discuss with other Metals users."
-  )
-
-  val ChatOnDiscord = new Command(
-    OpenBrowser("https://discord.gg/RFpSVth"),
+  val ChatOnDiscord = new OpenBrowserCommand(
+    "https://discord.gg/RFpSVth",
     "Chat on Discord",
     "Open the Scalameta server on Discord to discuss with other Metals users."
   )
 
-  val ReadVscodeDocumentation = new Command(
-    OpenBrowser("https://scalameta.org/metals/docs/editors/vscode.html"),
+  val ReadVscodeDocumentation = new OpenBrowserCommand(
+    "https://scalameta.org/metals/docs/editors/vscode.html",
     "Read Metals documentation",
     "Open the Metals website to read the full instructions on how to use Metals with VS Code."
   )
 
-  val ReadBloopDocumentation = new Command(
-    OpenBrowser("https://scalacenter.github.io/bloop/"),
+  val ReadBloopDocumentation = new OpenBrowserCommand(
+    "https://scalacenter.github.io/bloop/",
     "Read Bloop documentation",
     "Open the Bloop website to read the full instructions on how to install and use Bloop."
   )
 
-  val ScalametaTwitter = new Command(
-    OpenBrowser("https://twitter.com/scalameta"),
+  val ScalametaTwitter = new OpenBrowserCommand(
+    "https://twitter.com/scalameta",
     "Scalameta on Twitter",
     "Stay up to date with the latest release announcements and learn new Scala code editing tricks."
   )
@@ -344,28 +516,38 @@ object ServerCommands {
     "Stop Ammonite build server"
   )
 
-  def all: List[Command] =
+  def all: List[BaseCommand] =
     List(
-      ImportBuild,
-      RestartBuildServer,
-      ConnectBuildServer,
-      ScanWorkspaceSources,
-      RunDoctor,
-      CascadeCompile,
-      CancelCompile,
-      CleanCompile,
-      BspSwitch,
-      StartDebugAdapter,
-      GotoSymbol,
-      GotoPosition,
-      NewScalaFile,
-      NewScalaProject,
-      GotoSuperMethod,
       AnalyzeStacktrace,
-      SuperMethodHierarchy,
+      BspSwitch,
+      ConnectBuildServer,
+      CancelCompile,
+      CascadeCompile,
+      CleanCompile,
+      CopyWorksheetOutput,
+      DiscoverTestSuites,
+      ExtractMemberDefinition,
+      GenerateBspConfig,
+      GotoPosition,
+      GotoSuperMethod,
+      GotoSymbol,
+      ImportBuild,
+      InsertInferredType,
+      NewScalaFile,
+      NewJavaFile,
+      NewScalaProject,
+      PresentationCompilerRestart,
       ResetChoicePopup,
+      RestartBuildServer,
+      RunDoctor,
+      DecodeFile,
+      DisconnectBuildServer,
+      ListBuildTargets,
+      ScanWorkspaceSources,
       StartAmmoniteBuildServer,
-      StopAmmoniteBuildServer
+      StartDebugAdapter,
+      StopAmmoniteBuildServer,
+      SuperMethodHierarchy
     )
 }
 
@@ -373,10 +555,43 @@ case class DebugUnresolvedMainClassParams(
     mainClass: String,
     @Nullable buildTarget: String = null,
     @Nullable args: java.util.List[String] = null,
-    @Nullable jvmOptions: java.util.List[String] = null
+    @Nullable jvmOptions: java.util.List[String] = null,
+    @Nullable env: java.util.Map[String, String] = null,
+    @Nullable envFile: String = null
+)
+
+final case class ScalaTestSuitesDebugRequest(
+    @Nullable target: b.BuildTargetIdentifier,
+    requestData: ScalaTestSuites
+)
+
+final case class ScalaTestSuites(
+    suites: java.util.List[ScalaTestSuiteSelection],
+    jvmOptions: java.util.List[String],
+    environmentVariables: java.util.List[String]
+)
+
+final case class ScalaTestSuiteSelection(
+    className: String,
+    tests: java.util.List[String]
 )
 
 case class DebugUnresolvedTestClassParams(
     testClass: String,
     @Nullable buildTarget: String = null
+)
+
+case class DebugUnresolvedAttachRemoteParams(
+    hostName: String,
+    port: Int,
+    buildTarget: String
+)
+
+case class DebugDiscoveryParams(
+    path: String,
+    runType: String,
+    @Nullable args: java.util.List[String] = null,
+    @Nullable jvmOptions: java.util.List[String] = null,
+    @Nullable env: java.util.Map[String, String] = null,
+    @Nullable envFile: String = null
 )

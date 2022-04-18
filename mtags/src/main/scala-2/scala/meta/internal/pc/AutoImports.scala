@@ -1,35 +1,20 @@
 package scala.meta.internal.pc
 
+import scala.annotation.tailrec
 import scala.reflect.internal.FatalError
 
 import scala.meta.internal.mtags.MtagsEnrichments._
 
 trait AutoImports { this: MetalsGlobal =>
 
-  /**
-   * A position to insert new imports
-   *
-   * @param offset the offset where to place the import.
-   * @param indent the indentation at which to place the import.
-   * @param padTop whether the import needs to be padded on top
-   *               in the case that it is the first one after the package def
-   */
-  case class AutoImportPosition(
-      offset: Int,
-      indent: Int,
-      padTop: Boolean
-  ) {
-    def this(offset: Int, text: String, padTop: Boolean) =
-      this(offset, inferIndent(offset, text), padTop)
-  }
-
   def doLocateImportContext(
       pos: Position,
-      autoImport: Option[AutoImportPosition]
+      autoImport: Option[AutoImportPosition] = None
   ): Context = {
-    try doLocateContext(
-      autoImport.fold(pos)(i => pos.focus.withPoint(i.offset))
-    )
+    try
+      doLocateContext(
+        autoImport.fold(pos)(i => pos.focus.withPoint(i.offset))
+      )
     catch {
       case _: FatalError =>
         (for {
@@ -75,10 +60,10 @@ trait AutoImports { this: MetalsGlobal =>
             )
           }
 
-        def forAmmoniteScript =
+        def forScript =
           for {
-            obj <- lastVisitedParentTrees.collectFirst {
-              case mod: ModuleDef => mod
+            obj <- lastVisitedParentTrees.collectFirst { case mod: ModuleDef =>
+              mod
             }
           } yield {
             val lastImportOpt = obj.impl.body.iterator
@@ -98,9 +83,24 @@ trait AutoImports { this: MetalsGlobal =>
             )
           }
 
-        def fileStart = AutoImportPosition(0, 0, padTop = false)
+        // Naive way to find the start discounting any first lines that may be
+        // scala-cli directives.
+        @tailrec
+        def findStart(text: String, index: Int): Int = {
+          if (text.startsWith("//")) {
+            val newline = text.indexOf("\n")
+            if (newline != -1)
+              findStart(text.drop(newline + 1), index + newline + 1)
+            else index + newline + 1
+          } else {
+            index
+          }
+        }
 
-        (if (pos.source.path.endsWith(".sc.scala")) forAmmoniteScript else None)
+        def fileStart =
+          AutoImportPosition(findStart(text, 0), 0, padTop = false)
+
+        (if (pos.source.path.endsWith(".sc.scala")) forScript else None)
           .orElse(forScalaSource)
           .orElse(Some(fileStart))
     }

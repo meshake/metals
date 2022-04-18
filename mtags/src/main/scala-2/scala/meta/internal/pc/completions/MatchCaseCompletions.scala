@@ -1,5 +1,7 @@
 package scala.meta.internal.pc.completions
 
+import java.net.URI
+
 import scala.collection.immutable.Nil
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
@@ -149,6 +151,7 @@ trait MatchCaseCompletions { this: MetalsGlobal =>
       prefix: Type,
       editRange: l.Range,
       pos: Position,
+      source: URI,
       text: String
   ) extends CompletionPosition {
     private def subclassesForType(tpe: Type): List[Symbol] = {
@@ -167,7 +170,7 @@ trait MatchCaseCompletions { this: MetalsGlobal =>
       val tpe = prefix.widen.bounds.hi
       val members = ListBuffer.empty[TextEditMember]
       val importPos = autoImportPosition(pos, text)
-      val context = doLocateImportContext(pos, importPos)
+      val context = doLocateImportContext(pos)
       val subclassesResult = subclassesForType(tpe)
 
       // sort subclasses by declaration order
@@ -184,7 +187,7 @@ trait MatchCaseCompletions { this: MetalsGlobal =>
           // Read all the symbols in the source that contains
           // the definition of the symbol in declaration order
           val defnSymbols = search
-            .definitionSourceToplevels(semanticdbSymbol(tpe.typeSymbol))
+            .definitionSourceToplevels(semanticdbSymbol(tpe.typeSymbol), source)
             .asScala
           if (defnSymbols.length > 0) {
             val symbolIdx = defnSymbols.zipWithIndex.toMap

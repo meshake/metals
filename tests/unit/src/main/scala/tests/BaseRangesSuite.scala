@@ -3,11 +3,11 @@ package tests
 import scala.concurrent.Future
 
 import munit.Location
+import munit.TestOptions
 
 abstract class BaseRangesSuite(name: String) extends BaseLspSuite(name) {
 
   protected def libraryDependencies: List[String] = Nil
-  protected def compilerPlugins: List[String] = Nil
 
   def assertCheck(
       filename: String,
@@ -16,28 +16,29 @@ abstract class BaseRangesSuite(name: String) extends BaseLspSuite(name) {
       base: Map[String, String]
   ): Future[Unit]
 
-  def check(name: String, input: String, scalaVersion: Option[String] = None)(
-      implicit loc: Location
+  def check(
+      name: TestOptions,
+      input: String,
+      scalaVersion: Option[String] = None
+  )(implicit
+      loc: Location
   ): Unit = {
     val files = FileLayout.mapFromString(input)
     val (filename, edit) = files
       .find(_._2.contains("@@"))
-      .map {
-        case (fileName, code) =>
-          (fileName, code.replaceAll("(<<|>>)", ""))
+      .map { case (fileName, code) =>
+        (fileName, code.replaceAll("(<<|>>)", ""))
       }
       .getOrElse {
         throw new IllegalArgumentException(
           "No `@@` was defined that specifies cursor position"
         )
       }
-    val expected = files.map {
-      case (fileName, code) =>
-        fileName -> code.replaceAll("@@", "")
+    val expected = files.map { case (fileName, code) =>
+      fileName -> code.replaceAll("@@", "")
     }
-    val base = files.map {
-      case (fileName, code) =>
-        fileName -> code.replaceAll("(<<|>>|@@)", "")
+    val base = files.map { case (fileName, code) =>
+      fileName -> code.replaceAll("(<<|>>|@@)", "")
     }
 
     val actualScalaVersion = scalaVersion.getOrElse(BuildInfo.scalaVersion)
@@ -45,17 +46,16 @@ abstract class BaseRangesSuite(name: String) extends BaseLspSuite(name) {
     test(name) {
       cleanWorkspace()
       for {
-        _ <- server.initialize(
+        _ <- initialize(
           s"""/metals.json
              |{"a":
              |  {
              |    "scalaVersion" : "$actualScalaVersion",
-             |    "compilerPlugins": ${toJsonArray(compilerPlugins)},
              |    "libraryDependencies": ${toJsonArray(libraryDependencies)}
              |  }
              |}
              |${input
-            .replaceAll("(<<|>>|@@)", "")}""".stripMargin
+              .replaceAll("(<<|>>|@@)", "")}""".stripMargin
         )
         _ <- Future.sequence(
           files.map(file => server.didOpen(s"${file._1}"))

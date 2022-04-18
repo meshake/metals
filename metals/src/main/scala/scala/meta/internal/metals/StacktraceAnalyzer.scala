@@ -1,7 +1,6 @@
 package scala.meta.internal.metals
 
 import java.io.FileWriter
-import java.net.URLEncoder
 
 import scala.util.Try
 
@@ -9,7 +8,6 @@ import scala.meta.internal.metals.MetalsEnrichments._
 import scala.meta.internal.metals.StacktraceAnalyzer._
 import scala.meta.io.AbsolutePath
 
-import com.google.gson.JsonPrimitive
 import org.eclipse.lsp4j.Location
 import org.eclipse.{lsp4j => l}
 
@@ -18,14 +16,13 @@ class StacktraceAnalyzer(
     buffers: Buffers,
     definitionProvider: DefinitionProvider,
     icons: Icons,
-    commandsInHtmlSupported: Boolean
+    commandInHtmlFormat: Option[CommandHTMLFormat]
 ) {
 
   def analyzeCommand(
-      commandParams: l.ExecuteCommandParams
+      stacktrace: String
   ): Option[l.ExecuteCommandParams] = {
-    parseJsonParams(commandParams)
-      .flatMap(analyzeStackTrace)
+    analyzeStackTrace(stacktrace)
   }
 
   def isStackTraceFile(path: AbsolutePath): Boolean =
@@ -59,66 +56,80 @@ class StacktraceAnalyzer(
   def stacktraceLenses(content: List[String]): Seq[l.CodeLens] = {
     (for {
       (line, row) <- content.zipWithIndex
-      cleanedLine = stripErrorSignifier(line)
-      if cleanedLine.startsWith("at ")
-      location <- fileLocationFromLine(cleanedLine)
+      location <- fileLocationFromLine(line)
       range = new l.Range(new l.Position(row, 0), new l.Position(row, 0))
     } yield makeGotoLocationCodeLens(location, range)).toSeq
+  }
+
+  def fileLocationFromLine(line: String): Option[l.Location] = {
+    def findLocationForSymbol(s: String): Option[Location] =
+      definitionProvider.fromSymbol(s, None).asScala.headOption
+
+    val cleanedLine = stripErrorSignifier(line)
+    if (cleanedLine.startsWith("at")) {
+      for {
+        symbol <- symbolFromLine(line)
+        location <- toToplevelSymbol(symbol)
+          .collectFirst(Function.unlift(findLocationForSymbol))
+      } yield trySetLineFromStacktrace(location, line)
+    } else {
+      None
+    }
   }
 
   /**
    * Strip out the `[E]` when the line is coming from bloop-cli.
    * Or
-   * Strip out the `[error]` when the line is coming from sbt
+   * Strip out the `[error]` or `[info]` when the line is coming from sbt
    */
   private def stripErrorSignifier(line: String) =
-    line.replaceFirst("""(\[E\]|\[error\])""", "").trim
+    line.replaceFirst("""(\[E\]|\[error\]|\[info\])""", "").trim
 
   private def makeGotoLocationCodeLens(
       location: l.Location,
       range: l.Range
   ): l.CodeLens = {
+    val command = ServerCommands.GotoPosition.toLSP(location)
+    command.setTitle(s"${icons.findsuper} open")
     new l.CodeLens(
       range,
-      new l.Command(
-        s"${icons.findsuper} open",
-        ServerCommands.GotoPosition.id,
-        List[Object](location: Object, java.lang.Boolean.TRUE).asJava
-      ),
+      command,
       null
     )
   }
 
   private def analyzeStackTrace(
       stacktrace: String
-  ): Option[l.ExecuteCommandParams] = {
-    if (commandsInHtmlSupported) {
-      Some(makeHtmlCommandParams(stacktrace))
-    } else {
-      val path = workspace.resolve(Directories.stacktrace)
-      val pathFile = path.toFile
-      val pathStr = pathFile.toString
+  ): Option[l.ExecuteCommandParams] =
+    commandInHtmlFormat match {
+      case Some(format) => Some(makeHtmlCommandParams(stacktrace, format))
+      case None =>
+        val path = workspace.resolve(Directories.stacktrace)
+        val pathFile = path.toFile
+        val pathStr = pathFile.toString
 
-      pathFile.createNewFile()
-      val fw = new FileWriter(pathStr)
-      try {
-        fw.write(s"/*\n$stacktrace\n*/")
-      } finally {
-        fw.close()
-      }
-      val fileStartPos = new l.Position(0, 0)
-      val range = new l.Range(fileStartPos, fileStartPos)
-      val stackTraceLocation = new l.Location(pathStr, range)
-      Some(makeGotoCommandParams(stackTraceLocation))
+        pathFile.createNewFile()
+        val fw = new FileWriter(pathStr)
+        try {
+          fw.write(s"/*\n$stacktrace\n*/")
+        } finally {
+          fw.close()
+        }
+        val fileStartPos = new l.Position(0, 0)
+        val range = new l.Range(fileStartPos, fileStartPos)
+        val stackTraceLocation = new l.Location(path.toURI.toString(), range)
+        Some(makeGotoCommandParams(stackTraceLocation))
     }
-  }
 
   private def makeGotoCommandParams(
       location: Location
   ): l.ExecuteCommandParams = {
-    new l.ExecuteCommandParams(
-      ClientCommands.GotoLocation.id,
-      List[Object](location, java.lang.Boolean.TRUE).asJava
+    ClientCommands.GotoLocation.toExecuteCommandParams(
+      ClientCommands.WindowLocation(
+        location.getUri(),
+        location.getRange(),
+        otherWindow = true
+      )
     )
   }
 
@@ -134,41 +145,30 @@ class StacktraceAnalyzer(
     location
   }
 
-  private def fileLocationFromLine(line: String): Option[l.Location] = {
-    def findLocationForSymbol(s: String): Option[Location] =
-      definitionProvider.fromSymbol(s).asScala.headOption
-
-    toToplevelSymbol(symbolFromLine(line))
-      .collectFirst(Function.unlift(findLocationForSymbol))
-      .map(location => trySetLineFromStacktrace(location, line))
-  }
-
-  private def symbolFromLine(line: String): String = {
+  private def symbolFromLine(line: String): Option[String] = Try {
     line.substring(line.indexOf("at ") + 3, line.indexOf("("))
-  }
+  }.toOption
 
   private def makeHtmlCommandParams(
-      stacktrace: String
+      stacktrace: String,
+      format: CommandHTMLFormat
   ): l.ExecuteCommandParams = {
     def htmlStack(builder: HtmlBuilder): Unit = {
       for (line <- stacktrace.split('\n')) {
-        if (line.contains("at ")) {
-          fileLocationFromLine(line) match {
-            case Some(location) =>
-              builder
-                .text("at ")
-                .link(
-                  gotoLocationUsingUri(
-                    location.getUri,
-                    location.getRange.getStart.getLine
-                  ),
-                  line.substring(line.indexOf("at ") + 3)
-                )
-            case None =>
-              builder.raw(line)
-          }
-        } else {
-          builder.raw(line)
+        fileLocationFromLine(line) match {
+          case Some(location) =>
+            builder
+              .text("at ")
+              .link(
+                gotoLocationUsingUri(
+                  location.getUri,
+                  location.getRange.getStart.getLine,
+                  format
+                ),
+                line.substring(line.indexOf("at ") + 3)
+              )
+          case None =>
+            builder.raw(line)
         }
         builder.raw("<br>")
       }
@@ -178,26 +178,24 @@ class StacktraceAnalyzer(
       .element("h3")(_.text(s"Stacktrace"))
       .call(htmlStack)
       .render
-    new l.ExecuteCommandParams(
-      "metals-show-stacktrace",
-      List[Object](output).asJava
+
+    ClientCommands.ShowStacktrace.toExecuteCommandParams(output)
+  }
+
+  private def gotoLocationUsingUri(
+      uri: String,
+      line: Int,
+      format: CommandHTMLFormat
+  ): String = {
+    val pos = new l.Position(line, 0)
+    ClientCommands.GotoLocation.toCommandLink(
+      ClientCommands.WindowLocation(
+        uri,
+        new l.Range(pos, pos),
+        otherWindow = true
+      ),
+      format
     )
-  }
-
-  private def gotoLocationUsingUri(uri: String, line: Int): String = {
-    val param = s"""["${uri}",${line},true]"""
-    s"command:metals.goto-path-uri?${URLEncoder.encode(param)}"
-  }
-
-  private def parseJsonParams(
-      commandParams: l.ExecuteCommandParams
-  ): Option[String] = {
-    for {
-      args <- Option(commandParams.getArguments)
-      arg <- args.asScala.lift(0).collect { case js: JsonPrimitive => js }
-      if arg.isString()
-      stacktrace = arg.getAsString()
-    } yield stacktrace
   }
 }
 
@@ -205,7 +203,18 @@ object StacktraceAnalyzer {
 
   def toToplevelSymbol(symbolIn: String): List[String] = {
     val symbol = symbolIn.split('.').init.mkString("/")
-    if (symbol.contains('$')) {
+    /* Symbol containing `$package$` is a toplevel method and we only need to
+     * find any method contained in the same file even if overloaded
+     */
+    if (symbol.contains("$package$")) {
+      symbolIn.split("\\$package\\$") match {
+        case Array(filePath, symbol) =>
+          val re = filePath.replace('.', '/') + "$package" + symbol
+          List(re + "().")
+        case _ =>
+          Nil
+      }
+    } else if (symbol.contains('$')) {
       // if $ is only at the end we know it is object => append '.'
       // if $ is in the middle we don't know, we will try to treat it as class/trait first
       // but in case nothing is found we will retry as object

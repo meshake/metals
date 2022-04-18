@@ -6,14 +6,14 @@ import scala.meta.internal.jdk.CollectionConverters._
 import scala.meta.internal.metals.CompilerOffsetParams
 import scala.meta.internal.metals.TextEdits
 
+import munit.TestOptions
 import org.eclipse.{lsp4j => l}
 import tests.BaseCodeActionSuite
-import tests.BuildInfoVersions
 
 class AutoImplementAbstractMembersSuite extends BaseCodeActionSuite {
 
-  override def excludedScalaVersions: Set[String] =
-    BuildInfoVersions.scala3Versions.toSet
+  override def ignoreScalaVersion: Option[IgnoreScalaVersion] =
+    Some(IgnoreScala3)
 
   checkEdit(
     "classdef",
@@ -705,7 +705,7 @@ class AutoImplementAbstractMembersSuite extends BaseCodeActionSuite {
   )
 
   def checkEdit(
-      name: String,
+      name: TestOptions,
       original: String,
       expected: String
   ): Unit =

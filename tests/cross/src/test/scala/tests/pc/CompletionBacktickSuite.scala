@@ -15,8 +15,24 @@ class CompletionBacktickSuite extends BaseCompletionSuite {
        |""".stripMargin,
     filterText = "type",
     compat = Map(
-      "0." -> "type: Int"
+      "3" -> "type: Int",
+      ">=3.2.0" -> "`type`: Int"
     )
+  )
+
+  checkEdit(
+    "keyword-edit",
+    s"""|object Main {
+        |  val `type` = 42
+        |  Main.typ@@
+        |}
+        |""".stripMargin,
+    """|object Main {
+       |  val `type` = 42
+       |  Main.`type`
+       |}
+       |""".stripMargin,
+    filterText = "type"
   )
 
   check(
@@ -30,7 +46,7 @@ class CompletionBacktickSuite extends BaseCompletionSuite {
        |""".stripMargin,
     filterText = "hello world",
     compat = Map(
-      "0." -> "hello world: Int"
+      "3" -> "hello world: Int"
     )
   )
 
@@ -45,12 +61,12 @@ class CompletionBacktickSuite extends BaseCompletionSuite {
        |""".stripMargin,
     filterText = "///",
     compat = Map(
-      "0." -> "///: Int"
+      "3" -> "///: Int"
     )
   )
 
   check(
-    "named-arg",
+    "named-arg".tag(IgnoreScala3),
     """|object Main {
        |  def foo(`type`: Int) = 42
        |  foo(type@@)
@@ -60,7 +76,7 @@ class CompletionBacktickSuite extends BaseCompletionSuite {
       |""".stripMargin,
     filterText = "type",
     compat = Map(
-      "0." -> ""
+      "3" -> ""
     )
   )
 

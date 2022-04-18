@@ -51,10 +51,7 @@ class HoverDefnSuite extends BaseHoverSuite {
       |}
       |""".stripMargin,
     """|def empty[T]: Option[T]
-       |""".stripMargin.hover,
-    compat = Map(
-      "0." -> "def empty[T] => Option[T]".hover
-    )
+       |""".stripMargin.hover
   )
 
   check(
@@ -63,13 +60,7 @@ class HoverDefnSuite extends BaseHoverSuite {
       |  <<def @@empty[T:Ordering] = Option.empty[T]>>
       |}
       |""".stripMargin,
-    """
-      |Option[T]
-      |def empty[T: Ordering]: Option[T]
-      |""".stripMargin.hover,
-    compat = Map(
-      "0." -> "def empty[T](implicit evidence$1: Ordering[T]): Option[T]".hover
-    )
+    "def empty[T: Ordering]: Option[T]".hover
   )
 
   check(
@@ -107,7 +98,7 @@ class HoverDefnSuite extends BaseHoverSuite {
        |```
        |""".stripMargin,
     compat = Map(
-      "0." -> "def <init>(x: Int): ctor.a".hover
+      "3" -> "def <init>(x: Int): a".hover
     )
   )
 
@@ -153,7 +144,7 @@ class HoverDefnSuite extends BaseHoverSuite {
       |""".stripMargin,
     "",
     compat = Map(
-      "0." -> "object MyObject: object.MyObject".hover
+      "3" -> "object MyObject: `object`".hover
     )
   )
 
@@ -163,7 +154,7 @@ class HoverDefnSuite extends BaseHoverSuite {
       |""".stripMargin,
     "",
     compat = Map(
-      "0." -> "trait MyTrait: trait.MyTrait".hover
+      "3" -> "trait MyTrait: MyTrait".hover
     )
   )
 
@@ -173,7 +164,7 @@ class HoverDefnSuite extends BaseHoverSuite {
       |""".stripMargin,
     "",
     compat = Map(
-      "0." -> "trait MyClass: class.MyClass".hover
+      "3" -> "trait MyClass: MyClass".hover
     )
   )
 
@@ -189,7 +180,7 @@ class HoverDefnSuite extends BaseHoverSuite {
     automaticPackage = false,
     compat = Map(
       // TODO hover doesn't show information on package
-      "0." -> "".hover
+      "3" -> "".hover
     )
   )
 
@@ -204,7 +195,7 @@ class HoverDefnSuite extends BaseHoverSuite {
       |""".stripMargin,
     "head: Int".hover,
     compat = Map(
-      "0." -> "val head: Int".hover
+      "3" -> "val head: Int".hover
     )
   )
 
@@ -219,8 +210,32 @@ class HoverDefnSuite extends BaseHoverSuite {
       |""".stripMargin,
     "value: Int".hover,
     compat = Map(
-      "0." -> "val value: Int".hover
+      "3" -> "val value: Int".hover
     )
+  )
+
+  check(
+    "val-int-literal".tag(IgnoreScala212),
+    """object a {
+      |  <<val @@x : 1 = 1>>
+      |}
+      |""".stripMargin,
+    """|val x: 1
+       |""".stripMargin.hover,
+    compat = Map(
+      "2.12" -> "",
+      "3" -> """|Int
+                |val x: (1 : Int)""".stripMargin.hover
+    )
+  )
+
+  check(
+    "val-int-literal-union".tag(IgnoreScala2),
+    """object a {
+      |  <<val @@x : 1 | 2 = 1>>
+      |}
+      |""".stripMargin,
+    "val x: (1 : Int) | (2 : Int)".hover
   )
 
 }

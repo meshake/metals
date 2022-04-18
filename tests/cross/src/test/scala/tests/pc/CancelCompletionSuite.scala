@@ -38,7 +38,7 @@ class CancelCompletionSuite extends BaseCompletionSuite {
       name: TestOptions,
       query: String,
       expected: String,
-      compat: Map[String, String]
+      compat: Map[String, String] = Map.empty
   )(implicit loc: Location): Unit = {
     test(name) {
       val (code, offset) = params(query)
@@ -82,7 +82,7 @@ class CancelCompletionSuite extends BaseCompletionSuite {
   }
 
   checkCancelled(
-    "basic".tag(IgnoreScalaVersion("0.27.0-RC1")),
+    "basic",
     """
       |object A {
       |  val x = asser@@
@@ -90,13 +90,7 @@ class CancelCompletionSuite extends BaseCompletionSuite {
     """.stripMargin,
     """|assert(assertion: Boolean): Unit
        |assert(assertion: Boolean, message: => Any): Unit
-       |""".stripMargin,
-    compat = Map(
-      "0.2" ->
-        """|assert(assertion: Boolean @InlineParam): Unit
-           |assertFail(message: => Any): Nothing
-           |""".stripMargin
-    )
+       |""".stripMargin
   )
 
 }

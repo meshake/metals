@@ -7,31 +7,46 @@ import scala.concurrent.ExecutionContext
 import scala.util.control.NonFatal
 
 import scala.meta.internal.metals.BuildInfo
-import scala.meta.internal.metals.GlobalTrace
-import scala.meta.internal.metals.MetalsLanguageClient
 import scala.meta.internal.metals.MetalsLanguageServer
+import scala.meta.internal.metals.MetalsLogger
 import scala.meta.internal.metals.MetalsServerConfig
+import scala.meta.internal.metals.ScalaVersions
+import scala.meta.internal.metals.Trace
+import scala.meta.internal.metals.clients.language.MetalsLanguageClient
 
 import org.eclipse.lsp4j.jsonrpc.Launcher
 
 object Main {
   def main(args: Array[String]): Unit = {
     if (args.exists(Set("-v", "--version", "-version"))) {
-      val supportedScalaVersions =
-        BuildInfo.supportedScalaVersions.sorted.mkString(", ")
+      val supportedScala2Versions =
+        BuildInfo.supportedScala2Versions
+          .groupBy(ScalaVersions.scalaBinaryVersionFromFullVersion)
+          .toSeq
+          .sortBy(_._1)
+          .map { case (_, versions) => versions.mkString(", ") }
+          .mkString("\n#       ")
+
+      val supportedScala3Versions =
+        BuildInfo.supportedScala3Versions.sorted.mkString(", ")
 
       println(
         s"""|metals ${BuildInfo.metalsVersion}
             |
             |# Note:
-            |#   supported Scala versions: $supportedScalaVersions""".stripMargin
+            |#   Supported Scala versions:
+            |#     Scala 3: $supportedScala3Versions
+            |#     Scala 2:
+            |#       $supportedScala2Versions
+            |""".stripMargin
       )
 
       sys.exit(0)
     }
     val systemIn = System.in
     val systemOut = System.out
-    val tracePrinter = GlobalTrace.setup("LSP")
+    MetalsLogger.redirectSystemOut(Trace.metalsLog)
+    val tracePrinter = Trace.setupTracePrinter("LSP")
     val exec = Executors.newCachedThreadPool()
     val ec = ExecutionContext.fromExecutorService(exec)
     val initialConfig = MetalsServerConfig.default
@@ -42,9 +57,8 @@ object Main {
       initialConfig = initialConfig
     )
     try {
-      scribe.info(s"Starting Metals server with configuration: $initialConfig")
       val launcher = new Launcher.Builder[MetalsLanguageClient]()
-        .traceMessages(tracePrinter)
+        .traceMessages(tracePrinter.orNull)
         .setExecutorService(exec)
         .setInput(systemIn)
         .setOutput(systemOut)
@@ -60,6 +74,9 @@ object Main {
         sys.exit(1)
     } finally {
       server.cancelAll()
+      ec.shutdownNow()
+
+      sys.exit(0)
     }
   }
 

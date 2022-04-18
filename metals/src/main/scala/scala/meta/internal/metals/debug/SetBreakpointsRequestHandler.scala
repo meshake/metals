@@ -1,91 +1,89 @@
 package scala.meta.internal.metals.debug
-import scala.concurrent.ExecutionContext
-import scala.concurrent.Future
+import scala.collection.concurrent.TrieMap
 
-import scala.meta.internal.metals.Compilers
 import scala.meta.internal.metals.JvmSignatures
 import scala.meta.internal.metals.MetalsEnrichments._
+import scala.meta.internal.metals.ScalaVersionSelector
 import scala.meta.internal.mtags.Mtags
+import scala.meta.internal.parsing.ClassFinder
 import scala.meta.internal.semanticdb.Language
 import scala.meta.internal.semanticdb.SymbolOccurrence
+import scala.meta.io.AbsolutePath
 
-import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.debug.SetBreakpointsArguments
-import org.eclipse.lsp4j.debug.SetBreakpointsResponse
-import org.eclipse.lsp4j.debug.Source
 import org.eclipse.lsp4j.debug.SourceBreakpoint
 
 private[debug] final class SetBreakpointsRequestHandler(
-    server: ServerAdapter,
-    adapters: MetalsDebugAdapters,
-    compilers: Compilers
-)(implicit ec: ExecutionContext) {
+    classFinder: ClassFinder,
+    scalaVersionSelector: ScalaVersionSelector
+) {
 
-  @volatile private var previousBreakpointUris = Set.empty[String]
+  private val previousBreakpointClassNames =
+    new TrieMap[AbsolutePath, Set[String]]
 
   def apply(
+      sourcePath: AbsolutePath,
       request: SetBreakpointsArguments
-  ): Future[SetBreakpointsResponse] = {
-    val path =
-      adapters.adaptPathForServer(request.getSource.getPath).toAbsolutePath
-
-    val originalSource = DebugProtocol.copy(request.getSource)
-
-    val breakPointSymbols = path.toLanguage match {
-      case Language.JAVA =>
-        val topLevels = Mtags.allToplevels(path.toInput)
-        request.getBreakpoints.map { breakpoint =>
-          val symbol = topLevels.occurrences.minBy(distanceFrom(breakpoint))
-          Future.successful(
-            (breakpoint, Option(JvmSignatures.toTypeSignature(symbol).value))
+  ): Iterable[SetBreakpointsArguments] = {
+    /* Get symbol for each breakpoint location to figure out the
+     * class file that we need to register the breakpoint for.
+     */
+    val symbols: Array[(SourceBreakpoint, Option[String])] =
+      sourcePath.toLanguage match {
+        case Language.JAVA =>
+          val topLevels = Mtags.allToplevels(
+            sourcePath.toInput,
+            scalaVersionSelector.getDialect(sourcePath)
           )
-        }
-      case _ =>
-        request.getBreakpoints.map { breakpoint =>
-          val pos = new Position(breakpoint.getLine(), breakpoint.getColumn())
-          compilers.enclosingClass(pos, path).map(sym => (breakpoint, sym))
-        }
-    }
-
-    Future.sequence(breakPointSymbols.toList).flatMap { symbols =>
-      val groups = symbols.groupBy(_._2)
-      val partitions = groups.flatMap {
-        case (Some(fqcn), breakpoints) =>
-          Some(createPartition(request, fqcn, breakpoints.map(_._1).toArray))
-        case _ => None
+          request.getBreakpoints.map { breakpoint =>
+            val symbol =
+              topLevels.occurrences.minBy(distanceFrom(breakpoint))
+            (breakpoint, Option(JvmSignatures.toTypeSignature(symbol).value))
+          }
+        case _ =>
+          request.getBreakpoints.map { breakpoint =>
+            val sym =
+              classFinder.findClass(sourcePath, breakpoint.toLSP)
+            (breakpoint, sym)
+          }
       }
 
-      val allUris = partitions.map(_.getSource().getPath()).toSet
-      val removed = previousBreakpointUris.diff(allUris)
-      previousBreakpointUris = allUris
-
-      val requests = partitions ++ removed.map { uri =>
-        createEmptyPartition(request, uri)
-      }
-
-      server
-        .sendPartitioned(requests.map(DebugProtocol.syntheticRequest))
-        .map(_.map(DebugProtocol.parseResponse[SetBreakpointsResponse]))
-        .map(_.flatMap(_.toList))
-        .map(assembleResponse(_, originalSource))
-    }
-  }
-
-  private def assembleResponse(
-      responses: Iterable[SetBreakpointsResponse],
-      originalSource: Source
-  ): SetBreakpointsResponse = {
-    val breakpoints = for {
-      response <- responses
-      breakpoint <- response.getBreakpoints
-    } yield {
-      breakpoint.setSource(originalSource)
-      breakpoint
+    val groups = symbols.groupBy(_._2)
+    val partitions = groups.flatMap {
+      case (Some(fullyQualifiedClassName), breakpoints) =>
+        Some(
+          createPartition(
+            request,
+            fullyQualifiedClassName,
+            breakpoints.map(_._1).toArray
+          )
+        )
+      case (None, nonRegisteredBreakpoints) =>
+        val message = nonRegisteredBreakpoints.map { case (br, _) =>
+          s"$sourcePath:${br.getLine()}:${br.getColumn()}"
+        }
+        scribe.debug(s"No class found for $message")
+        None
     }
 
-    val response = new SetBreakpointsResponse
-    response.setBreakpoints(breakpoints.toArray)
-    response
+    /* Get previously registered class file names (fully qualified class names) for
+     * breakpoints to figure out if we might need to send an empty message to
+     * remove breakpoints from one. This is not a problem if we are sending
+     * new breakpoints, but it's a problem if breakpoints were removed as
+     * partitions will not contain a class file name in case all breakpoints
+     * that were pointing to a certain class file were removed.
+     */
+    val previousClassNames =
+      previousBreakpointClassNames.getOrElse(sourcePath, Set.empty[String])
+    val currentClassNames = partitions.map(_.getSource().getPath()).toSet
+    val classFilesToRemoveBreakpointsFrom =
+      previousClassNames.diff(currentClassNames)
+
+    previousBreakpointClassNames += sourcePath -> currentClassNames
+
+    partitions ++ classFilesToRemoveBreakpointsFrom.map(
+      createEmptyPartition(request, _)
+    )
   }
 
   private def createEmptyPartition(
@@ -98,7 +96,6 @@ private[debug] final class SetBreakpointsRequestHandler(
     val partition = new SetBreakpointsArguments
     partition.setBreakpoints(Array.empty)
     partition.setSource(source)
-    partition.setLines(Array.empty)
     partition.setSourceModified(request.getSourceModified)
     partition
   }
@@ -111,14 +108,9 @@ private[debug] final class SetBreakpointsRequestHandler(
     val source = DebugProtocol.copy(request.getSource)
     source.setPath(s"dap-fqcn:$fqcn")
 
-    val lines = breakpoints
-      .map(_.getLine: Integer)
-      .distinct
-
     val partition = new SetBreakpointsArguments
     partition.setBreakpoints(breakpoints)
     partition.setSource(source)
-    partition.setLines(lines)
     partition.setSourceModified(request.getSourceModified)
 
     partition
@@ -128,7 +120,7 @@ private[debug] final class SetBreakpointsRequestHandler(
       breakpoint: SourceBreakpoint
   ): SymbolOccurrence => Long = { occ =>
     val startLine = occ.range.fold(Int.MaxValue)(_.startLine)
-    val breakpointLine = adapters.adaptLine(breakpoint.getLine)
+    val breakpointLine = breakpoint.toLSP.getLine
     if (startLine > breakpointLine) Long.MaxValue
     else breakpointLine - startLine
   }

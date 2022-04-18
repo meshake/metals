@@ -2,7 +2,10 @@ package tests
 
 import java.util.Properties
 
+import scala.meta.internal.metals.ClientConfiguration
+import scala.meta.internal.metals.JavaFormatConfig
 import scala.meta.internal.metals.UserConfiguration
+import scala.meta.io.AbsolutePath
 
 import munit.Location
 
@@ -19,7 +22,8 @@ class UserConfigurationSuite extends BaseSuite {
       val jprops = new Properties()
       // java11 ambiguous .putAll via Properties/Hashtable, use .put
       props.foreach { case (k, v) => jprops.put(k, v) }
-      val obtained = UserConfiguration.fromJson(json, jprops)
+      val obtained =
+        UserConfiguration.fromJson(json, ClientConfiguration.Default(), jprops)
       fn(obtained)
     }
   }
@@ -181,4 +185,46 @@ class UserConfigurationSuite extends BaseSuite {
     """.stripMargin
   ) { ok => assert(ok.enableStripMarginOnTypeFormatting == false) }
 
+  checkOK(
+    "java format setting",
+    """
+      |{
+      | "javaFormat": {
+      |  "eclipseConfigPath": "path",
+      |  "eclipseProfile": "profile"
+      | }
+      |}
+    """.stripMargin
+  ) { obtained =>
+    assert(
+      obtained.javaFormatConfig == Some(
+        JavaFormatConfig(AbsolutePath("path"), Some("profile"))
+      )
+    )
+  }
+  checkOK(
+    "java format no setting",
+    """
+      |{
+      |}
+    """.stripMargin
+  ) { obtained =>
+    assert(obtained.javaFormatConfig == None)
+  }
+  checkOK(
+    "java format no profile setting",
+    """
+      |{
+      | "javaFormat": {
+      |  "eclipseConfigPath": "path"
+      | }
+      |}
+    """.stripMargin
+  ) { obtained =>
+    assert(
+      obtained.javaFormatConfig == Some(
+        JavaFormatConfig(AbsolutePath("path"), None)
+      )
+    )
+  }
 }
