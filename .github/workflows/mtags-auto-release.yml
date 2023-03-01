@@ -22,7 +22,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.inputs.metals_ref }}
           token: ${{ secrets.GH_TOKEN }}
-      - uses: olafurpg/setup-scala@v13
+      - uses: olafurpg/setup-scala@v14
         with:
           java-version: adopt@1.11
       - uses: coursier/cache-action@v6.3
